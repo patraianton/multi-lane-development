@@ -1,153 +1,183 @@
-# sheepdog-autopase — доска «Autopase в одном месте»
+# Watchtower
 
-Живая доска, на которой видно всю разработку autopase.lv сразу: какие окна
-открыты, что каждое сейчас делает, на какой полосе пишется код, что с
-открытыми PR и не ждёт ли кто-то слова CTO или владельца.
+A live kanban of your coding-agent fleet.
 
-Это форк [sheepdog](https://github.com/patraianton/sheepdog) — общей доски для
-любого набора окон herdr. Здесь она переделана под один проект: показываются
-только окна autopase, и на карточке лежат вещи, которых в общей доске нет —
-полосы, PR, зонтичные issue.
+One page that shows every [herdr](https://github.com/patraianton/herdr) window
+working on a project: what each agent is doing right now and for how long, which
+build lane is compiling what, which pull requests are open and what their CI
+says, and — first column, always — who is stuck waiting for a human.
 
-Общая доска sheepdog осталась в этом же репозитории (`bin/board-server.mjs`,
-`bin/board.cmd`, порт 4877) — её никто не трогал, она может работать рядом.
-
-![Доска](docs/board.png)
+Nothing on the board is typed in by hand. Every card is assembled from live
+sources on each refresh, and the board only ever reads: it never writes into your
+windows, never starts or stops anything. Its single action is switching herdr to
+the window you clicked.
 
 ---
 
-## Как запустить
+## Features
 
-Нужны: Windows, Node.js 18+, herdr, `gh` (вход выполнен), ключ `~/.ssh/id_ed25519`
-для серверов с полосами.
-
-    bin\autopase-board.cmd
-
-Доска откроется на `http://127.0.0.1:4878` и дальше обновляется сама раз в три
-секунды. Без окна консоли (например, в автозапуск при входе в Windows) —
-`bin\autopase-board-hidden.vbs`.
-
-Другой порт: `set AUTOPASE_BOARD_PORT=4900` перед запуском.
+- **One card per window.** Agent state (`working` / `idle` / `blocked` / `done`)
+  plus how long it has been in that state, the rule herdr used to decide, the
+  model, account, effort and context fill read off the window's own footer line,
+  and the checkout branch.
+- **The "needs you" column first.** A window goes there when it is blocked, when
+  its last words contain one of your ask markers, or when a question in its
+  umbrella issue is still unanswered.
+- **Build lanes.** Remote hosts where the actual compiling happens (`hzlane` boxes
+  and Mac kitchens) with the branch on each lane and which window owns it. A busy
+  lane nobody claims is flagged.
+- **Pull requests with CI colour**, bound to a window by branch, branch prefix,
+  lane branch, or simply because the window named the number.
+- **Last words.** What the window actually said last, taken from the Claude
+  session log and falling back to the screen.
+- **Hand edits.** Hide a card you do not want to see (restore it behind the gear),
+  or add a card of your own with the `+`.
+- **An agent API.** `/api/board` and `bin\wt.cmd` — the same board as short text
+  or JSON, so a watchdog agent can read it without a browser.
 
 ---
 
-## Что на доске
+## Quick start
 
-**Верхняя строка** — сколько окон autopase открыто, сколько ждут слова, сколько
-полос пишет код прямо сейчас, сколько открытых PR. Справа — лампочки источников
-данных: зелёная значит «источник ответил», красная — «не ответил» (наведите
-мышью, чтобы увидеть текст ошибки). Доска при этом продолжает работать: каждый
-источник живёт отдельно и падение одного не гасит остальные.
+Requirements: Windows, Node.js 18+, herdr. Optional: `gh` (logged in) for pull
+requests and issues, and an ssh key for the hosts that run your build lanes.
 
-**Полоса под шапкой** — три места, где пишется код: **lanes-01**
-(`root@2.29.10.164`), **Hetzner** (`root@89.167.116.229`) и **Mac**. Для каждой
-полосы видно, занята она или свободна, какая ветка на ней лежит и какое окно за
-неё отвечает. Полоса, которая занята, но ни к какому окну не привязалась,
-подписана «ничья» — это повод разобраться.
+```
+node bin\watchtower.mjs
+```
 
-**Колонки:**
+or `bin\watchtower.cmd`, which also opens the page. The board serves
+`http://127.0.0.1:4878` and refreshes itself every three seconds. To run it
+without a console window (autostart on logon), use `bin\watchtower-hidden.vbs`.
 
-| колонка | что в ней |
+Another port: `set WATCHTOWER_PORT=4900` before starting.
+
+If `ssh` or `gh` are not on the default path, point at them with
+`WATCHTOWER_SSH` and `WATCHTOWER_GH`.
+
+---
+
+## Onboarding
+
+On the first run the board asks which project to watch. It groups the windows
+herdr currently has by project — the worktree root
+(`~/.herdr/worktrees/<project>/…`) or the repository the window sits in — and
+shows each one with how many windows it has. Pick a project and the board shows
+every window and every worktree of it. There is also **All windows**, which
+applies no filter at all.
+
+The choice is saved to `state/autopase-board.json` and the gear in the header
+opens the same screen again — to change the project and to restore cards you have
+hidden.
+
+---
+
+## The board
+
+**Header:** Watchtower, the project being watched, one line of counters, the `+`
+and the gear. That is all it carries.
+
+**Columns:**
+
+| column | what is in it |
 |---|---|
-| **Нужен CTO / владелец** | окно `blocked`, либо в его последних словах есть «ВОПРОС CTO» / «ОТВЕТ ВЛАДЕЛЬЦУ», либо такой комментарий висит в зонтичном issue без ответа. Всегда первая — это то, что стоит без человека |
-| **В работе** | окно сейчас работает |
-| **Молчит, полоса пишет** | окно молчит, но его полоса занята — работа идёт не в окне, а на сервере |
-| **Простаивает** | окно с живым агентом, но без работы и без полос |
-| **Без агента** | окно есть, агента в нём нет (herdr вернул `unknown`) |
+| **Needs you** | window `blocked`, an ask marker in its last words, or an unanswered question in its umbrella issue. Always first — this is what stands still without a human |
+| **Working** | the agent is working right now |
+| **Lane is building** | the window is silent but its lane is busy — work is happening on the server, not in the window |
+| **Idle** | live agent, no work and no lanes |
+| **No agent** | a window with no agent in it |
 
-**Карточка = одна вкладка herdr.** На ней:
-
-- имя рабочей копии и место в herdr (`w5A:p1`);
-- состояние (работает / ждёт / заблокировано / закончило) и **сколько времени
-  оно держится**;
-- по какому правилу herdr так решил (`agent explain`) и по какому куску экрана —
-  наведите мышью, чтобы увидеть область и приоритет правила;
-- модель, учётная запись, усилие и заполненность контекста — прочитаны с нижней
-  строки экрана окна;
-- ветка рабочей копии (или «голова отсоединена», если ветки нет);
-- **полосы**, на которых пишется код этого потока, с их ветками;
-- **открытые PR** с цветом CI: зелёный / красный / «CI идёт». Подписано, откуда
-  взялась привязка: «ветка окна», «префикс ветки», «ветка полосы» или «названо
-  окном»;
-- **зонтичный issue** программы и висит ли в нём вопрос без ответа;
-- **последние слова окна** — что оно сказало последним.
-
-**Клик по карточке** переводит herdr на эту вкладку. Это единственное действие
-доски: больше она ничего никуда не пишет.
+Clicking a card makes herdr switch to that window.
 
 ---
 
-## Откуда берутся данные
+## Where the data comes from
 
-Руками не вводится **ничего**. Всё читается заново при каждом обновлении:
-
-| что | откуда | как часто |
+| what | source | how often |
 |---|---|---|
-| окна, вкладки, состояние агента | `herdr api snapshot`, `herdr workspace list`, `herdr agent list` | каждые 3 с |
-| правило состояния | `herdr agent explain <панель>` | каждые 12 с |
-| модель, учётка, усилие, контекст, номера PR на экране | `herdr pane read <панель> --source visible` | каждые 12 с |
-| полосы lanes-01 и Hetzner | `ssh … hzlane status` | каждые 45 с |
-| полосы Mac | `ssh mac` — ветка каждой папки `~/kitchens/autopase.lv/lane-*` плюс рабочая папка живых процессов `codex exec` | каждые 45 с |
-| открытые PR и цвет CI | `gh pr list --repo Baltic-OrangesLV/vincheck-latvia` | каждые 60 с |
-| зонтичные issue и вопросы в них | `gh issue list --label umbrella` + `gh issue view` | каждые 120 с |
-| какое окно за какие полосы и ветки отвечает | `autopase-ops/reports/active-session-monitor/STREAM-WATCH.json` | каждые 30 с |
-| номер зонтичного issue | `_conveyor/autopase.lv/specs/<ПРОГРАММА>/PROGRAM-STATE.md`, строка `umbrella: #NNNN` | каждые 30 с |
-| последние слова окна | журнал сессии Claude (`*.jsonl`); если текущая сессия ещё ничего не сказала вслух — журнал прошлой сессии этого же окна; если и там пусто — последняя содержательная строка с экрана | каждые 3 с (по времени изменения файла) |
+| windows, tabs, agent state | `herdr api snapshot`, `herdr workspace list`, `herdr agent list` | every 3 s |
+| the rule behind a state | `herdr agent explain <pane>` | every 12 s |
+| model, account, effort, context, PR numbers on screen | `herdr pane read <pane> --source visible` | every 12 s |
+| lanes on an hzlane host | `ssh … hzlane status` | every 45 s |
+| lanes in a Mac kitchen | `ssh mac` — the branch of each `<kitchen>/lane-*` folder plus the working directory of live `codex exec` processes | every 45 s |
+| open PRs and CI colour | `gh pr list --repo <repo>` | every 60 s |
+| umbrella issues and questions in them | `gh issue list --label umbrella` + `gh issue view` | every 120 s |
+| which window owns which lanes and branch prefixes | the `streamWatch` JSON file | every 30 s |
+| umbrella issue number of a program | `<specsDir>/<PROGRAM>/PROGRAM-STATE.md`, the line `umbrella: #NNNN` | every 30 s |
+| the window's last words | the Claude session log (`*.jsonl`); if the current session has not spoken yet, the previous session of the same window; if that is empty too, the last meaningful line on screen | every 3 s (by file mtime) |
 
-Единственное, что доска хранит сама, — `state/autopase-seen.json`: когда каждая
-панель впервые оказалась в нынешнем состоянии. Без этого не посчитать «сколько
-времени окно так стоит»: herdr время в состоянии не хранит.
+Every source refreshes on its own timer in the background, so the page answers in
+milliseconds and one dead source does not take the board down — it shows up next
+to the lanes as "sources not answering".
 
-**Доска только читает.** Она не запускает и не останавливает полосы, ничего не
-пишет в чужие окна herdr, не трогает боевую базу, Vercel и Coolify. По ssh
-выполняются только `hzlane status`, `pgrep`, `git rev-parse` и `lsof`.
+The board stores three files of its own under `state/` (not in git): the chosen
+project and settings, when each pane was first seen in its current state (herdr
+does not keep that, and without it "stuck for 4 hours" cannot be computed), and
+the hand edits — hidden and manually added cards.
 
 ---
 
-## Настройки
+## Configuration
 
-По умолчанию всё уже прописано в `bin/autopase-board.mjs` (раздел `DEFAULTS`).
-Переопределить, ничего не трогая в коде, можно файлом `state/autopase-board.json`
-(он не в git):
+Everything has a neutral default in `bin/watchtower.mjs` (the `DEFAULTS` block).
+Your own values go into `state/autopase-board.json`, which is not in git:
 
 ```json
 {
-  "match": "autopase",
-  "hide": ["seo"],
-  "repo": "Baltic-OrangesLV/vincheck-latvia",
-  "askWords": ["ВОПРОС CTO", "ОТВЕТ ВЛАДЕЛЬЦУ"],
-  "answerWords": ["ОТВЕТ CTO", "РЕШЕНИЕ CTO"],
+  "project": "my-project",
+  "allWindows": false,
+  "hide": ["marketing"],
+  "repo": "acme/web",
+  "streamWatch": "C:\\path\\to\\STREAM-WATCH.json",
+  "specsDir": "C:\\path\\to\\specs",
+  "askWords": ["QUESTION FOR THE CTO", "QUESTION FOR THE OWNER"],
+  "answerWords": ["CTO ANSWER", "OWNER SAYS"],
   "hosts": {
-    "lanes-01": { "target": "root@2.29.10.164", "key": "id_ed25519", "kind": "hzlane" },
-    "hetzner":  { "target": "root@89.167.116.229", "key": "id_ed25519", "kind": "hzlane" },
-    "mac":      { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/autopase.lv" }
+    "builder": { "target": "root@203.0.113.10", "key": "id_ed25519", "kind": "hzlane" },
+    "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/my-project" }
   }
 }
 ```
 
-- `match` — окно попадает на доску, если его рабочая папка содержит это слово.
-- `hide` — что не показывать. По слову владельца окно `seo` — маркетинг, а не
-  разработка, и на доске разработки ему не место.
-- `askWords` — по каким словам окно считается ждущим человека.
-- `answerWords` — какими словами вопрос в зонтике закрывают. Пока в зонтике
-  после вопроса не появится комментарий с таким словом, вопрос считается
-  висящим (в зонтике пишет одна учётная запись, по автору ответ не отличить).
+- `project` — which project the board watches (set by the onboarding screen).
+- `allWindows` — `true` shows every herdr window, with no project filter.
+- `hide` — windows never to show, by folder name or window label.
+- `repo` — `owner/name` for `gh`. Empty means GitHub is skipped entirely.
+- `streamWatch`, `specsDir` — optional; without them the board simply has no lane
+  bindings and no umbrella numbers.
+- `askWords` — the exact words your windows and issues use to flag a question for
+  a human. These are protocol markers, not interface text: write them in whatever
+  language your team actually types.
+- `answerWords` — the words that close such a question. Until one of them appears
+  after the question in the umbrella issue, the question counts as open (the same
+  account writes both, so the author tells you nothing).
+- `hosts` — where code is built. `kind: "hzlane"` asks `hzlane status` over ssh;
+  `kind: "mac"` reads `<kitchen>/lane-*` folders and live `codex exec` processes.
+  With no hosts configured the lane strip is simply empty.
 
 ---
 
-## Чего доска не умеет
+## Agent API
 
-- Привязать PR к окну, если ветка PR не похожа ни на ветку окна, ни на префиксы
-  из `STREAM-WATCH.json`, и окно нигде не назвало его номер. Такой PR просто не
-  появится ни на одной карточке.
-- Показать полосу, которой нет ни в `hosts`, ни среди папок `lane-*` на Mac.
-- Отличить «человек ответил на вопрос в зонтике» от «поток сам дописал отчёт»,
-  если ответ не помечен словом из `answerWords`.
-- Понять, что делает окно без агента Claude: для них показывается только
-  последняя строка экрана.
+`bin\wt.cmd` prints the whole board as short text (or JSON with `--json`), and
+`GET /api/board` serves the same thing over HTTP. Full contract, field by field:
+[docs/API.md](docs/API.md).
 
 ---
 
-## Лицензия
+## What the board cannot do
 
-MIT — см. `LICENSE`. Исходная доска: [sheepdog](https://github.com/patraianton/sheepdog).
+- Bind a PR to a window when the PR branch looks like neither the window branch
+  nor any configured prefix, and the window never named its number.
+- Show a lane that is neither in `hosts` nor a `lane-*` folder of a Mac kitchen.
+- Tell "a human answered the question" from "the stream posted another report",
+  unless the answer carries one of the `answerWords`.
+- Say much about a window without a Claude agent: for those, only the last line
+  of the screen is available.
+
+---
+
+## License
+
+MIT — see `LICENSE`. Watchtower started as a fork of
+[sheepdog](https://github.com/patraianton/sheepdog).
