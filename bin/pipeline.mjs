@@ -1,0 +1,710 @@
+// The delivery pipeline: persistent cards that move from a spec to acceptance.
+//
+// A Card is not a Window. A window is a live herdr session and disappears with
+// the machine; a card lives in state/pipeline-cards.json, carries its spec, its
+// comments, its per-stage clocks and its failure counters, and only ever leaves
+// a stage through a validated transition.
+//
+// This module owns the whole pipeline: the store, the stage rules, the page
+// endpoints and the agent view. watchtower.mjs only routes to it.
+
+import path from 'node:path';
+import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
+import {
+  BadRequest, send, sendText, readBody,
+  clipText, toonTable, agentParams,
+} from './serve.mjs';
+
+// ------------------------------------------------------------------- stages
+
+// The stage a card sits in. Six working stages, one terminal stage and Stuck,
+// which is not a step of the road but where a card lands after its third
+// consecutive failure and waits for a human.
+export const STAGES = [
+  { key: 'spec', title: 'Spec' },
+  { key: 'grilled', title: 'Grilled' },
+  { key: 'development', title: 'Development' },
+  { key: 'local_check', title: 'Local check' },
+  { key: 'ci_pr', title: 'CI/PR' },
+  { key: 'acceptance', title: 'Acceptance' },
+  { key: 'accepted', title: 'Accepted' },
+  { key: 'stuck', title: 'Stuck' },
+];
+const STAGE_KEYS = new Set(STAGES.map(s => s.key));
+
+// Every move a card may make on its own road. Everything else is a 400: a card
+// never skips the grill, never walks backwards by hand and never leaves the
+// terminal stage.
+//
+// The two ways off this map are deliberate and have their own endpoints, because
+// neither is a step forward: a failure (back to Development, or to Stuck on the
+// third one in a row) and a human pulling a card out of Stuck.
+const MOVES = {
+  spec: ['grilled'],
+  grilled: ['development'],
+  development: ['local_check'],
+  local_check: ['ci_pr'],
+  ci_pr: ['acceptance'],
+  acceptance: ['accepted'],
+  accepted: [],
+  stuck: [],
+};
+
+// Stages whose time counts towards the card's delivery clock. Acceptance is the
+// owner's decision, not the pipeline's work — the card waits there with its
+// clock stopped (the wait is still written into stageHistory, so it can be read
+// separately). Accepted is terminal: nothing is being spent there any more.
+const OFF_THE_CLOCK = new Set(['acceptance', 'accepted']);
+
+// A failure is one of three kinds; each has its own counter on the card, because
+// "the local check failed three times" and "acceptance was refused three times"
+// are different diseases.
+const FAIL_KINDS = {
+  local: 'localFails',
+  ci: 'ciFails',
+  acceptance: 'acceptanceFails',
+};
+
+// The third consecutive failure sends the card to Stuck: something is looping
+// and a human has to look, not the agent to try a fourth time.
+const STUCK_AFTER = 3;
+
+// Where a failure can happen at all: the stages where work is actually being
+// checked. A card in Spec or Grilled has not been built yet, so "it failed" there
+// is not a late report, it is a wrong request — and answering it would walk the
+// card forward into Development around the grill, which no move is allowed to do.
+const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
+
+// What the watchdog may write into a card's status line (Wave G writes it; the
+// value is validated here so a wrong word never reaches the board).
+const VERDICTS = ['moving', 'stalled', 'looping'];
+
+// ------------------------------------------------------------------- limits
+
+const LIMIT = {
+  title: 200,
+  spec: 20000,
+  author: 100,
+  comment: 4000,
+  link: 400,
+  slotish: 100,      // lane, subscription, slot
+  status: 400,
+};
+
+const LINK_KEYS = ['ticket', 'branch', 'pr', 'artifact'];
+
+// -------------------------------------------------------------------- store
+
+let FILE = '';
+let state = null;         // { cards: [...] }
+let loading = null;
+
+export function configurePipeline(stateDir) {
+  FILE = path.join(stateDir, 'pipeline-cards.json');
+}
+
+function str(v, limit) {
+  return String(v ?? '').slice(0, limit);
+}
+
+// Reading a card from disk. Every field is rebuilt from scratch: a file edited
+// by hand, truncated by a crash or written by an older build must still produce
+// a card the board can draw, never an exception on the way to the page.
+function normCard(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const id = String(src.id ?? '').trim();
+  if (!id) return null;
+  const title = str(src.title, LIMIT.title).trim();
+  if (!title) return null;
+
+  const stage = STAGE_KEYS.has(src.stage) ? src.stage : 'spec';
+  const createdAt = isoOr(src.createdAt, new Date().toISOString());
+
+  const stageHistory = [];
+  for (const h of Array.isArray(src.stageHistory) ? src.stageHistory : []) {
+    if (!h || !STAGE_KEYS.has(h.stage)) continue;
+    stageHistory.push({
+      stage: h.stage,
+      enteredAt: isoOr(h.enteredAt, createdAt),
+      leftAt: isoOr(h.leftAt, null),
+    });
+  }
+  // A card with no readable history still has to have a clock: it entered its
+  // current stage at least when it was created.
+  if (!stageHistory.length) stageHistory.push({ stage, enteredAt: createdAt, leftAt: null });
+
+  const counters = {};
+  for (const key of Object.values(FAIL_KINDS)) counters[key] = int(src.counters?.[key]);
+
+  const links = {};
+  for (const key of LINK_KEYS) links[key] = str(src.links?.[key], LIMIT.link).trim();
+
+  const comments = [];
+  for (const c of Array.isArray(src.comments) ? src.comments : []) {
+    const author = str(c?.author, LIMIT.author).trim();
+    const text = str(c?.text, LIMIT.comment).trim();
+    if (!author || !text) continue;
+    comments.push({ author, text, at: isoOr(c?.at, createdAt) });
+  }
+
+  const verdict = VERDICTS.includes(src.status?.verdict) ? src.status.verdict : '';
+  return {
+    id,
+    title,
+    spec: str(src.spec, LIMIT.spec),
+    stage,
+    createdAt,
+    stageHistory,
+    counters,
+    consecutiveFails: int(src.consecutiveFails),
+    links,
+    lane: str(src.lane, LIMIT.slotish).trim(),
+    subscription: str(src.subscription, LIMIT.slotish).trim(),
+    slot: str(src.slot, LIMIT.slotish).trim(),
+    status: {
+      text: str(src.status?.text, LIMIT.status).trim(),
+      verdict,
+      at: isoOr(src.status?.at, null),
+    },
+    comments,
+  };
+}
+
+function int(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+// A timestamp is kept only if it really is one. A broken value falls back
+// instead of turning every clock on the board into NaN.
+function isoOr(v, fallback) {
+  const t = Date.parse(String(v ?? ''));
+  return Number.isFinite(t) ? new Date(t).toISOString() : fallback;
+}
+
+function normState(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const cards = [];
+  const seen = new Set();
+  for (const c of Array.isArray(src.cards) ? src.cards : []) {
+    const card = normCard(c);
+    if (!card || seen.has(card.id)) continue;
+    seen.add(card.id);
+    cards.push(card);
+  }
+  return { cards };
+}
+
+// The file is read once per board lifetime, and that read stays single even
+// under concurrent requests: otherwise each of them starts its own parse and the
+// edits made in the others are lost.
+async function load() {
+  if (state) return state;
+  if (!loading) {
+    loading = (async () => {
+      state = normState(await readJsonSoft(FILE, null));
+      loading = null;
+      return state;
+    })();
+  }
+  return loading;
+}
+
+// An edit: change memory first, then write to disk through the shared atomic
+// queue. If the write failed, roll memory back — otherwise the board would show
+// the change as saved and it would be gone after a restart.
+//
+// Two details the rollback depends on:
+//   1. edits are serialised, one at a time. Concurrent POSTs are normal here, and
+//      a rollback taken while another edit is in flight would undo that other
+//      edit too — although its own write to disk had already succeeded;
+//   2. the rollback refills the store in place instead of replacing the object.
+//      Nothing then keeps a reference to an orphaned store that is written to and
+//      silently lost.
+let chain = Promise.resolve();
+
+async function commit(mutate) {
+  const run = chain.then(() => applyEdit(mutate), () => applyEdit(mutate));
+  chain = run.catch(() => {});
+  return run;
+}
+
+async function applyEdit(mutate) {
+  const st = await load();
+  const backup = JSON.stringify(st);
+  let result;
+  try {
+    result = mutate(st);
+  } catch (e) {
+    // A rejected edit must leave the store exactly as it was, even if the change
+    // was refused halfway through.
+    restore(st, backup);
+    throw e;
+  }
+  try {
+    await writeJsonAtomic(FILE, st);
+  } catch (e) {
+    restore(st, backup);
+    throw new Error(`could not save the card to disk: ${String(e?.message || e)}`);
+  }
+  return result;
+}
+
+function restore(st, backup) {
+  st.cards.length = 0;
+  for (const card of normState(JSON.parse(backup)).cards) st.cards.push(card);
+}
+
+function newId() {
+  return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// -------------------------------------------------------------------- clocks
+
+// Moving a card: close the segment it is leaving, open the one it enters. The
+// history is the only source of the clocks, so nothing else may be recorded.
+function enterStage(card, stage, nowIso) {
+  const open = card.stageHistory[card.stageHistory.length - 1];
+  if (open && !open.leftAt) open.leftAt = nowIso;
+  card.stageHistory.push({ stage, enteredAt: nowIso, leftAt: null });
+  card.stage = stage;
+}
+
+function spanMs(seg, now) {
+  const from = Date.parse(seg.enteredAt);
+  const to = seg.leftAt ? Date.parse(seg.leftAt) : now;
+  const ms = to - from;
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+// The clocks of one card, all of them out of stageHistory:
+//   byStage — every stage the card has been in, summed over its visits;
+//   total   — the delivery time, acceptance and accepted left out;
+//   running — is the total still growing right now (the page ticks it itself).
+export function clocks(card, now = Date.now()) {
+  const byStage = {};
+  let total = 0;
+  for (const seg of card.stageHistory) {
+    const ms = spanMs(seg, now);
+    byStage[seg.stage] = (byStage[seg.stage] ?? 0) + ms;
+    if (!OFF_THE_CLOCK.has(seg.stage)) total += ms;
+  }
+  return { total, byStage, running: !OFF_THE_CLOCK.has(card.stage) };
+}
+
+// A duration in plain words. Anything under a minute is "<1m": a board that
+// counts seconds invites staring at it.
+export function fmtDur(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return '<1m';
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+// ------------------------------------------------------------------- actions
+//
+// Every action below is written as "validate, then change": a request that fails
+// validation must leave the store exactly as it was.
+
+function need(cards, id) {
+  const card = cards.find(c => c.id === String(id ?? ''));
+  if (!card) throw new BadRequest(`there is no card "${String(id ?? '')}" in the pipeline`);
+  return card;
+}
+
+async function createCard(body) {
+  const title = str(body.title, LIMIT.title).trim();
+  if (!title) throw new BadRequest('a title is required');
+  const spec = str(body.spec, LIMIT.spec);
+  const now = new Date().toISOString();
+  const card = {
+    id: newId(),
+    title,
+    spec,
+    stage: 'spec',
+    createdAt: now,
+    stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
+    counters: { localFails: 0, ciFails: 0, acceptanceFails: 0 },
+    consecutiveFails: 0,
+    links: { ticket: '', branch: '', pr: '', artifact: '' },
+    lane: '',
+    subscription: '',
+    slot: '',
+    status: { text: '', verdict: '', at: null },
+    comments: [],
+  };
+  await commit(st => { st.cards.push(card); });
+  return card;
+}
+
+async function moveCard(body) {
+  const to = String(body.to ?? '');
+  if (!STAGE_KEYS.has(to)) {
+    throw new BadRequest(`unknown stage "${to}" — stages are ${[...STAGE_KEYS].join(', ')}`);
+  }
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    const allowed = MOVES[card.stage] ?? [];
+    if (!allowed.includes(to)) {
+      throw new BadRequest(allowed.length
+        ? `a card in "${card.stage}" can only move to ${allowed.join(', ')}`
+        : `a card in "${card.stage}" cannot be moved by hand`
+          + (card.stage === 'stuck' ? ' — use /pipeline/card/unstuck' : ''));
+    }
+    enterStage(card, to, new Date().toISOString());
+    // A stage passed is the run that did not fail: the streak starts over.
+    card.consecutiveFails = 0;
+    return card;
+  });
+}
+
+async function failCard(body) {
+  const kind = String(body.kind ?? '');
+  if (!FAIL_KINDS[kind]) {
+    throw new BadRequest(`unknown failure kind "${kind}" — use local, ci or acceptance`);
+  }
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    if (card.stage === 'accepted') throw new BadRequest('an accepted card cannot fail');
+    if (card.stage === 'stuck') throw new BadRequest('the card is already stuck — return it to development first');
+    if (!CAN_FAIL.has(card.stage)) {
+      throw new BadRequest(`a card in "${card.stage}" cannot fail — nothing has been run yet;`
+        + ` a failure is only reported from ${[...CAN_FAIL].join(', ')}`);
+    }
+    card.counters[FAIL_KINDS[kind]] += 1;
+    card.consecutiveFails += 1;
+    // Back to Development to be fixed — unless this is the third failure in a
+    // row, and then the loop itself is the problem and a human has to see it.
+    const to = card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development';
+    enterStage(card, to, new Date().toISOString());
+    return card;
+  });
+}
+
+async function unstuckCard(body) {
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    if (card.stage !== 'stuck') throw new BadRequest('the card is not stuck');
+    enterStage(card, 'development', new Date().toISOString());
+    // A human decided what to do about the loop, so the card gets a fresh run of
+    // three attempts. Otherwise the very next failure would bounce it straight
+    // back into Stuck and the decision would have bought nothing.
+    card.consecutiveFails = 0;
+    return card;
+  });
+}
+
+async function acceptCard(body) {
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    if (card.stage !== 'acceptance') {
+      throw new BadRequest(`only a card in "acceptance" can be accepted, this one is in "${card.stage}"`);
+    }
+    enterStage(card, 'accepted', new Date().toISOString());
+    card.consecutiveFails = 0;
+    return card;
+  });
+}
+
+async function commentCard(body) {
+  const author = str(body.author, LIMIT.author).trim();
+  const text = str(body.text, LIMIT.comment).trim();
+  if (!author) throw new BadRequest('an author is required');
+  if (!text) throw new BadRequest('a comment text is required');
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    card.comments.push({ author, text, at: new Date().toISOString() });
+    return card;
+  });
+}
+
+// The card's attachments: what it links to, where it is being built and who pays
+// for the run. Only the keys actually sent are touched — an omitted field keeps
+// its value, an empty string clears it.
+async function updateCard(body) {
+  if (body.links !== undefined
+      && (!body.links || typeof body.links !== 'object' || Array.isArray(body.links))) {
+    throw new BadRequest('links must be an object');
+  }
+  if (body.links) {
+    for (const key of Object.keys(body.links)) {
+      if (!LINK_KEYS.includes(key)) {
+        throw new BadRequest(`unknown link "${key}" — links are ${LINK_KEYS.join(', ')}`);
+      }
+    }
+  }
+  if (body.status !== undefined
+      && (!body.status || typeof body.status !== 'object' || Array.isArray(body.status))) {
+    throw new BadRequest('status must be an object');
+  }
+  const verdict = body.status?.verdict;
+  if (verdict !== undefined && verdict !== '' && !VERDICTS.includes(verdict)) {
+    throw new BadRequest(`unknown verdict "${verdict}" — verdicts are ${VERDICTS.join(', ')}`);
+  }
+  const spec = body.spec;
+  if (spec !== undefined && typeof spec !== 'string') throw new BadRequest('spec must be a text');
+
+  return commit(st => {
+    const card = need(st.cards, body.id);
+    if (body.links) {
+      for (const key of LINK_KEYS) {
+        if (body.links[key] !== undefined) card.links[key] = str(body.links[key], LIMIT.link).trim();
+      }
+    }
+    for (const key of ['lane', 'subscription', 'slot']) {
+      if (body[key] !== undefined) card[key] = str(body[key], LIMIT.slotish).trim();
+    }
+    if (spec !== undefined) card.spec = str(spec, LIMIT.spec);
+    if (body.status) {
+      if (body.status.text !== undefined) card.status.text = str(body.status.text, LIMIT.status).trim();
+      if (verdict !== undefined) card.status.verdict = verdict;
+      card.status.at = new Date().toISOString();
+    }
+    return card;
+  });
+}
+
+// --------------------------------------------------------------- page view
+
+// What the page polls. The clocks are NOT computed here on purpose: the page
+// gets stageHistory and ticks the numbers itself, so a card's clock moves every
+// second without a request per second.
+async function pageData() {
+  const st = await load();
+  return {
+    stages: STAGES,
+    stuckAfter: STUCK_AFTER,
+    offTheClock: [...OFF_THE_CLOCK],
+    cards: st.cards,
+  };
+}
+
+// --------------------------------------------------------------- agent view
+
+// One card in six fields — the sweep an agent does over the whole pipeline.
+// Everything long (the spec, the comments, the history) is behind ?full=1 or
+// /api/pipeline/card/<id>, exactly as on /api/board.
+function failCell(card) {
+  const c = card.counters;
+  const bits = [];
+  if (c.localFails) bits.push(`local ${c.localFails}`);
+  if (c.ciFails) bits.push(`ci ${c.ciFails}`);
+  if (c.acceptanceFails) bits.push(`acceptance ${c.acceptanceFails}`);
+  if (!bits.length) return '-';
+  const all = bits.join(' ');
+  return card.consecutiveFails ? `${all} (${card.consecutiveFails} in a row)` : all;
+}
+
+function agentRow(card, now) {
+  const cl = clocks(card, now);
+  return {
+    id: card.id,
+    title: card.title,
+    stage: card.stage,
+    clock: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
+    fails: failCell(card),
+    verdict: card.status.verdict || '-',
+  };
+}
+
+function buildAgentPipeline(cards, full, port) {
+  const now = Date.now();
+  const rows = cards.map(c => agentRow(c, now));
+  const stuck = cards.filter(c => c.stage === 'stuck');
+  const view = {
+    pipeline: `http://127.0.0.1:${port}`,
+    generated: new Date(now).toISOString(),
+    full: Boolean(full),
+    summary: {
+      cards: cards.length,
+      stuck: stuck.length,
+      waitingForAcceptance: cards.filter(c => c.stage === 'acceptance').length,
+      accepted: cards.filter(c => c.stage === 'accepted').length,
+      failures: cards.reduce((n, c) =>
+        n + c.counters.localFails + c.counters.ciFails + c.counters.acceptanceFails, 0),
+    },
+    cards: rows,
+    stuck: stuck.map(c => ({
+      id: c.id,
+      title: clipText(c.title, full),
+      fails: failCell(c),
+      waiting: fmtDur(clocks(c, now).byStage.stuck ?? 0),
+    })),
+  };
+  if (full) {
+    view.specs = cards.filter(c => c.spec.trim())
+      .map(c => ({ id: c.id, spec: clipText(c.spec, true) }));
+  }
+  return view;
+}
+
+function renderToonPipeline(v) {
+  const s = v.summary;
+  const out = [
+    `pipeline: ${v.pipeline}`,
+    `generated: ${v.generated}`,
+    `summary: cards ${s.cards}, stuck ${s.stuck}, waiting for acceptance ${s.waitingForAcceptance},`
+      + ` accepted ${s.accepted}, failures ${s.failures}`,
+    toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
+      'no cards in the pipeline'),
+    toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
+      'no card is stuck'),
+  ];
+  if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
+  const help = [];
+  if (!v.full) {
+    help.push('one card in full (spec, comments, history) — /api/pipeline/card/<id>,'
+      + ' the whole pipeline in full — ?full=1');
+  }
+  help.push('stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted;'
+    + ' stuck — three failures in a row, waiting for a human');
+  help.push('clock is the delivery time; acceptance is the owner\'s decision and does not count'
+    + ' — a card waiting there shows "(stopped)"');
+  help.push('?format=json — the same shape as plain JSON');
+  out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
+  return out.join('\n') + '\n';
+}
+
+// One card in full. This is what the agent reads before it touches a card:
+// the spec as written, every comment, and where the time went.
+function buildAgentCard(card) {
+  const now = Date.now();
+  const cl = clocks(card, now);
+  return {
+    id: card.id,
+    title: card.title,
+    stage: card.stage,
+    created: card.createdAt,
+    clockTotal: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
+    clockByStage: STAGES.filter(s => cl.byStage[s.key])
+      .map(s => `${s.key} ${fmtDur(cl.byStage[s.key])}`).join(', ') || '-',
+    fails: failCell(card),
+    consecutiveFails: card.consecutiveFails,
+    lane: card.lane || '-',
+    subscription: card.subscription || '-',
+    slot: card.slot || '-',
+    links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
+    status: card.status.text
+      ? `${card.status.text} (${card.status.verdict || 'no verdict'}, ${card.status.at})`
+      : '-',
+    spec: card.spec.trim() ? card.spec.replace(/\s+/g, ' ').trim() : '-',
+    comments: card.comments.map(c => ({ author: c.author, at: c.at, text: c.text.replace(/\s+/g, ' ').trim() })),
+    history: card.stageHistory.map(h => ({
+      stage: h.stage,
+      entered: h.enteredAt,
+      left: h.leftAt ?? '-',
+      took: fmtDur(spanMs(h, now)),
+    })),
+  };
+}
+
+function renderToonCard(c) {
+  return [
+    `card: ${c.id}`,
+    `title: ${c.title}`,
+    `stage: ${c.stage}`,
+    `created: ${c.created}`,
+    `clock: ${c.clockTotal}`,
+    `clock-by-stage: ${c.clockByStage}`,
+    `fails: ${c.fails}`,
+    `consecutive-fails: ${c.consecutiveFails}`,
+    `lane: ${c.lane}`,
+    `subscription: ${c.subscription}`,
+    `slot: ${c.slot}`,
+    `links: ${c.links}`,
+    `status: ${c.status}`,
+    `spec: ${c.spec}`,
+    toonTable('comments', c.comments, ['author', 'at', 'text'], 'nobody has commented'),
+    toonTable('history', c.history, ['stage', 'entered', 'left', 'took'], 'no history'),
+  ].join('\n') + '\n';
+}
+
+// --------------------------------------------------------------- routing
+
+const ACTIONS = {
+  create: createCard,
+  move: moveCard,
+  fail: failCard,
+  unstuck: unstuckCard,
+  accept: acceptCard,
+  comment: commentCard,
+  update: updateCard,
+};
+
+// Returns true when the request belonged to the pipeline and has been answered.
+// Anything not matched here falls through to the rest of the board untouched.
+export async function handlePipeline(req, res, url, port) {
+  // What the page polls while the Pipeline view is on.
+  if (req.method === 'GET' && url.pathname === '/pipeline/data') {
+    send(res, 200, JSON.stringify(await pageData()));
+    return true;
+  }
+
+  // The pipeline for an agent: no page, no pictures, short text.
+  if (req.method === 'GET' && url.pathname === '/api/pipeline') {
+    const p = agentParams(url, true);
+    if (p.error) { sendText(res, 400, p.error); return true; }
+    const st = await load();
+    const view = buildAgentPipeline(st.cards, p.full, port);
+    if (p.format === 'json') send(res, 200, JSON.stringify(view, null, 2));
+    else sendText(res, 200, renderToonPipeline(view));
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname.startsWith('/api/pipeline/card/')) {
+    const p = agentParams(url, false);
+    if (p.error) { sendText(res, 400, p.error); return true; }
+    let wanted;
+    try { wanted = decodeURIComponent(url.pathname.slice('/api/pipeline/card/'.length)); }
+    catch { wanted = ''; }
+    if (!wanted.trim()) {
+      sendText(res, 400, 'error: the card id in the path is empty\n'
+        + 'help: /api/pipeline/card/<id from the id cell of the cards section>');
+      return true;
+    }
+    const st = await load();
+    const card = st.cards.find(c => c.id === wanted.trim());
+    if (!card) {
+      const list = st.cards.length ? st.cards.map(c => c.id).join(', ') : '(the pipeline is empty)';
+      if (p.format === 'json') {
+        send(res, 404, JSON.stringify(
+          { error: `there is no card "${wanted}" in the pipeline`, cards: st.cards.map(c => c.id) }, null, 2));
+      } else {
+        sendText(res, 404, `error: there is no card "${wanted}" in the pipeline\n`
+          + `help: in the pipeline right now: ${list}`);
+      }
+      return true;
+    }
+    const view = buildAgentCard(card);
+    if (p.format === 'json') send(res, 200, JSON.stringify(view, null, 2));
+    else sendText(res, 200, renderToonCard(view));
+    return true;
+  }
+
+  // Every mutation: /pipeline/card/<action>, a JSON body, an English 400 when
+  // the body does not say what it must.
+  if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')) {
+    const action = url.pathname.slice('/pipeline/card/'.length);
+    const fn = ACTIONS[action];
+    if (!fn) {
+      send(res, 404, JSON.stringify({
+        error: `no such pipeline action "${action}"`,
+        actions: Object.keys(ACTIONS),
+      }));
+      return true;
+    }
+    const body = await readBody(req);
+    if (action !== 'create' && !String(body.id ?? '').trim()) {
+      send(res, 400, JSON.stringify({ error: 'a card id is required' }));
+      return true;
+    }
+    const card = await fn(body);
+    send(res, 200, JSON.stringify({ ok: true, card }));
+    return true;
+  }
+
+  return false;
+}

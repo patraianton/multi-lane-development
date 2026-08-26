@@ -30,8 +30,11 @@
   * { box-sizing: border-box; }
   html, body { width: 100%; height: 100%; margin: 0; }
   body {
-    display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    /* A column of fixed-height strips with one scrolling area at the bottom.
+       Which scrolling area that is depends on the view: the windows board or
+       the pipeline. Both are the last child in their view and both grow. */
+    display: flex;
+    flex-direction: column;
     background: var(--bg);
     color: var(--ink);
     font-family: var(--ui);
@@ -145,6 +148,7 @@
 
   /* ---- columns ---- */
   .board { display: grid; gap: 8px; padding: 8px 12px 16px; overflow: auto; align-items: start;
+           flex: 1 1 auto; min-height: 0;
            grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .col { min-width: 0; overflow-wrap: anywhere; }
   .col > h2 {
@@ -213,20 +217,113 @@
   .err { margin: 6px 12px; padding: 6px 9px; border: 1px solid #6a2224; background: #1d0f11; color: #ffb3b4;
          font-family: var(--mono); font-size: 11px; }
 
+  /* ---- pipeline view ----
+     The same design language as the windows view: the same panels, the same
+     lines, the same monospace details. What differs is what a column means —
+     here it is a stage of the road, not a state of a live window. */
+  .pipeline { display: none; flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px 16px; }
+  body.view-pipeline .pipeline { display: block; }
+  body.view-pipeline .board,
+  body.view-pipeline .lanes-strip,
+  body.view-pipeline #handbar,
+  body.view-pipeline #counts,
+  body.view-pipeline #add-toggle { display: none; }
+  body:not(.view-pipeline) #pipebar,
+  body:not(.view-pipeline) #pipe-counts,
+  body:not(.view-pipeline) #pipe-add-toggle { display: none; }
+
+  .stuck-zone {
+    display: none; margin-bottom: 10px; padding: 6px 8px 8px;
+    border: 1px solid #6a2224; border-radius: 5px; background: #160c0e;
+  }
+  .stuck-zone.on { display: block; }
+  .stuck-zone > h2 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--blocked);
+  }
+  .stuck-zone .lane-row { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+  .pboard { display: grid; gap: 8px; align-items: start;
+            grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .pcol { min-width: 0; overflow-wrap: anywhere; }
+  .pcol > h2 {
+    margin: 0 0 6px; padding: 4px 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-mid); border-bottom: 1px solid var(--line);
+  }
+  .pcol > h2 span { color: var(--ink-dim); font-family: var(--mono); }
+  .pcol.acceptance > h2 { color: var(--done); border-color: #6a5122; }
+  .pcol.accepted > h2 { color: var(--working); border-color: #1f6a52; }
+
+  .pcard {
+    border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: 4px;
+    background: var(--panel); margin-bottom: 8px; padding: 7px 9px; cursor: pointer;
+  }
+  .pcard:hover { background: var(--panel-hi); border-color: var(--line-hot); }
+  .pcard.st-acceptance { border-left-color: var(--done); }
+  .pcard.st-accepted { border-left-color: var(--working); }
+  .pcard.st-stuck { border-left-color: var(--blocked); }
+  .pcard .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  .pcard .nm { font-weight: 700; font-size: 13px; }
+  /* The clock ticks in the browser: the board sends the stage history, the page
+     counts. A card's clock must move without a request per second. */
+  .pcard .clk { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--focus); }
+  .pcard .clk.stopped { color: var(--ink-dim); }
+  .pcard .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
+  .pcard .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
+  .pcard .spec {
+    margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
+    background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
+    white-space: pre-wrap;
+  }
+  .pcard .open-only { display: none; }
+  .pcard.open { cursor: default; }
+  .pcard.open .open-only { display: block; }
+  .pcard h3 {
+    margin: 8px 0 3px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .pcard .cmt {
+    margin-top: 4px; padding: 3px 6px; border-left: 2px solid var(--line);
+    background: var(--panel-low); font-size: 11.5px; color: var(--ink-mid); white-space: pre-wrap;
+  }
+  .pcard .cmt b { color: var(--ink); font-weight: 600; }
+  .pcard .cmt .when { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+  .pcard .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .pcard .acts .hbtn.go { color: var(--working); border-color: #1f6a52; }
+  .pcard .acts .hbtn.bad { color: var(--blocked); border-color: #6a2224; }
+  .pcard form { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .pcard input, .pcard select {
+    font-family: var(--ui); font-size: 11.5px; padding: 2px 5px; min-width: 0;
+    background: var(--panel-low); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 3px;
+  }
+  .pcard input:focus, .pcard select:focus { outline: none; border-color: var(--focus); }
+  .pcard input.author { flex: 0 0 84px; }
+  .pcard input.text { flex: 1 1 120px; }
+  .pcard .cnt { font-family: var(--mono); font-size: 10.5px; }
+  .pcard .cnt b { color: var(--blocked); }
+
   /* Onboarding replaces the board itself, so the daily controls are out of the
-     way until a project is picked. */
-  body.onboarding .num,
-  body.onboarding .hbtn,
-  body.onboarding .handbar,
-  body.onboarding .lanes-strip,
-  body.onboarding .board { display: none; }
+     way until a project is picked. The pipeline is not a view of herdr windows
+     and needs no project, so it stays reachable. */
+  body.onboarding:not(.view-pipeline) .num,
+  body.onboarding:not(.view-pipeline) .hbtn,
+  body.onboarding:not(.view-pipeline) .handbar,
+  body.onboarding:not(.view-pipeline) .lanes-strip,
+  body.onboarding:not(.view-pipeline) .board { display: none; }
 </style>
 </head>
 <body>
 <header>
   <h1>Watchtower <span class="proj" id="project"></span></h1>
   <div class="num" id="counts">loading…</div>
+  <div class="num" id="pipe-counts"></div>
   <span class="spacer"></span>
+  <!-- Which view is on. The choice is remembered in this browser, so a refresh
+       comes back to the view you were working in. -->
+  <button class="hbtn" id="view-windows" title="live herdr windows">windows</button>
+  <button class="hbtn" id="view-pipeline" title="pipeline cards: spec → acceptance">pipeline</button>
+  <button class="hbtn plus" id="pipe-add-toggle" title="add a pipeline card">+ Card</button>
   <button class="hbtn plus" id="add-toggle" title="add a card by hand">+</button>
   <button class="hbtn gear" id="settings-toggle" title="settings: project and hidden cards">⚙</button>
 </header>
@@ -241,8 +338,24 @@
     <span class="note" id="add-note"></span>
   </form>
 </div>
+<!-- "+ Card": a card is born at the Spec stage with a title and, if you already
+     have one, the spec text. Everything else is filled in as it moves. -->
+<div class="handbar" id="pipebar">
+  <form id="pipe-form" autocomplete="off">
+    <input class="t" id="pipe-title" placeholder="title (required)" maxlength="200">
+    <input class="txt" id="pipe-spec" placeholder="spec (optional)" maxlength="20000">
+    <button class="hbtn" type="submit">add card</button>
+    <span class="note" id="pipe-note"></span>
+  </form>
+</div>
 <div class="lanes-strip" id="strip"></div>
 <div class="board" id="board"></div>
+<div class="pipeline" id="pipeline">
+  <!-- Stuck is not a column of the road: it is a card that failed three times in
+       a row and now waits for a human. It sits above everything, in red. -->
+  <div class="stuck-zone" id="stuck-zone"></div>
+  <div class="pboard" id="pboard"></div>
+</div>
 
 <!-- First run: pick the project this board watches. -->
 <div class="sheet" id="onboarding">
@@ -432,6 +545,12 @@ function render(d) {
   $('project').textContent = d.project ?? '';
   fillColumns(d.columns);
 
+  // The pipeline is the board's own state and needs no herdr project, so the
+  // "pick a project" screen must not stand in front of it.
+  if (d.needsProject && view === 'pipeline') {
+    $('onboarding').classList.remove('open');
+    return;
+  }
   if (d.needsProject) {
     $('onboarding').classList.add('open');
     $('settings').classList.remove('open');
@@ -594,6 +713,361 @@ $('add-form').onsubmit = async (ev) => {
   setTimeout(() => { $('add-note').textContent = ''; }, 2000);
   poll();
 };
+
+// ------------------------------------------------------- the pipeline view
+//
+// A Card here is not a Window: it lives in the board's own state and moves
+// through stages. The page draws it, ticks its clocks and sends every change
+// to a validated endpoint — it decides nothing itself.
+
+// The road, and the one move allowed off each stage. The server holds the same
+// map and is the one that enforces it; this copy only decides which button to
+// draw, so a wrong click is impossible rather than merely refused.
+const NEXT_STAGE = {
+  spec: 'grilled',
+  grilled: 'development',
+  development: 'local_check',
+  local_check: 'ci_pr',
+  ci_pr: 'acceptance',
+  acceptance: 'accepted',
+};
+// The stages a failure can be reported from — the ones where work is actually
+// run. The same list as in pipeline.mjs, which is what refuses the rest.
+const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'acceptance'];
+// Acceptance is the owner's decision and Accepted is the end of the road:
+// neither adds to the card's delivery clock.
+const OFF_THE_CLOCK = new Set(['acceptance', 'accepted']);
+const STAGE_TITLE = {
+  spec: 'Spec', grilled: 'Grilled', development: 'Development',
+  local_check: 'Local check', ci_pr: 'CI/PR', acceptance: 'Acceptance',
+  accepted: 'Accepted', stuck: 'Stuck',
+};
+const ROAD = ['spec', 'grilled', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
+const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot'];
+const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
+
+let view = 'windows';
+try { if (localStorage.getItem('watchtower-view') === 'pipeline') view = 'pipeline'; } catch (e) {}
+
+let pipeSeen = '';
+let pipeTimer = null;
+const openCards = new Set();
+
+// A duration in plain words — the same words the agent endpoint uses.
+function fmtDur(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return '<1m';
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+
+// A clock is drawn as "what has already been counted" plus "since when it is
+// still running". Ticking is then a subtraction the page does once a second,
+// with no request behind it.
+function clockSpan(cls, baseMs, fromMs) {
+  return '<span class="' + cls + (fromMs ? '' : ' stopped') + '"'
+    + ' data-base="' + Math.round(baseMs) + '"'
+    + ' data-from="' + (fromMs || '') + '">' + esc(fmtDur(baseMs + (fromMs ? Date.now() - fromMs : 0)))
+    + '</span>';
+}
+
+function tickClocks() {
+  const now = Date.now();
+  for (const el of document.querySelectorAll('#pipeline .clk')) {
+    const base = Number(el.dataset.base) || 0;
+    const from = Number(el.dataset.from) || 0;
+    el.textContent = fmtDur(base + (from ? now - from : 0));
+  }
+}
+setInterval(tickClocks, 1000);
+
+// Every clock of one card, all of them out of stageHistory: what is closed is
+// added up, what is still open is handed to the ticker as a starting point.
+function calcClocks(c) {
+  const byStage = {};
+  let total = 0;
+  let totalFrom = 0;
+  for (const h of c.stageHistory ?? []) {
+    const from = Date.parse(h.enteredAt);
+    if (!Number.isFinite(from)) continue;
+    const slot = byStage[h.stage] ?? (byStage[h.stage] = { base: 0, from: 0 });
+    if (h.leftAt) {
+      const ms = Math.max(0, Date.parse(h.leftAt) - from);
+      slot.base += ms;
+      if (!OFF_THE_CLOCK.has(h.stage)) total += ms;
+    } else {
+      // The stage the card is in right now. Its own clock always runs; the
+      // card's total runs only if this stage counts at all.
+      slot.from = from;
+      if (!OFF_THE_CLOCK.has(h.stage)) totalFrom = from;
+    }
+  }
+  return { total, totalFrom, byStage };
+}
+
+function failLine(c) {
+  const n = c.counters ?? {};
+  const bits = [];
+  if (n.localFails) bits.push('local <b>' + n.localFails + '</b>');
+  if (n.ciFails) bits.push('CI <b>' + n.ciFails + '</b>');
+  if (n.acceptanceFails) bits.push('acceptance <b>' + n.acceptanceFails + '</b>');
+  if (!bits.length) return 'no failures';
+  if (c.consecutiveFails) bits.push('<b>' + c.consecutiveFails + '</b> in a row');
+  return bits.join(' · ');
+}
+
+function actBtn(id, action, body, label, cls) {
+  return '<button class="hbtn ' + (cls || '') + '" data-act="' + esc(action) + '"'
+    + ' data-id="' + esc(id) + '" data-body="' + esc(JSON.stringify(body)) + '">' + esc(label) + '</button>';
+}
+
+function pcard(c) {
+  const cl = calcClocks(c);
+  const open = openCards.has(c.id);
+  const bits = [];
+
+  bits.push('<div class="top"><span class="nm">' + esc(c.title) + '</span>'
+    + clockSpan('clk', cl.total, cl.totalFrom) + '</div>');
+  bits.push('<div class="row mono">' + esc(STAGE_TITLE[c.stage] ?? c.stage)
+    + ' · ' + esc(c.id) + '</div>');
+  bits.push('<div class="row cnt">' + failLine(c) + '</div>');
+  if (c.status && c.status.text) {
+    bits.push('<div class="row">' + esc(c.status.text)
+      + (c.status.verdict ? ' <span class="mono">(' + esc(c.status.verdict) + ')</span>' : '') + '</div>');
+  }
+
+  const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
+    .map(k => k + ' ' + (LINK_FIELDS.includes(k) ? c.links[k] : c[k]));
+  if (attached.length) bits.push('<div class="row mono">' + esc(attached.join(' · ')) + '</div>');
+
+  // ---- everything below is shown only when the card is opened
+  const inner = [];
+  if (c.spec && c.spec.trim()) {
+    inner.push('<h3>spec</h3><div class="spec">' + esc(c.spec) + '</div>');
+  }
+
+  const stages = ROAD.concat(['stuck']).filter(s => cl.byStage[s]);
+  inner.push('<h3>time per stage</h3><div class="row mono">'
+    + stages.map(s => esc(STAGE_TITLE[s]) + ' '
+        + clockSpan('clk', cl.byStage[s].base, cl.byStage[s].from)).join(' · ')
+    + (OFF_THE_CLOCK.has(c.stage)
+      ? ' <span style="color:var(--done)">— the total clock is stopped here</span>' : '')
+    + '</div>');
+
+  inner.push('<h3>comments</h3>');
+  inner.push((c.comments ?? []).length
+    ? (c.comments.map(m => '<div class="cmt"><b>' + esc(m.author) + '</b> '
+        + '<span class="when">' + esc(ago(m.at)) + '</span><br>' + esc(m.text) + '</div>').join(''))
+    : '<div class="row mono">nobody has commented</div>');
+  inner.push('<form data-comment="' + esc(c.id) + '">'
+    + '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">'
+    + '<input class="text" name="text" data-k="' + esc(c.id) + '/text" placeholder="comment" maxlength="4000">'
+    + '<button class="hbtn" type="submit">say</button></form>');
+
+  inner.push('<h3>attach</h3>');
+  inner.push('<form data-attach="' + esc(c.id) + '">'
+    + '<select name="field" data-k="' + esc(c.id) + '/field">'
+    + ATTACH_FIELDS.map(f => '<option value="' + f + '">' + f + '</option>').join('')
+    + '</select>'
+    + '<input class="text" name="value" data-k="' + esc(c.id) + '/value"'
+    + ' placeholder="value (empty clears it)" maxlength="400">'
+    + '<button class="hbtn" type="submit">set</button></form>');
+
+  const acts = [];
+  if (c.stage === 'stuck') {
+    acts.push(actBtn(c.id, 'unstuck', {}, 'return to development', 'go'));
+  } else if (c.stage === 'acceptance') {
+    acts.push(actBtn(c.id, 'accept', {}, 'accept', 'go'));
+  } else if (NEXT_STAGE[c.stage]) {
+    acts.push(actBtn(c.id, 'move', { to: NEXT_STAGE[c.stage] },
+      '→ ' + STAGE_TITLE[NEXT_STAGE[c.stage]], 'go'));
+  }
+  // Failure buttons only where something is actually run: a card in spec or
+  // grilled has nothing to fail yet, and the server refuses it anyway.
+  if (CAN_FAIL.indexOf(c.stage) >= 0) {
+    for (const kind of ['local', 'ci', 'acceptance']) {
+      acts.push(actBtn(c.id, 'fail', { kind }, 'fail: ' + kind, 'bad'));
+    }
+  }
+  inner.push('<div class="acts">' + acts.join('') + '</div>');
+
+  bits.push('<div class="open-only">' + inner.join('') + '</div>');
+
+  return '<div class="pcard st-' + esc(c.stage) + (open ? ' open' : '') + '" data-card="' + esc(c.id) + '">'
+    + bits.join('') + '</div>';
+}
+
+// A redraw replaces the whole pipeline, and half-typed text must survive it:
+// the board refreshes every three seconds and a comment takes longer to write
+// than that. Every field carries a key of its own (card id + field name), so
+// what was typed — and where the cursor sat — is put back after the redraw.
+function snapshotInputs() {
+  const values = new Map();
+  for (const el of document.querySelectorAll('#pipeline [data-k]')) {
+    if (el.value) values.set(el.dataset.k, el.value);
+  }
+  const active = document.activeElement;
+  const focus = active && active.dataset && active.dataset.k
+    && active.closest && active.closest('#pipeline') ? active.dataset.k : null;
+  return { values, focus };
+}
+
+function restoreInputs(snap) {
+  for (const el of document.querySelectorAll('#pipeline [data-k]')) {
+    const v = snap.values.get(el.dataset.k);
+    if (v !== undefined) el.value = v;
+  }
+  if (!snap.focus) return;
+  for (const el of document.querySelectorAll('#pipeline [data-k]')) {
+    if (el.dataset.k !== snap.focus) continue;
+    el.focus();
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {}
+    return;
+  }
+}
+
+function renderPipeline(d) {
+  const snap = snapshotInputs();
+  const cards = d.cards ?? [];
+  const stuck = cards.filter(c => c.stage === 'stuck');
+
+  // The header counts what this view is about: cards on the road, cards that
+  // wait for the owner, and cards that are looping.
+  const moving = cards.filter(c => !['stuck', 'accepted', 'acceptance'].includes(c.stage)).length;
+  $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
+    + cards.filter(c => c.stage === 'acceptance').length + '</b> waiting for you · <b>'
+    + stuck.length + '</b> stuck · <b>'
+    + cards.filter(c => c.stage === 'accepted').length + '</b> accepted';
+
+  const zone = $('stuck-zone');
+  zone.classList.toggle('on', stuck.length > 0);
+  zone.innerHTML = stuck.length
+    ? '<h2>Stuck — ' + stuck.length + ' card' + (stuck.length === 1 ? '' : 's')
+      + ' failed ' + d.stuckAfter + ' times in a row and waits for you</h2>'
+      + '<div class="lane-row">' + stuck.map(pcard).join('') + '</div>'
+    : '';
+
+  $('pboard').innerHTML = ROAD.map(key => {
+    const list = cards.filter(c => c.stage === key);
+    return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
+      + ' <span>' + list.length + '</span></h2>'
+      + (list.length ? list.map(pcard).join('') : '<div class="empty">empty</div>')
+      + '</div>';
+  }).join('');
+
+  wirePipeline();
+  restoreInputs(snap);
+}
+
+function wirePipeline() {
+  for (const el of document.querySelectorAll('#pipeline .pcard')) {
+    el.onclick = (ev) => {
+      // A click on a control is that control's business, not a card toggle.
+      if (ev.target.closest('button, input, select, a, form')) return;
+      const id = el.dataset.card;
+      if (openCards.has(id)) openCards.delete(id); else openCards.add(id);
+      el.classList.toggle('open', openCards.has(id));
+    };
+  }
+  for (const b of document.querySelectorAll('#pipeline [data-act]')) {
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      const body = Object.assign({ id: b.dataset.id }, JSON.parse(b.dataset.body));
+      const r = await post('/pipeline/card/' + b.dataset.act, body);
+      if (r && r.error) { showError('the card did not move: ' + r.error); return; }
+      pipePoll();
+    };
+  }
+  for (const f of document.querySelectorAll('#pipeline form[data-comment]')) {
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const authorEl = f.querySelector('[name=author]');
+      const textEl = f.querySelector('[name=text]');
+      const author = authorEl.value.trim();
+      const text = textEl.value.trim();
+      if (!author || !text) { showError('a comment needs an author and a text'); return; }
+      const r = await post('/pipeline/card/comment', { id: f.dataset.comment, author, text });
+      if (r && r.error) { showError('the comment was not saved: ' + r.error); return; }
+      textEl.value = '';
+      pipePoll();
+    };
+  }
+  for (const f of document.querySelectorAll('#pipeline form[data-attach]')) {
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const valueEl = f.querySelector('[name=value]');
+      const field = f.querySelector('[name=field]').value;
+      const value = valueEl.value.trim();
+      const body = { id: f.dataset.attach };
+      if (LINK_FIELDS.includes(field)) body.links = { [field]: value };
+      else body[field] = value;
+      const r = await post('/pipeline/card/update', body);
+      if (r && r.error) { showError('the card was not updated: ' + r.error); return; }
+      valueEl.value = '';
+      pipePoll();
+    };
+  }
+}
+
+async function pipePoll() {
+  if (pipeTimer) { clearTimeout(pipeTimer); pipeTimer = null; }
+  if (view !== 'pipeline') return;
+  try {
+    const r = await fetch('/pipeline/data', { cache: 'no-store' });
+    const d = await r.json();
+    const seen = JSON.stringify(d);
+    // An unchanged pipeline is not redrawn at all: the cheapest way to leave
+    // what the owner is doing alone. A changed one is redrawn with the typed
+    // text and the cursor carried across.
+    if (seen !== pipeSeen) {
+      pipeSeen = seen;
+      renderPipeline(d);
+    }
+    tickClocks();
+  } catch (e) {
+    showError('the pipeline did not answer: ' + (e && e.message ? e.message : e));
+  } finally {
+    if (view === 'pipeline') pipeTimer = setTimeout(pipePoll, 3000);
+  }
+}
+
+function setView(next) {
+  view = next === 'pipeline' ? 'pipeline' : 'windows';
+  try { localStorage.setItem('watchtower-view', view); } catch (e) {}
+  document.body.classList.toggle('view-pipeline', view === 'pipeline');
+  $('view-windows').classList.toggle('on', view === 'windows');
+  $('view-pipeline').classList.toggle('on', view === 'pipeline');
+  if (view === 'pipeline') pipePoll();
+  else if (pipeTimer) { clearTimeout(pipeTimer); pipeTimer = null; }
+}
+
+$('view-windows').onclick = () => setView('windows');
+$('view-pipeline').onclick = () => setView('pipeline');
+
+$('pipe-add-toggle').onclick = () => {
+  const open = $('pipebar').classList.toggle('open');
+  $('pipe-add-toggle').classList.toggle('on', open);
+  if (open) $('pipe-title').focus();
+};
+
+$('pipe-form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const title = $('pipe-title').value.trim();
+  if (!title) { $('pipe-note').textContent = 'a title is required'; $('pipe-title').focus(); return; }
+  $('pipe-note').textContent = '';
+  const r = await post('/pipeline/card/create', { title, spec: $('pipe-spec').value });
+  if (r && r.error) { $('pipe-note').textContent = r.error; return; }
+  $('pipe-title').value = '';
+  $('pipe-spec').value = '';
+  $('pipe-note').textContent = 'added to Spec';
+  setTimeout(() => { $('pipe-note').textContent = ''; }, 2000);
+  pipePoll();
+};
+
+setView(view);
 
 let failures = 0;
 let pollTimer = null;

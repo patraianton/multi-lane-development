@@ -1,0 +1,16 @@
+[Unit]
+Description=Watchtower board
+Documentation=file:///opt/watchtower/docs/DEPLOY.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/watchtower
+ExecStart=/usr/bin/env node bin/watchtower.mjs
+Restart=always
+RestartSec=3
+EnvironmentFile=-/etc/watchtower.env
+SyslogIdentifier=watchtower
+
+[Install]
+WantedBy=multi-user.target

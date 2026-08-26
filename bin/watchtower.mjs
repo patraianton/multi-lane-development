@@ -18,9 +18,15 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, rename, rm, mkdir, stat, readdir, open } from 'node:fs/promises';
+import { readFile, mkdir, stat, readdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
+import {
+  BadRequest, send, sendText, readBody,
+  clipText, toonTable, agentParams,
+} from './serve.mjs';
+import { configurePipeline, handlePipeline } from './pipeline.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
@@ -116,39 +122,8 @@ function trimPath(p) {
   return s;
 }
 
-async function readJsonSoft(file, fallback) {
-  try { return JSON.parse(await readFile(file, 'utf8')); }
-  catch { return fallback; }
-}
-
-// Writing a state file: to a temporary file first, then a rename. Two details
-// already paid for:
-//   1. the temporary name is unique — otherwise two concurrent writes share one
-//      <file>.tmp and the second one renames a half-written stub;
-//   2. writes of one file are queued — renames never overtake each other and
-//      never trip over an already renamed temporary file.
-const writeQueues = new Map();
-
-async function writeJsonAtomic(file, obj) {
-  const text = JSON.stringify(obj, null, 2);
-  const prev = writeQueues.get(file) ?? Promise.resolve();
-  const run = prev.then(async () => {
-    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-    try {
-      await writeFile(tmp, text);
-      await rename(tmp, file);
-    } catch (e) {
-      await rm(tmp, { force: true }).catch(() => {});
-      throw e;
-    }
-  });
-  // The queue holds a version that never rejects: one failed write must not
-  // cancel the next one.
-  const tail = run.catch(() => {});
-  writeQueues.set(file, tail);
-  tail.then(() => { if (writeQueues.get(file) === tail) writeQueues.delete(file); });
-  return run;
-}
+// State files are read and written by bin/state-file.mjs: one atomic write queue
+// shared with the pipeline, so two parts of the board never race over a file.
 
 // Running an external command. Never throws — returns text or null.
 function runText(bin, args, timeout = 60000) {
@@ -1297,24 +1272,15 @@ async function collect() {
 // and separate sections for long texts (the window's last words, the question
 // from an umbrella) — TOON-flavoured: the same data, noticeably shorter than JSON.
 
-// How many characters of a long text are shown without ?full=1.
-const AGENT_TEXT_LIMIT = 200;
+// How many characters of a long text are shown without ?full=1 lives in
+// bin/serve.mjs (AGENT_TEXT_LIMIT) together with the clipping itself: the
+// pipeline endpoints clip by the same rule.
 
 // The window's last words are the longest part of the answer and the most
 // reference-like: on a sweep the agent only needs a hint of what the window was
 // talking about. So the list keeps a short line and the whole text is fetched on
 // demand — /api/board/card/<name> for one window, ?full=1 for the whole board.
 const AGENT_WORDS_LIMIT = 80;
-
-// Clipping with the size marked: the agent sees how much it did NOT read and
-// knows the rest is behind ?full=1. Dropping the tail silently is not allowed —
-// the agent would take it for the whole text.
-function clipText(text, full, limit = AGENT_TEXT_LIMIT) {
-  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
-  if (!t) return '';
-  if (full || t.length <= limit) return t;
-  return `${t.slice(0, limit)}… (clipped, ${t.length} chars total)`;
-}
 
 const CI_WORD = { green: 'green', red: 'red', run: 'running', none: 'no-checks' };
 
@@ -1450,27 +1416,7 @@ function buildAgentCard(payload, wanted) {
   };
 }
 
-// ---- TOON-flavoured output
-
-// A cell value. Quotes are needed where parsing would otherwise break: comma,
-// colon, quote, newline, edges made of spaces. There are no empty cells — where
-// there is nothing to say, a "-" stands.
-function toonValue(v) {
-  const s = String(v ?? '');
-  if (s === '') return '""';
-  if (/[",:\n]/.test(s) || s !== s.trim()) return `"${s.replaceAll('"', '""')}"`;
-  return s;
-}
-
-// A table: a header with the row count and the fields, then indented rows.
-// An empty table is not emptiness but an explicit zero in words.
-function toonTable(name, rows, fields, emptyText) {
-  if (!rows.length) return `${name}: 0 — ${emptyText}`;
-  return [
-    `${name}[${rows.length}]{${fields.join(',')}}:`,
-    ...rows.map(r => '  ' + fields.map(f => toonValue(r[f])).join(',')),
-  ].join('\n');
-}
+// ---- TOON-flavoured output (the cell and table writers live in bin/serve.mjs)
 
 function renderToonBoard(v) {
   const s = v.summary;
@@ -1523,72 +1469,11 @@ function renderToonCard(c) {
   ].join('\n') + '\n';
 }
 
-// Parsing the parameters of the agent endpoints. The rules for format and full
-// are the same: the value must be spelled out. An empty value (?format= or
-// ?full=) is a typo, not "on", and a repeated parameter
-// (?format=toon&format=json) is one too: silently taking the first and losing
-// the second means answering something other than what was asked.
-function agentParams(url, allowFull) {
-  const allowed = allowFull ? ['format', 'full'] : ['format'];
-  for (const key of url.searchParams.keys()) {
-    if (!allowed.includes(key)) {
-      return { error: `error: unknown parameter "${key}"\n`
-        + `help: allowed are ${allowFull ? 'format=toon|json and full=1' : 'format=toon|json only'}` };
-    }
-    if (url.searchParams.getAll(key).length > 1) {
-      return { error: `error: parameter "${key}" given more than once\n`
-        + 'help: leave one value — the board does not guess which of them you meant' };
-    }
-  }
-  const format = url.searchParams.get('format') ?? 'toon';
-  if (format !== 'toon' && format !== 'json') {
-    return { error: `error: unknown format "${format}"\n`
-      + 'help: format=toon (default, short text) or format=json' };
-  }
-  const fullRaw = url.searchParams.get('full');
-  if (fullRaw !== null && !['0', '1', 'true', 'false'].includes(fullRaw)) {
-    return { error: `error: full has an unclear value "${fullRaw}"\n`
-      + 'help: full=1 — texts in full, full=0 (or no parameter) — clipped' };
-  }
-  return { format, full: fullRaw !== null && fullRaw !== '0' && fullRaw !== 'false' };
-}
-
 // -------------------------------------------------------------- server
-
-function send(res, code, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
-  res.end(body);
-}
-
-// An answer to an agent is plain text, both on success and on failure. It reads
-// an error the same way it reads data, so the error is short and carries a hint
-// about what to do next.
-function sendText(res, code, body) {
-  send(res, code, body.endsWith('\n') ? body : body + '\n', 'text/plain; charset=utf-8');
-}
-
-// A bad request from the page is not a board failure: answer 400 with our own
-// text rather than the JSON parser's complaint, which the page would show to the
-// owner right next to the button.
-class BadRequest extends Error {}
-
-// The body of a POST request. The board accepts no more than a hundred kilobytes:
-// there is only a card title and a couple of lines of text in there anyway.
-async function readBody(req) {
-  let body = '';
-  for await (const chunk of req) {
-    body += chunk;
-    if (body.length > 100000) throw new BadRequest('request too long');
-  }
-  if (!body) return {};
-  let parsed;
-  try { parsed = JSON.parse(body); }
-  catch { throw new BadRequest('bad request: body cannot be parsed'); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new BadRequest('bad request: an object was expected');
-  }
-  return parsed;
-}
+//
+// send, sendText, readBody, BadRequest and agentParams live in bin/serve.mjs:
+// the pipeline endpoints answer in the same shape and reject a bad parameter
+// with the same words.
 
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
 // A project name comes from the herdr snapshot: a folder name, so no control
@@ -1614,6 +1499,10 @@ async function saveSelection(patch) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    // The pipeline owns everything under /pipeline/… and /api/pipeline. It is
+    // asked first and answers only its own paths, so the windows view below is
+    // reached exactly as before.
+    if (await handlePipeline(req, res, url, PORT)) return;
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -1777,6 +1666,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 await mkdir(STATE_DIR, { recursive: true });
+configurePipeline(STATE_DIR);
 await cfgSource.tick();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
