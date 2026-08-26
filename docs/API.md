@@ -269,12 +269,123 @@ the reason in plain words; the store is left exactly as it was.
 | `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
-| `comment` | `author`, `text` (both required) | one flat comment on the card |
+| `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
 
-There is no authentication yet on the windows and pipeline endpoints — the
-board listens on `127.0.0.1` only. Sign-in arrives in a later wave. The
-probe endpoints below use a shared secret instead.
+When `auth.founders` is empty or missing, the windows and pipeline endpoints
+stay open — the board listens on `127.0.0.1` only, as before. When the list
+is set, those paths need a founder session, a localhost-as-owner request, or
+(for agents) `apiToken`. See **Auth** below. The probe endpoints use
+`probeToken`, as they always did.
+
+## Auth
+
+Founder sign-in is off until `auth.founders` is a non-empty list in
+`state/autopase-board.json`. With no `auth` block the board is unchanged: every
+path that was open stays open.
+
+```json
+{
+  "auth": {
+    "founders": [
+      { "email": "owner@example.com", "name": "Ada", "owner": true },
+      { "email": "partner@example.com", "name": "Bob", "owner": false }
+    ],
+    "sessionDays": 30,
+    "allowLocalhost": false,
+    "trustProxy": true,
+    "publicUrl": "https://board.example.com",
+    "cookieSecure": true
+  },
+  "apiToken": "a long random secret for agents",
+  "probeToken": "the probe's shared secret"
+}
+```
+
+| field | default | meaning |
+| --- | --- | --- |
+| `auth.founders` | empty | allow-list. Email match is case-insensitive. `owner: true` marks the account localhost-as-owner uses |
+| `auth.sessionDays` | `30` | how long a `wt_session` cookie lasts |
+| `auth.allowLocalhost` | `false` | when `true`, a request from `127.0.0.1` / `::1` with **no** forwarding headers counts as the first `owner: true` founder. Read the warning below before turning it on |
+| `auth.trustProxy` | `false` | when `true` **and** the connection arrives over loopback, `X-Forwarded-For` / `X-Real-IP` name the client for rate limiting and `X-Forwarded-Proto` may set the login-link scheme. Otherwise those headers are ignored |
+| `auth.publicUrl` | empty | absolute `http(s)://host[:port]` base for login links. Set it: without it the `Host` header is used only when it names loopback, and everything else falls back to `http://127.0.0.1:<port>` |
+| `auth.cookieSecure` | `true` | the session cookie carries `Secure`. Browsers still accept it on `http://localhost`; set `false` only for a plain-HTTP deployment |
+| `apiToken` | empty | Bearer token accepted on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when sign-in is on |
+| `probeToken` | empty | unchanged: Bearer token for every `/probe/*` path |
+
+This wave does **not** send email or Telegram. `POST /auth/request` stores a
+one-time token and prints `login link for <email>: <url>` on the server's
+stdout. Real delivery is a later wave.
+
+### Flow
+
+| endpoint | body | what it does |
+| --- | --- | --- |
+| `POST /auth/request` | `{ "email" }` | always answers `{ "ok": true, "sent": "if that address is on the list" }`. If the email is on the list, a 32-byte hex token is stored in `state/auth.json` for 15 minutes, single use, and the link is logged. Unlisted emails get the same answer, store nothing — and take the same code path (token generated, one atomic write, answer sent, log line only afterwards) so the response time does not reveal the list. Two limits, both 5 per 10 minutes: one per connecting socket address, one per requested email → `429` |
+| `GET /auth/link?token=…` | — | valid unused unexpired token → `Set-Cookie: wt_session=…` (`HttpOnly`, `Secure` unless `cookieSecure:false`, `Path=/`, `SameSite=Lax`, `Max-Age` from `sessionDays`) and redirect `302` to `/`. Invalid, used or expired → `400` English text |
+| `POST /auth/logout` | — | drops the session from the store and clears the cookie |
+| `GET /auth/me` | — | `{ "founder": { "email", "name", "owner" }, "via": "session" \| "localhost" }` or `{ "founder": null, "via": null }` |
+
+`state/auth.json` shape:
+
+```json
+{
+  "tokens": [
+    { "token": "hex", "email": "owner@example.com", "createdAt": "…", "expiresAt": "…", "used": false }
+  ],
+  "sessions": [
+    { "id": "hex", "email": "owner@example.com", "createdAt": "…", "expiresAt": "…" }
+  ]
+}
+```
+
+Writes go through the same atomic queue as the rest of the board.
+
+### Enforcement (only when `auth.founders` is non-empty)
+
+- **Page** `GET /` and `GET /board`: session or localhost-as-owner → the board.
+  Otherwise a minimal English sign-in page (email field → `POST /auth/request` →
+  "Check your link."). The sign-in HTML does not contain board data.
+- **Read APIs** `/data`, `/pipeline/data`, `/api/*`: session or localhost-as-owner
+  (and, on `/api/*` and `/pipeline/data`, `apiToken`) → `200`. Otherwise `401`
+  `{ "error": "unauthorized" }`. A forged `wt_session` cookie is `401`.
+- **Mutations** `/card/*`, `/project/select`, `/focus`: session or
+  localhost-as-owner.
+- **Mutations** `/pipeline/*` and `POST /hooks/enqueue`: session, localhost-as-owner,
+  or `Authorization: Bearer <apiToken>`.
+- **`/probe/*`**: still `probeToken` only, exactly as before. Missing token
+  config → `403`; wrong token → `401` plain text.
+
+The page header shows the signed-in founder's name and a sign-out link when
+sign-in is on and the viewer arrived with a session cookie (not when the viewer
+is localhost-as-owner).
+
+### What the board trusts
+
+Nothing the client sends decides who it is. In detail:
+
+- **`allowLocalhost` is off by default and is not a security boundary.** A
+  request counts as localhost-as-owner only when the socket is loopback on both
+  ends and carries no `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-IP` /
+  `Forwarded` header — but a plain TCP forwarder adds no headers at all. A bare
+  `proxy_pass` in nginx, `ssh -L`, `socat`, or a tunnel client hands an outside
+  visitor a loopback connection, and the board cannot tell the difference. Turn
+  `allowLocalhost` on **only** when nothing forwards to this port; otherwise
+  leave it off and sign in with a link like everyone else. The server prints a
+  warning line at start-up while it is on.
+- **Rate limiting counts sockets, not headers.** `X-Forwarded-For` only names
+  the client when `trustProxy` is on *and* the connection came over loopback.
+  The second limit, per requested email, holds even then.
+- **Login links never come from the `Host` header** unless that header names
+  loopback. Set `auth.publicUrl` and the header is ignored entirely, so a
+  request with `Host: evil.example.net` cannot aim a founder's one-time token at
+  someone else's server.
+- **Secrets are compared in constant time** — session id, login token and
+  `apiToken` all go through a SHA-256 + `timingSafeEqual` comparison, and the
+  lookups walk every stored row instead of stopping at the first match.
+- **A malformed cookie is a `401`, not a `500`.** A `wt_session` value with
+  broken percent-encoding is treated as a bad cookie: the visitor gets the
+  sign-in page and can sign in again.
 
 ## Probe
 
@@ -299,6 +410,7 @@ Config fields on `state/autopase-board.json`:
 | field | default | meaning |
 | --- | --- | --- |
 | `probeToken` | empty | shared secret; must match the probe's `token` |
+| `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when `auth.founders` is set |
 | `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
 | `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
 
