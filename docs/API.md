@@ -168,6 +168,125 @@ help[4]:
   columns: ask — needs you, running — working, waiting — window is silent, its lane is building, idle — idle, off — no agent
 ```
 
+## Pipeline
+
+The board also carries the delivery pipeline: persistent **cards** that move from
+a spec to acceptance. A card is not a window — it lives in the board's own state
+(`state/pipeline-cards.json`), keeps its spec, its comments, its per-stage clocks
+and its failure counters, and only leaves a stage through a validated transition.
+The windows endpoints above are untouched by any of this; the pipeline has
+endpoints of its own.
+
+```
+GET http://127.0.0.1:4878/api/pipeline             short text (TOON-flavoured)
+GET http://127.0.0.1:4878/api/pipeline?format=json
+GET http://127.0.0.1:4878/api/pipeline?full=1
+GET http://127.0.0.1:4878/api/pipeline/card/<id>   one card in full
+```
+
+`format` and `full` behave exactly as on `/api/board`, down to the wording of the
+errors: an unknown parameter, an unknown value, an empty value or the same
+parameter twice all answer 400 with a hint. `full` is rejected on the single-card
+view — it prints in full anyway.
+
+### Stages
+
+A card sits in one stage at a time:
+
+| stage | meaning |
+| --- | --- |
+| `spec` | a founder has written what is wanted; nothing is decided yet |
+| `grilled` | the CTO has interrogated the spec and folded the answers back in |
+| `development` | code is being written on the assigned lane |
+| `local_check` | the local check runs on the same lane |
+| `ci_pr` | a PR is open and CI runs on the assigned slot |
+| `acceptance` | done as far as the pipeline is concerned; the owner decides |
+| `accepted` | terminal; the card is finished |
+| `stuck` | three failures in a row — the loop itself is the problem, a human has to look |
+
+The road is one-way: `spec → grilled → development → local_check → ci_pr →
+acceptance → accepted`. Nothing else is a move. A **failure** (`local`, `ci` or
+`acceptance`) puts the card back into `development` and raises both its own
+counter and `consecutiveFails`; the third consecutive failure sends it to `stuck`
+instead. A failure can only be reported from a stage where something was actually
+run — `development`, `local_check`, `ci_pr`, `acceptance`. From `spec` or
+`grilled` it is a 400: nothing has been built yet, and answering it would carry
+the card into `development` around the grill. Any stage passed successfully resets `consecutiveFails` to zero, and so
+does a human pulling the card out of `stuck` — the decision buys the card a fresh
+run of three.
+
+### Clocks
+
+Every clock is computed from `stageHistory` — the list of `{stage, enteredAt,
+leftAt}` segments a card has been through. `clock` on the list is the card's
+**delivery time**: the sum of every segment except `acceptance` and `accepted`.
+Acceptance is the owner's decision, not the pipeline's work, so a card waiting
+there does not age — its `clock` is printed with `(stopped)`. The wait itself is
+still written into the history and is readable in `clock-by-stage`, so "the owner
+sat on it for two days" is never lost, it is just not charged to delivery.
+
+### What is in the answer
+
+Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
+counters: **cards**, **stuck**, **waiting for acceptance**, **accepted**,
+**failures**), then:
+
+- `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
+  (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (the watchdog's word: `moving`,
+  `stalled`, `looping`, or `-`);
+- `stuck` — the cards waiting for a human, with how long they have been waiting;
+- `specs` — under `?full=1` only, the spec text of every card that has one.
+
+The long parts of a card — the spec as written, every comment, the whole stage
+history — are not on the list at all. They are read one card at a time:
+
+```
+GET http://127.0.0.1:4878/api/pipeline/card/<id>
+```
+
+which answers with plain `field: value` lines (`card`, `title`, `stage`,
+`created`, `clock`, `clock-by-stage`, `fails`, `consecutive-fails`, `lane`,
+`subscription`, `slot`, `links`, `status`, `spec`) plus a `comments` table and a
+`history` table. An unknown id gets 404 and the ids currently in the pipeline.
+
+### Changing a card
+
+Every change is a POST with a JSON body to `/pipeline/card/<action>`. All of them
+except `create` need `id`. A body that does not say what it must gets 400 with
+the reason in plain words; the store is left exactly as it was.
+
+| action | body | what it does |
+| --- | --- | --- |
+| `create` | `title` (required), `spec` | a new card at the `spec` stage |
+| `move` | `to` | one step along the road; anything else is 400 |
+| `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
+| `unstuck` | — | a human returns the card to `development` and clears the streak |
+| `accept` | — | `acceptance → accepted` |
+| `comment` | `author`, `text` (both required) | one flat comment on the card |
+| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
+
+There is no authentication yet — the board listens on `127.0.0.1` only. Sign-in
+arrives in a later wave.
+
+### Sample output
+
+```
+pipeline: http://127.0.0.1:4878
+generated: 2026-08-26T17:36:54.960Z
+summary: cards 3, stuck 1, waiting for acceptance 0, accepted 1, failures 7
+cards[3]{id,title,stage,clock,fails,verdict}:
+  cmtadl1k48ian,Ship the pipeline view,accepted,3h 12m (stopped),local 3 ci 1,moving
+  cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
+  cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
+stuck[1]{id,title,fails,waiting}:
+  cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
+help[4]:
+  one card in full (spec, comments, history) — /api/pipeline/card/<id>, the whole pipeline in full — ?full=1
+  stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
+  clock is the delivery time; acceptance is the owner's decision and does not count — a card waiting there shows "(stopped)"
+  ?format=json — the same shape as plain JSON
+```
+
 ## A paragraph for a watchdog agent's instructions
 
 ```markdown
