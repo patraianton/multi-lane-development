@@ -31,7 +31,7 @@
   html, body { width: 100%; height: 100%; margin: 0; }
   body {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     background: var(--bg);
     color: var(--ink);
     font-family: var(--ui);
@@ -52,6 +52,45 @@
   header .num { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
   header .num b { color: var(--ink); }
   .srcs { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-left: auto; }
+
+  /* ---- кнопки шапки: «+» и «скрытые: N» ---- */
+  .hbtn {
+    font-family: var(--ui); font-size: 11px; line-height: 1.5;
+    padding: 1px 8px; border: 1px solid var(--line); border-radius: 9px;
+    background: var(--panel-low); color: var(--ink-mid); cursor: pointer;
+  }
+  .hbtn:hover { border-color: var(--line-hot); color: var(--ink); }
+  .hbtn.on { border-color: var(--focus); color: var(--focus); }
+  .hbtn.plus { font-size: 13px; font-weight: 700; padding: 0 8px; }
+
+  /* ---- полоса «вписать карточку» и список скрытых ---- */
+  .handbar {
+    display: none; gap: 10px 18px; flex-wrap: wrap; align-items: flex-start;
+    padding: 8px 12px; border-bottom: 1px solid var(--line); background: #0c141d;
+  }
+  .handbar.open { display: flex; }
+  .handbar form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .handbar input, .handbar select {
+    font-family: var(--ui); font-size: 12px; padding: 3px 6px;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 3px;
+  }
+  .handbar input:focus, .handbar select:focus { outline: none; border-color: var(--focus); }
+  .handbar input.t { width: 240px; }
+  .handbar input.txt { width: 320px; }
+  .handbar .note { font-size: 11px; color: var(--ink-dim); }
+  .hidden-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hidden-list .item {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 1px 6px; border: 1px solid var(--line); border-radius: 9px;
+    font-size: 11px; color: var(--ink-mid);
+  }
+  .hidden-list .item button {
+    font-family: var(--ui); font-size: 10.5px; padding: 0 5px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: var(--working); cursor: pointer;
+  }
+  .hidden-list .item button:hover { border-color: #1f6a52; }
   .src {
     font-family: var(--mono); font-size: 10px; padding: 1px 6px;
     border: 1px solid var(--line); border-radius: 9px; color: var(--ink-dim);
@@ -103,7 +142,18 @@
   .card.s-unknown { border-left-color: var(--unknown); }
   .card.here { outline: 1px solid var(--focus); }
 
+  .card.manual { border-left-color: var(--violet); border-style: dashed; cursor: default; }
+
   .card .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  /* Крестик: всегда справа, отдельной кнопкой — обычный клик по карточке его
+     не задевает, а он не задевает клик по карточке (всплытие остановлено). */
+  .card .x {
+    margin-left: auto; font-family: var(--ui); font-size: 12px; line-height: 1;
+    padding: 1px 5px; border: 1px solid transparent; border-radius: 3px;
+    background: transparent; color: var(--ink-dim); cursor: pointer;
+  }
+  .card .x:hover { color: var(--blocked); border-color: #6a2224; }
+  .card .by-hand { color: var(--violet); font-family: var(--mono); font-size: 10px; }
   .card .nm { font-weight: 700; font-size: 13px; }
   .card .place { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
   .card .state { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
@@ -143,9 +193,23 @@
 <body>
 <header>
   <h1>autopase — всё в одном месте</h1>
+  <button class="hbtn plus" id="add-toggle" title="вписать карточку руками">+</button>
+  <button class="hbtn" id="hidden-toggle" title="скрытые крестиком окна">скрытые: 0</button>
   <div class="num" id="counts">загрузка…</div>
   <div class="srcs" id="srcs"></div>
 </header>
+<!-- Полоса правок руками. Живёт вне перерисовки доски: доска обновляется раз в
+     три секунды, и набранный текст не должен пропадать под руками. -->
+<div class="handbar" id="handbar">
+  <form id="add-form" autocomplete="off">
+    <input class="t" id="add-title" placeholder="заголовок (обязателен)" maxlength="200">
+    <input class="txt" id="add-text" placeholder="текст (необязателен)" maxlength="2000">
+    <select id="add-column"></select>
+    <button class="hbtn" type="submit">добавить</button>
+    <span class="note" id="add-note"></span>
+  </form>
+  <div class="hidden-list" id="hidden-list"></div>
+</div>
 <div class="lanes-strip" id="strip"></div>
 <div class="board" id="board"></div>
 
@@ -188,8 +252,12 @@ function card(c, focusedTab) {
   bits.push('<div class="top">'
     + '<span class="nm">' + esc(c.name) + '</span>'
     + '<span class="place">' + esc(c.place) + '</span>'
-    + '<span class="state">' + esc(STATE_RU[c.status] ?? c.status) + ' · ' + esc(since(c.since)) + '</span>'
+    + (c.manual
+      ? '<span class="by-hand">вручную' + (c.since ? ' · ' + esc(since(c.since)) : '') + '</span>'
+      : '<span class="state">' + esc(STATE_RU[c.status] ?? c.status) + ' · ' + esc(since(c.since)) + '</span>')
     + (c.focused ? '<span class="place" style="color:var(--focus)">вы здесь</span>' : '')
+    + '<button class="x" title="' + (c.manual ? 'удалить карточку' : 'убрать окно с доски (вернуть можно в шапке)')
+    + '">×</button>'
     + '</div>');
 
   if (c.title && c.title !== c.name) bits.push('<div class="row">' + esc(c.title) + '</div>');
@@ -246,13 +314,22 @@ function card(c, focusedTab) {
     bits.push('<div class="row mono">последние слова: ' + esc(c.recapFrom ?? '') + '</div>');
   }
 
-  return '<div class="card s-' + esc(c.status) + (c.tab === focusedTab ? ' here' : '') + '" data-tab="'
-    + esc(c.tab) + '" title="' + esc(c.cwd) + '">' + bits.join('') + '</div>';
+  return '<div class="card s-' + esc(c.status) + (c.manual ? ' manual' : '')
+    + (c.tab && c.tab === focusedTab ? ' here' : '') + '"'
+    + (c.tab ? ' data-tab="' + esc(c.tab) + '"' : '')
+    // Рабочая папка нужна крестику: карточка — это вкладка ПЛЮС папка, у одной
+    // вкладки может быть вторая панель в другой папке.
+    + (c.tab ? ' data-cwd="' + esc(c.cwd ?? '') + '"' : '')
+    + (c.manual ? ' data-manual="' + esc(c.id) + '"' : '')
+    + ' data-name="' + esc(c.name) + '" title="' + esc(c.cwd) + '">' + bits.join('') + '</div>';
 }
 
-function hostBox(h, cards) {
+function hostBox(h, cards, laneOwners) {
+  // Хозяев полос считает сервер — по всем окнам, включая спрятанные крестиком.
+  // Карточки остаются запасным путём (старый ответ сервера без laneOwners).
   const owner = {};
   for (const c of cards) for (const l of c.lanes) owner[l.host + '|' + l.lane] = c.name;
+  Object.assign(owner, laneOwners ?? {});
   const rows = (h.lanes ?? []).map(l => {
     const who = owner[h.host + '|' + l.lane];
     return '<div class="lane' + (l.busy ? ' busy' : '') + '"><b>' + esc(l.lane) + '</b> '
@@ -272,18 +349,29 @@ function render(d) {
   if (pageVersion === null) pageVersion = d.pageVersion;
   else if (d.pageVersion && d.pageVersion !== pageVersion) { location.reload(); return; }
 
-  const ask = d.cards.filter(c => c.column === 'ask').length;
+  const auto = d.cards.filter(c => !c.manual);
+  const hand = d.cards.filter(c => c.manual);
+  // «Окон» и «ждут слова» считаем по одному и тому же — по окнам. Карточки,
+  // вписанные руками, окнами не являются и в этот счёт не идут; если такая
+  // карточка стоит в колонке «Нужен CTO», говорим об этом отдельно.
+  const ask = auto.filter(c => c.column === 'ask').length;
+  const askByHand = hand.filter(c => c.column === 'ask').length;
   const laneCount = d.cards.reduce((n, c) => n + c.lanes.length, 0);
-  $('counts').innerHTML = '<b>' + d.cards.length + '</b> окон autopase · <b>' + ask + '</b> ждут слова · <b>'
+  $('counts').innerHTML = '<b>' + auto.length + '</b> окон autopase · <b>' + ask + '</b> ждут слова'
+    + (askByHand ? ' (и ' + askByHand + ' вручную)' : '') + ' · <b>'
     + laneCount + '</b> полос пишут · <b>' + d.prsOpen + '</b> открытых PR · '
+    + (hand.length ? '<b>' + hand.length + '</b> карточек вручную · ' : '')
     + esc(new Date(d.generatedAt).toLocaleTimeString('ru-RU'))
     + (d.hidden.length ? ' · скрыто: ' + esc(d.hidden.join(', ')) : '');
+
+  fillColumns(d.columns);
+  renderHidden(d.handHidden ?? []);
 
   $('srcs').innerHTML = d.sources.map(s =>
     '<span class="src ' + (s.ok ? 'ok' : 'bad') + '" title="' + esc(s.error ?? '') + '">'
     + esc(s.name) + (s.ok ? '' : ' ✗') + '</span>').join('');
 
-  $('strip').innerHTML = (d.hosts ?? []).map(h => hostBox(h, d.cards)).join('')
+  $('strip').innerHTML = (d.hosts ?? []).map(h => hostBox(h, d.cards, d.laneOwners)).join('')
     || '<div class="extra">полосы ещё не опрошены</div>';
 
   $('board').innerHTML = d.columns.map(col => {
@@ -294,15 +382,96 @@ function render(d) {
   }).join('');
 
   for (const el of document.querySelectorAll('.card')) {
-    el.onclick = () => fetch('/focus', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tab: el.dataset.tab }),
-    }).catch(() => {});
+    // По автокарточке кликают, чтобы herdr перешёл на это окно. У ручной
+    // карточки окна нет — по ней клик ничего не делает.
+    if (el.dataset.tab) {
+      el.onclick = () => post('/focus', { tab: el.dataset.tab });
+    }
+    const x = el.querySelector('.x');
+    if (!x) continue;
+    x.onclick = async (ev) => {
+      // Крестик — не клик по карточке: всплытие останавливаем, иначе herdr
+      // заодно перескочил бы на окно, которое только что убрали.
+      ev.stopPropagation();
+      ev.preventDefault();
+      const r = el.dataset.manual
+        ? await post('/card/remove', { id: el.dataset.manual })
+        : await post('/card/hide', { tab: el.dataset.tab, cwd: el.dataset.cwd ?? '', name: el.dataset.name });
+      // Не убираем карточку с глаз, если доска не смогла сохранить правку:
+      // иначе она вернётся при следующем обновлении и это выглядело бы сбоем.
+      if (r && r.error) { alert('не вышло: ' + r.error); return; }
+      el.remove();
+      poll();
+    };
   }
 }
 
+// --------------------------------- правки руками: «+» и список скрытых
+
+function post(path, body) {
+  return fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).catch(() => ({ error: 'сервер не ответил' }));
+}
+
+// Колонки в выборе заполняем один раз: перерисовка не должна сбрасывать выбор.
+function fillColumns(columns) {
+  const sel = $('add-column');
+  if (sel.options.length) return;
+  sel.innerHTML = (columns ?? []).map(c =>
+    '<option value="' + esc(c.key) + '">' + esc(c.title) + '</option>').join('');
+  sel.value = 'idle';
+}
+
+function renderHidden(list) {
+  $('hidden-toggle').textContent = 'скрытые: ' + list.length;
+  $('hidden-list').innerHTML = list.length
+    ? list.map(h => '<span class="item">' + esc(h.name || h.tab)
+        + ' <span class="note">' + esc(h.tab) + '</span>'
+        + '<button data-unhide="' + esc(h.tab) + '" data-cwd="' + esc(h.cwd ?? '') + '">вернуть</button></span>').join('')
+    : '<span class="note">ничего не скрыто</span>';
+  for (const b of $('hidden-list').querySelectorAll('button')) {
+    b.onclick = async () => {
+      await post('/card/unhide', { tab: b.dataset.unhide, cwd: b.dataset.cwd ?? '' });
+      poll();
+    };
+  }
+}
+
+// Обе кнопки шапки открывают одну и ту же полосу: там и форма, и список
+// скрытых. «+» ещё и ставит курсор в заголовок.
+function toggleBar(focusTitle) {
+  const open = $('handbar').classList.toggle('open');
+  $('add-toggle').classList.toggle('on', open);
+  $('hidden-toggle').classList.toggle('on', open);
+  if (open && focusTitle) $('add-title').focus();
+}
+$('add-toggle').onclick = () => toggleBar(true);
+$('hidden-toggle').onclick = () => toggleBar(false);
+
+$('add-form').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const title = $('add-title').value.trim();
+  if (!title) { $('add-note').textContent = 'нужен заголовок'; $('add-title').focus(); return; }
+  $('add-note').textContent = '';
+  const r = await post('/card/add', {
+    title, text: $('add-text').value.trim(), column: $('add-column').value,
+  });
+  if (r && r.error) { $('add-note').textContent = r.error; return; }
+  $('add-title').value = '';
+  $('add-text').value = '';
+  $('add-note').textContent = 'добавлено';
+  setTimeout(() => { $('add-note').textContent = ''; }, 2000);
+  poll();
+};
+
 let failures = 0;
+let pollTimer = null;
 async function poll() {
+  // poll() зовут и по таймеру, и сразу после правки руками. Прошлый таймер
+  // снимаем, иначе опросы размножались бы с каждой правкой.
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   try {
     const r = await fetch('/data', { cache: 'no-store' });
     const d = await r.json();
@@ -320,7 +489,7 @@ async function poll() {
       document.body.insertBefore(div, $('board'));
     }
   } finally {
-    setTimeout(poll, 3000);
+    pollTimer = setTimeout(poll, 3000);
   }
 }
 poll();
