@@ -5,13 +5,22 @@ broadcast into other chats. Every message tags the people who need to see it
 and carries a link back to the pipeline card.
 
 The owner assigns a card's subscription by pressing a button under the bot's
-message. The bot then tells the board; the board (a later wave) writes the
-subscription on the card and advances it to Development.
+message. The bot then POSTs to the board; the board writes the subscription
+on the card and advances it to Development in the same write.
 
 This file is the contract. The bot is `bin/telegram-bot.mjs`. It has no
 external packages: it calls `https://api.telegram.org` with the built-in
 `fetch`. There is no bot token in the repository. Without `botToken` the
 process refuses to send.
+
+Two processes share the same bot:
+
+- the **board** (`bin/watchtower.mjs`) imports the sender functions and
+  posts the four notifications when a card moves;
+- the **bot loop** (`node bin/telegram-bot.mjs run`) long-polls button
+  presses and POSTs `assign-subscription` back to the board.
+
+They do not share a process. Do not start two pollers on the same bot.
 
 ## Setup
 
@@ -26,7 +35,9 @@ In Telegram, talk to [@BotFather](https://t.me/BotFather):
 5. `/setprivacy` → **Disable** (so the bot can see group messages if you ever
    need that; button presses work either way).
 
-Keep the token out of git. It belongs only in `state/telegram.json`.
+Keep the token out of git. It belongs in `state/telegram.json` (the poller)
+and, for outbound notifications, in the `telegram` block of
+`state/autopase-board.json`.
 
 ### 2. Create the group
 
@@ -94,27 +105,88 @@ Card links are `{boardUrl}/#pipeline/{cardId}` — for example
 `https://watchtower.example/#pipeline/c-selftest`. The pipeline page can adopt
 that hash as the deep link to a card.
 
+## Board config (outbound notifications)
+
+The board does **not** read `state/telegram.json`. Outbound messages fire only
+when a `telegram` object is present in `state/autopase-board.json` **and** a
+`botToken` is set (or `dryRun` is `true`). Otherwise the board skips sending,
+logs one English line at start-up, and the rest of the pipeline is unchanged
+apart from the `assign-subscription` endpoint.
+
+```json
+{
+  "apiToken": "the-same-token-agents-use-on-the-board",
+  "subscriptions": ["cx1", "initech", "hz1"],
+  "telegram": {
+    "botToken": "123456:ABC…",
+    "chatId": "-1001234567890",
+    "boardUrl": "https://watchtower.example",
+    "apiToken": "the-same-token-agents-use-on-the-board",
+    "dryRun": false,
+    "founders": [
+      { "name": "Anton", "tgUserId": 1001, "tag": "@anton", "owner": true },
+      { "name": "Partner", "tgUserId": 1002, "tag": "@partner", "owner": false }
+    ]
+  }
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `subscriptions` | Names the owner may assign. An array of strings. The assign-subscription keyboard lists these, and `POST /pipeline/assign-subscription` accepts only these names. |
+| `telegram.botToken` | Same token as the poller. Empty (and `dryRun` not true) → no sends. |
+| `telegram.dryRun` | Test hook. `true` prints the four messages to the board's stdout instead of calling Telegram. |
+| `telegram.founders`, `chatId`, `boardUrl`, `apiToken` | Same shape as `state/telegram.json`. Needed so the senders can tag people and build card links. |
+
+The board calls:
+
+- `notifyArtifactReady` when a card in `grilled` first gets `links.artifact`;
+- `notifyAssignSubscription` when a card in `grilled` first gets `lane` while `subscription` is still empty;
+- `notifyStuck` when a card **enters** `stuck` (a later entry after a new failure may notify again);
+- `notifyAcceptance` when a card **enters** `acceptance`.
+
+A failed send is logged and never changes the HTTP answer. The card remembers
+what was notified in `notified: { artifact, stuck, acceptance, assignSubscription }`
+(ISO timestamps), so a restart or a repeated identical update does not send twice.
+
 ## Running
 
 ```
-node bin/telegram-bot.mjs              long-poll getUpdates (needs config + token)
+node bin/telegram-bot.mjs run          long-poll getUpdates (needs config + token)
+node bin/telegram-bot.mjs              the same as `run`
 node bin/telegram-bot.mjs --selftest   print the four notifications, no network, exit 0
-node bin/telegram-bot.mjs --dry-run    with --selftest, or when the board imports the
-                                       sender API from a process that passed the flag:
-                                       print the message instead of sending it
+node bin/telegram-bot.mjs --dry-run    with --selftest: print instead of sending
 ```
 
 `--selftest` does not read `state/telegram.json` and does not send. Use it in
-this checkout.
+this checkout. The board's own dry-run is `telegram.dryRun` in the board
+settings, not this flag — a flag on the board process must not swallow live
+notifications.
+
+### systemd
+
+The poller is a second unit, next to the board. Copy
+`deploy/watchtower-bot.service` to `/etc/systemd/system/`, then:
+
+```
+systemctl daemon-reload
+systemctl enable --now watchtower-bot
+```
+
+It runs `node bin/telegram-bot.mjs run` from `/opt/watchtower` and reads
+`state/telegram.json`. The board unit is unchanged. `setup.sh` does not
+install this unit — enable it by hand when the bot token is in place.
 
 The long-poll stores its Telegram offset in `state/telegram-offset.json`
 (atomic write: unique temporary file, then rename). Do not start two pollers
 on the same bot.
 
-The board imports the sender API without starting the poller:
+The board imports the sender API without starting the poller, then injects
+its `telegram` block with `configureTelegram`:
 
 ```js
 import {
+  configureTelegram,
   notifyArtifactReady,
   notifyAssignSubscription,
   notifyStuck,
@@ -222,8 +294,10 @@ No keyboard.
 
 ## Assign-subscription contract
 
-The endpoint arrives in a later wave. The bot already POSTs this shape, so
-the board can be built to match.
+The bot POSTs this shape. The board implements it as
+`POST /pipeline/assign-subscription`. Auth is the same as every other
+pipeline mutation: a founder session, localhost-as-owner, or
+`Authorization: Bearer {apiToken}`.
 
 ```
 POST {boardUrl}/pipeline/assign-subscription
@@ -256,10 +330,12 @@ Body:
 | `subscription` | The button the founder pressed (id of a coding-agent account). |
 | `by` | Who pressed it: `name`, numeric `tgUserId`, `tag` from `founders`. |
 
-A 2xx response is success. The board should record the subscription on the
-card and auto-advance the card from Grilled to Development (CONTEXT.md). The
-same assignment posted twice should not create a second run — treat it as
-idempotent. Any other HTTP status is a failure: the bot shows the error to
-the founder and leaves the buttons in place.
+A 2xx response is success. The board records the subscription, writes a
+comment `subscription <name> assigned by <by>`, and moves the card from
+Grilled to Development in that same write. The card must be in `grilled`
+with an empty subscription, and the name must be one of config
+`subscriptions`. Wrong stage, unknown name, or a second assign answers
+`400`. Any other HTTP status is a failure: the bot shows the error to the
+founder and leaves the buttons in place.
 
 The bot does not call any other board path.

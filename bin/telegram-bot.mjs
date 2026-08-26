@@ -37,6 +37,7 @@ const TEXT_MAX = 4096;
 
 const ARGV = process.argv.slice(2);
 const FLAGS = new Set(['--dry-run', '--selftest']);
+const COMMANDS = new Set(['run']);
 
 function ranAsMain() {
   const entry = process.argv[1];
@@ -54,9 +55,15 @@ function unknownFlags() {
 
 // --dry-run / --selftest apply only when this file is the process entry.
 // The board will import the sender API from watchtower.mjs; a flag meant
-// for the board must not silently swallow live notifications.
+// for the board must not silently swallow live notifications. The board
+// opts into dry-run by passing dryRun:true to configureTelegram instead.
 const SELFTEST = ranAsMain() && ARGV.includes('--selftest');
 const DRY_RUN = ranAsMain() && (ARGV.includes('--dry-run') || ARGV.includes('--selftest'));
+let importedDryRun = false;
+
+function useDryRun() {
+  return DRY_RUN || importedDryRun;
+}
 
 // ------------------------------------------------------------------- helpers
 
@@ -139,10 +146,10 @@ function tagAll(founders) {
 
 function validateConfig(raw, { requireToken }) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(`Telegram config is not a JSON object: ${CONFIG_FILE}`);
+    throw new Error('Telegram config is not a JSON object. See docs/TELEGRAM.md.');
   }
   const missing = [];
-  const botToken = String(raw.botToken ?? '').trim();
+  const botToken = String(raw.botToken ?? raw.token ?? '').trim();
   const chatId = raw.chatId === 0 || raw.chatId ? String(raw.chatId).trim() : '';
   const boardUrl = trimSlash(raw.boardUrl);
   const apiToken = String(raw.apiToken ?? '').trim();
@@ -190,7 +197,23 @@ async function loadConfigFile() {
 
 async function loadConfig({ requireToken = true } = {}) {
   if (config) return config;
+  if (!ranAsMain()) {
+    throw new Error('Telegram sender is not configured');
+  }
   config = validateConfig(await loadConfigFile(), { requireToken });
+  return config;
+}
+
+// The board injects its `telegram` block here so notify* never reads
+// state/telegram.json from the board process. null clears the sender.
+export function configureTelegram(raw) {
+  if (!raw) {
+    config = null;
+    importedDryRun = false;
+    return null;
+  }
+  importedDryRun = raw.dryRun === true;
+  config = validateConfig(raw, { requireToken: !importedDryRun });
   return config;
 }
 
@@ -393,7 +416,7 @@ async function tg(cfg, method, payload, { abortMs = 20_000 } = {}) {
 
 async function sendMessage(cfg, { name, text, keyboard }) {
   const clipped = clipText(text);
-  if (DRY_RUN) {
+  if (useDryRun()) {
     printDryRun(name, clipped, keyboard ?? null);
     return { ok: true, dryRun: true, text: clipped, keyboard: keyboard ?? null };
   }
@@ -413,7 +436,7 @@ async function sendMessage(cfg, { name, text, keyboard }) {
 // -------------------------------------------------------------- sender API
 
 export async function notifyArtifactReady(card) {
-  const cfg = await loadConfig({ requireToken: !DRY_RUN });
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
   return sendMessage(cfg, {
     name: 'notifyArtifactReady',
@@ -422,7 +445,7 @@ export async function notifyArtifactReady(card) {
 }
 
 export async function notifyAssignSubscription(card, subscriptions) {
-  const cfg = await loadConfig({ requireToken: !DRY_RUN });
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
   const id = needCard(card);
   if (!Array.isArray(subscriptions)) {
     throw new Error('notifyAssignSubscription needs an array of subscriptions');
@@ -436,7 +459,7 @@ export async function notifyAssignSubscription(card, subscriptions) {
 }
 
 export async function notifyStuck(card, digest) {
-  const cfg = await loadConfig({ requireToken: !DRY_RUN });
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
   return sendMessage(cfg, {
     name: 'notifyStuck',
@@ -445,7 +468,7 @@ export async function notifyStuck(card, digest) {
 }
 
 export async function notifyAcceptance(card) {
-  const cfg = await loadConfig({ requireToken: !DRY_RUN });
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
   return sendMessage(cfg, {
     name: 'notifyAcceptance',
@@ -511,7 +534,7 @@ async function postAssignSubscription(cfg, payload) {
 }
 
 async function answerCallback(cfg, callbackId, text, extra = {}) {
-  if (DRY_RUN) return;
+  if (useDryRun()) return;
   await tg(cfg, 'answerCallbackQuery', {
     callback_query_id: callbackId,
     text: String(text ?? '').slice(0, 200),
@@ -520,7 +543,7 @@ async function answerCallback(cfg, callbackId, text, extra = {}) {
 }
 
 async function editMessage(cfg, { chatId, messageId, text }) {
-  if (DRY_RUN) return;
+  if (useDryRun()) return;
   await tg(cfg, 'editMessageText', {
     chat_id: chatId,
     message_id: messageId,
@@ -614,7 +637,7 @@ export async function startUpdateLoop() {
   if (!cfg.botToken) {
     throw new Error('Telegram config has no botToken — refusing to start.');
   }
-  if (DRY_RUN) {
+  if (useDryRun()) {
     throw new Error('the update loop needs the network; --dry-run is only for notify / --selftest');
   }
 
@@ -682,6 +705,11 @@ async function main() {
   const unknown = unknownFlags();
   if (unknown.length) {
     console.error(`unknown flag ${unknown[0]} — allowed flags: --dry-run, --selftest`);
+    process.exit(2);
+  }
+  const positional = ARGV.filter(a => !a.startsWith('-'));
+  if (positional.length && positional.some(c => !COMMANDS.has(c))) {
+    console.error(`unknown command ${positional[0]} — allowed: run`);
     process.exit(2);
   }
   if (SELFTEST) {
