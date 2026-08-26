@@ -1159,11 +1159,281 @@ async function collect() {
   };
 }
 
+// --------------------------------------------- агентский вид доски (/api/board)
+//
+// Ручка для агента-сторожа: та же доска, но без картинки и без браузера. Состав
+// ответа закреплён отдельно от /data: страница живёт на /data и её поля меняются
+// вместе с вёрсткой, а агент читает /api/board, и правка страницы его не ломает.
+//
+// Что отдаём: строку сводки со счётчиками, таблицу карточек в шесть полей и
+// отдельные разделы для длинных текстов (последние слова окна, вопрос из
+// зонтика) — по мотивам TOON: те же данные, но заметно короче JSON.
+
+// Сколько знаков длинного текста показываем без ?full=1.
+const AGENT_TEXT_LIMIT = 200;
+
+// Последние слова окна — самый длинный кусок ответа и при этом справочный: в
+// обходе доски агенту нужна только зацепка, о чём окно говорило. Поэтому в
+// списке от них остаётся короткая строка, а весь текст выдаётся по запросу —
+// /api/board/card/<имя> на одно окно или ?full=1 на всю доску.
+const AGENT_WORDS_LIMIT = 80;
+
+// Обрезка с пометкой размера: агент видит, сколько он НЕ дочитал, и знает, что
+// за остатком надо идти с ?full=1. Молча выбрасывать хвост нельзя — агент решит,
+// что это весь текст.
+function clipText(text, full, limit = AGENT_TEXT_LIMIT) {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  if (full || t.length <= limit) return t;
+  return `${t.slice(0, limit)}… (обрезано, всего ${t.length} зн.)`;
+}
+
+const CI_WORD = { green: 'зелёный', red: 'красный', run: 'идёт', none: 'без-проверок' };
+
+// PR карточки одной клеткой: самый свежий номер с цветом CI, остальные — счётом.
+function prCell(prs) {
+  if (!prs?.length) return '-';
+  const head = `#${prs[0].number} ${CI_WORD[prs[0].ci?.color] ?? 'CI-неизвестен'}`;
+  return prs.length > 1 ? `${head} +${prs.length - 1}` : head;
+}
+
+function laneCell(lanes) {
+  if (!lanes?.length) return '-';
+  return lanes.map(l => `${l.host}/${l.lane}`).join(' ');
+}
+
+// Из большого снимка /data — маленький закреплённый вид. Внутренние поля
+// (explain, footer, mentioned, place, …) сюда не просачиваются намеренно.
+const nameOfCard = (c) => String(c.name || c.folder || '(без имени)');
+
+// Ждёт ли карточка слова. У окна это разобранные причины, а у карточки,
+// вписанной руками, причин не бывает вовсе (askReasons там всегда пустой) —
+// про неё говорит сама колонка: владелец положил её в «ask» именно потому,
+// что ждёт ответа. Без этой ветки ручная карточка была бы для агента невидима.
+function askWhy(c) {
+  if (c.askReasons?.length) return c.askReasons.join('; ');
+  if (c.manual && c.column === 'ask') return 'карточка вписана руками в колонку «ждёт слова»';
+  return '';
+}
+
+function buildAgentBoard(payload, full) {
+  const cards = payload.cards ?? [];
+  const auto = cards.filter(c => !c.manual);
+  const manual = cards.filter(c => c.manual);
+  const lanesBusy = (payload.hosts ?? [])
+    .reduce((n, h) => n + (h.lanes ?? []).filter(l => l.busy).length, 0);
+
+  const rows = cards.map(c => ({
+    column: c.column,
+    name: nameOfCard(c),
+    state: c.manual ? 'вручную' : (c.status ?? 'unknown'),
+    ask: askWhy(c) ? 'да' : 'нет',
+    pr: prCell(c.prs),
+    lanes: laneCell(c.lanes),
+  }));
+
+  // Почему окно ждёт слова — отдельно от таблицы: причин бывает несколько и
+  // они длинные, в клетку такое не кладут.
+  //
+  // Сам вопрос из зонтичного issue у окон одной программы один и тот же, и
+  // печатать его по разу на окно — платить за одинаковый текст дважды. Поэтому
+  // в строке стоит ссылка «#1299», а текст лежит один раз в разделе questions.
+  const asks = [];
+  const questions = [];
+  const questionSeen = new Map();
+  for (const c of cards) {
+    const why = askWhy(c);
+    if (!why) continue;
+    const ask = c.umbrella?.ask && !c.umbrella.ask.answered ? c.umbrella.ask : null;
+    let ref = '-';
+    if (ask?.text) {
+      ref = `#${c.umbrella.number}`;
+      if (!questionSeen.has(ref)) {
+        questionSeen.set(ref, true);
+        questions.push({ umbrella: ref, text: clipText(ask.text, full) });
+      }
+    }
+    asks.push({ name: nameOfCard(c), why: clipText(why, full), question: ref });
+  }
+
+  const words = cards
+    .filter(c => c.recap)
+    .map(c => ({
+      name: nameOfCard(c),
+      from: c.recapFrom ?? '-',
+      text: clipText(c.recap, full, AGENT_WORDS_LIMIT),
+    }));
+
+  // Источник доски мог не ответить (ssh, gh). Тогда пустая клетка «полос нет» —
+  // это незнание, а не факт; агент обязан увидеть разницу.
+  const problems = [
+    ...(payload.sources ?? []).filter(s => !s.ok)
+      .map(s => ({ source: s.name, error: clipText(s.error, full) || 'не ответил' })),
+    ...(payload.hosts ?? []).filter(h => !h.ok)
+      .map(h => ({ source: `полоса ${h.host}`, error: clipText(h.error, full) || 'не ответил' })),
+  ];
+
+  return {
+    board: `http://127.0.0.1:${PORT}`,
+    generated: payload.generatedAt,
+    repo: payload.repo ?? null,
+    full: Boolean(full),
+    summary: {
+      windows: auto.length,
+      waitingWord: asks.length,
+      lanesBusy,
+      prsOpen: payload.prsOpen ?? 0,
+      manual: manual.length,
+      hidden: (payload.handHidden ?? []).length,
+    },
+    cards: rows,
+    asks,
+    questions,
+    words,
+    problems,
+  };
+}
+
+// Одна карточка целиком: последние слова без обрезания, причина ожидания и
+// вопрос из зонтика. Нужна затем, чтобы в общем обходе доски длинные тексты
+// можно было не тащить вовсе, а дочитывать только то окно, которое интересно.
+function buildAgentCard(payload, wanted) {
+  const cards = payload.cards ?? [];
+  const needle = String(wanted ?? '').trim().toLowerCase();
+  const card = cards.find(c => nameOfCard(c).toLowerCase() === needle);
+  if (!card) return { found: false, names: cards.map(nameOfCard) };
+  const ask = card.umbrella?.ask && !card.umbrella.ask.answered ? card.umbrella.ask : null;
+  return {
+    found: true,
+    card: {
+      name: nameOfCard(card),
+      column: card.column,
+      state: card.manual ? 'вручную' : (card.status ?? 'unknown'),
+      ask: askWhy(card) ? 'да' : 'нет',
+      why: askWhy(card) || '-',
+      umbrella: card.umbrella?.number ? `#${card.umbrella.number}` : '-',
+      question: ask?.text ? String(ask.text).replace(/\s+/g, ' ').trim() : '-',
+      pr: prCell(card.prs),
+      lanes: laneCell(card.lanes),
+      wordsFrom: card.recapFrom ?? '-',
+      words: card.recap ? String(card.recap).replace(/\s+/g, ' ').trim() : '-',
+    },
+  };
+}
+
+// ---- вывод по мотивам TOON
+
+// Значение клетки. Кавычки нужны там, где иначе поедет разбор строки: запятая,
+// двоеточие, кавычка, перенос, края с пробелами. Пустых клеток не бывает — там,
+// где нечего сказать, стоит «-».
+function toonValue(v) {
+  const s = String(v ?? '');
+  if (s === '') return '""';
+  if (/[",:\n]/.test(s) || s !== s.trim()) return `"${s.replaceAll('"', '""')}"`;
+  return s;
+}
+
+// Таблица: заголовок с числом строк и полями, дальше строки с отступом.
+// Пустая таблица — не пустота, а явный ноль со словами.
+function toonTable(name, rows, fields, emptyText) {
+  if (!rows.length) return `${name}: 0 — ${emptyText}`;
+  return [
+    `${name}[${rows.length}]{${fields.join(',')}}:`,
+    ...rows.map(r => '  ' + fields.map(f => toonValue(r[f])).join(',')),
+  ].join('\n');
+}
+
+function renderToonBoard(v) {
+  const s = v.summary;
+  const out = [
+    `board: ${v.board}`,
+    `generated: ${v.generated}`,
+    `repo: ${v.repo ?? '-'}`,
+    `summary: окон ${s.windows}, ждут слова ${s.waitingWord}, полос пишут ${s.lanesBusy},`
+      + ` PR открытых ${s.prsOpen}, ручных ${s.manual}, скрытых ${s.hidden}`,
+    toonTable('cards', v.cards, ['column', 'name', 'state', 'ask', 'pr', 'lanes'],
+      'карточек на доске нет'),
+    toonTable('asks', v.asks, ['name', 'why', 'question'],
+      'никто не ждёт слова CTO или владельца'),
+    toonTable('questions', v.questions, ['umbrella', 'text'],
+      'вопросов в зонтичных issue нет'),
+    toonTable('words', v.words, ['name', 'from', 'text'],
+      'ни одно окно ничего не сказало'),
+    toonTable('problems', v.problems, ['source', 'error'],
+      'все источники доски отвечают'),
+  ];
+  const help = [];
+  if (!v.full) {
+    help.push('в words только начало последних слов; всё окно целиком —'
+      + ' /api/board/card/<имя>, вся доска целиком — ?full=1');
+  }
+  help.push('в asks клетка question — ссылка на зонтик, сам текст в разделе questions');
+  help.push('?format=json — тот же состав аккуратным JSON');
+  help.push('колонки: ask — нужен CTO/владелец, running — в работе, waiting — молчит,'
+    + ' полоса пишет, idle — простаивает, off — без агента');
+  // Подсказки — простой список, без полей: это не данные, а следующие шаги.
+  out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
+  return out.join('\n') + '\n';
+}
+
+// Одна карточка — простыми строчками «поле: значение»: таблицы тут не из чего
+// строить, строка одна.
+function renderToonCard(c) {
+  return [
+    `card: ${c.name}`,
+    `column: ${c.column}`,
+    `state: ${c.state}`,
+    `ask: ${c.ask}`,
+    `why: ${c.why}`,
+    `umbrella: ${c.umbrella}`,
+    `question: ${c.question}`,
+    `pr: ${c.pr}`,
+    `lanes: ${c.lanes}`,
+    `words-from: ${c.wordsFrom}`,
+    `words: ${c.words}`,
+  ].join('\n') + '\n';
+}
+
+// Разбор параметров агентских ручек. Правила у format и full одни и те же:
+// значение должно быть названо словом. Пустое значение (?format= или ?full=) —
+// это опечатка, а не «включено», и повтор параметра (?format=toon&format=json)
+// — тоже: молча взять первый и потерять второй значит отдать не то, что просили.
+function agentParams(url, allowFull) {
+  const allowed = allowFull ? ['format', 'full'] : ['format'];
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.includes(key)) {
+      return { error: `ошибка: неизвестный параметр «${key}»\n`
+        + `help: разрешены ${allowFull ? 'format=toon|json и full=1' : 'только format=toon|json'}` };
+    }
+    if (url.searchParams.getAll(key).length > 1) {
+      return { error: `ошибка: параметр «${key}» задан несколько раз\n`
+        + 'help: оставь одно значение — какое из них нужно, доска не угадывает' };
+    }
+  }
+  const format = url.searchParams.get('format') ?? 'toon';
+  if (format !== 'toon' && format !== 'json') {
+    return { error: `ошибка: неизвестный format «${format}»\n`
+      + 'help: format=toon (по умолчанию, короткий текст) или format=json' };
+  }
+  const fullRaw = url.searchParams.get('full');
+  if (fullRaw !== null && !['0', '1', 'true', 'false'].includes(fullRaw)) {
+    return { error: `ошибка: у full непонятное значение «${fullRaw}»\n`
+      + 'help: full=1 — тексты целиком, full=0 (или без параметра) — обрезанные' };
+  }
+  return { format, full: fullRaw !== null && fullRaw !== '0' && fullRaw !== 'false' };
+}
+
 // -------------------------------------------------------------- сервер
 
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
   res.end(body);
+}
+
+// Ответ агенту обычным текстом — и удача, и ошибка. Ошибку он читает так же,
+// как данные, поэтому она короткая, по-русски и с подсказкой, что делать.
+function sendText(res, code, body) {
+  send(res, code, body.endsWith('\n') ? body : body + '\n', 'text/plain; charset=utf-8');
 }
 
 // Плохой запрос от страницы — это не поломка доски: отвечаем 400 и своим
@@ -1202,6 +1472,60 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
+    // Доска для агента-сторожа: без страницы, без картинок, коротким текстом.
+    // Собираем тем же collect(), что и /data, — источники внутри него ходят
+    // наружу по своим таймерам, так что лишнего похода в ssh и gh тут нет.
+    if (req.method === 'GET' && url.pathname === '/api/board') {
+      const p = agentParams(url, true);
+      if (p.error) return sendText(res, 400, p.error);
+      let payload;
+      try {
+        payload = await collect();
+      } catch (e) {
+        return sendText(res, 500,
+          `ошибка: доску собрать не удалось: ${String(e?.message || e)}\n`
+          + 'help: проверь, что herdr отвечает — herdr api snapshot');
+      }
+      const view = buildAgentBoard(payload, p.full);
+      if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
+      return sendText(res, 200, renderToonBoard(view));
+    }
+    // Одно окно целиком: длинные тексты без обрезания. Тексты у окна короткие
+    // по одному и длинные скопом, поэтому в общем виде доски их нет.
+    if (req.method === 'GET' && url.pathname.startsWith('/api/board/card/')) {
+      const p = agentParams(url, false);
+      if (p.error) return sendText(res, 400, p.error);
+      let wanted;
+      try { wanted = decodeURIComponent(url.pathname.slice('/api/board/card/'.length)); }
+      catch { wanted = ''; }
+      if (!wanted.trim()) {
+        return sendText(res, 400,
+          'ошибка: имя карточки в адресе пустое\n'
+          + 'help: /api/board/card/<имя из клетки name раздела cards>');
+      }
+      let payload;
+      try {
+        payload = await collect();
+      } catch (e) {
+        return sendText(res, 500,
+          `ошибка: доску собрать не удалось: ${String(e?.message || e)}\n`
+          + 'help: проверь, что herdr отвечает — herdr api snapshot');
+      }
+      const found = buildAgentCard(payload, wanted);
+      if (!found.found) {
+        const list = found.names.length ? found.names.join(', ') : '(доска пуста)';
+        if (p.format === 'json') {
+          return send(res, 404, JSON.stringify(
+            { error: `карточки «${wanted}» на доске нет`, cards: found.names }, null, 2));
+        }
+        return sendText(res, 404,
+          `ошибка: карточки «${wanted}» на доске нет\n`
+          + `help: сейчас на доске: ${list}`);
+      }
+      if (p.format === 'json') return send(res, 200, JSON.stringify(found.card, null, 2));
+      return sendText(res, 200, renderToonCard(found.card));
+    }
+
     // Единственное действие доски: перевести herdr на выбранную вкладку.
     // Ничего в чужие окна не пишется и не запускается.
     if (req.method === 'POST' && url.pathname === '/focus') {
