@@ -57,6 +57,9 @@
   header .num b { color: var(--ink); }
   header .flag { color: var(--blocked); font-family: var(--mono); font-size: 12px; }
   header .spacer { margin-left: auto; }
+  header #signed-in { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
+  header #signed-in a { color: var(--focus); text-decoration: none; margin-left: 8px; }
+  header #signed-in a:hover { text-decoration: underline; }
 
   .hbtn {
     font-family: var(--ui); font-size: 11px; line-height: 1.5;
@@ -321,6 +324,7 @@
   <div class="num" id="pipe-counts"></div>
   <div class="flag" id="board-warn" hidden></div>
   <span class="spacer"></span>
+  <div class="num" id="signed-in" hidden></div>
   <!-- Which view is on. The choice is remembered in this browser, so a refresh
        comes back to the view you were working in. -->
   <button class="hbtn" id="view-windows" title="live herdr windows">windows</button>
@@ -387,6 +391,34 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Signed-in founder, filled from GET /auth/me. Null when sign-in is off or
+// the viewer is localhost-as-owner (the header then stays empty).
+let signedIn = null;
+
+async function loadSignedIn() {
+  try {
+    const r = await fetch('/auth/me', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    signedIn = d.founder && typeof d.founder === 'object' ? d.founder : null;
+    const box = $('signed-in');
+    if (!box) return;
+    if (signedIn && d.via === 'session') {
+      box.hidden = false;
+      box.innerHTML = esc(signedIn.name) + ' <a href="/auth/logout">sign out</a>';
+      const a = box.querySelector('a');
+      a.onclick = async (ev) => {
+        ev.preventDefault();
+        await fetch('/auth/logout', { method: 'POST' });
+        location.reload();
+      };
+    } else {
+      box.hidden = true;
+      box.textContent = '';
+    }
+  } catch (e) { /* an older board has no /auth/me — the page still draws */ }
+}
 let pageVersion = null;
 let lastData = null;
 
@@ -868,7 +900,9 @@ function pcard(c) {
         + '<span class="when">' + esc(ago(m.at)) + '</span><br>' + esc(m.text) + '</div>').join(''))
     : '<div class="row mono">nobody has commented</div>');
   inner.push('<form data-comment="' + esc(c.id) + '">'
-    + '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">'
+    + (signedIn
+      ? ''
+      : '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">')
     + '<input class="text" name="text" data-k="' + esc(c.id) + '/text" placeholder="comment" maxlength="4000">'
     + '<button class="hbtn" type="submit">say</button></form>');
 
@@ -991,10 +1025,15 @@ function wirePipeline() {
       ev.preventDefault();
       const authorEl = f.querySelector('[name=author]');
       const textEl = f.querySelector('[name=text]');
-      const author = authorEl.value.trim();
+      const author = authorEl ? authorEl.value.trim() : '';
       const text = textEl.value.trim();
-      if (!author || !text) { showError('a comment needs an author and a text'); return; }
-      const r = await post('/pipeline/card/comment', { id: f.dataset.comment, author, text });
+      if (!text || (!signedIn && !author)) {
+        showError(signedIn ? 'a comment needs a text' : 'a comment needs an author and a text');
+        return;
+      }
+      const body = { id: f.dataset.comment, text };
+      if (author) body.author = author;
+      const r = await post('/pipeline/card/comment', body);
       if (r && r.error) { showError('the comment was not saved: ' + r.error); return; }
       textEl.value = '';
       pipePoll();
@@ -1095,6 +1134,7 @@ async function poll() {
     pollTimer = setTimeout(poll, 3000);
   }
 }
+loadSignedIn();
 poll();
 </script>
 </body>

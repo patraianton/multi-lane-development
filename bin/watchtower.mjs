@@ -28,6 +28,10 @@ import {
 } from './serve.mjs';
 import { configurePipeline, handlePipeline } from './pipeline.mjs';
 import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
+import {
+  configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
+  accessDecision, signInPage, withJsonBody,
+} from './auth.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
@@ -86,6 +90,10 @@ const DEFAULTS = {
   // Shared secret the probe sends as Authorization: Bearer. Empty — every
   // /probe/* path answers 403 until one is set.
   probeToken: '',
+  // Shared secret agents send as Authorization: Bearer on /pipeline/* and
+  // /hooks/enqueue when founder sign-in is on. Empty — those paths then need
+  // a session or localhost instead. Unused while `auth.founders` is empty.
+  apiToken: '',
   // Where window data comes from: "local" talks to herdr on this machine
   // (the original board); "probe" uses the last snapshot the probe posted.
   source: 'local',
@@ -216,7 +224,22 @@ function applyConfig(raw) {
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
   config.probeToken = String(config.probeToken ?? '').trim();
+  config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
+  // Missing, broken or empty founders list → null, and the board stays open.
+  config.auth = parseAuth(src);
+  reportAuthWarnings(config.auth);
   return config;
+}
+
+// Risky sign-in settings are said out loud once, and again whenever they change,
+// so the operator sees them in `journalctl -u watchtower`.
+let lastAuthWarning = '';
+function reportAuthWarnings(auth) {
+  const lines = authWarnings(auth);
+  const key = lines.join('\n');
+  if (key === lastAuthWarning) return;
+  lastAuthWarning = key;
+  for (const line of lines) console.warn(`auth warning: ${line}`);
 }
 
 const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
@@ -1756,13 +1779,45 @@ async function saveSelection(patch) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+
+    if (await handleAuth(req, res, url, { port: PORT, config })) return;
+
+    // Sign-in is off (no auth.founders) — the rest of the board is reached
+    // exactly as before. When it is on, a session, localhost-as-owner or
+    // (on agent paths) apiToken is required before anything else runs.
+    if (authEnabled(config)) {
+      const viewer = await resolveViewer(req, config);
+      const decision = accessDecision(req, url, viewer);
+      if (decision === 'signin') {
+        return send(res, 200, signInPage(), 'text/html; charset=utf-8');
+      }
+      if (decision === 'deny') {
+        return send(res, 401, JSON.stringify({ error: 'unauthorized' }));
+      }
+      // A signed-in founder commenting without an author: fill it in here so
+      // pipeline.mjs can keep requiring one. Agents (apiToken) still send their
+      // own author.
+      if (viewer.founder && req.method === 'POST' && url.pathname === '/pipeline/card/comment') {
+        const body = await readBody(req);
+        if (!String(body.author ?? '').trim()) body.author = viewer.founder.name;
+        req = withJsonBody(req, body);
+      }
+    }
+
     // The pipeline owns everything under /pipeline/… and /api/pipeline. It is
     // asked first and answers only its own paths, so the windows view below is
     // reached exactly as before.
     if (await handlePipeline(req, res, url, PORT)) return;
 
-    const probePath = url.pathname === '/hooks/enqueue' || url.pathname.startsWith('/probe/');
-    if (probePath) {
+    const probeOnly = url.pathname.startsWith('/probe/');
+    if (probeOnly) {
+      const denied = probeAuthError(req);
+      if (denied) return sendText(res, denied.code, denied.text);
+    }
+    // Without founder sign-in, /hooks/enqueue keeps using probeToken. With
+    // sign-in on, the gate above already accepted a session, localhost or
+    // apiToken, so the probe secret is not required a second time.
+    if (!authEnabled(config) && url.pathname === '/hooks/enqueue') {
       const denied = probeAuthError(req);
       if (denied) return sendText(res, denied.code, denied.text);
     }
@@ -1957,6 +2012,7 @@ const server = http.createServer(async (req, res) => {
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
 configureHooks(STATE_DIR);
+configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
 server.on('error', (e) => {
