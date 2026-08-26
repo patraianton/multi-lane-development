@@ -55,6 +55,7 @@
   header h1 .proj { color: var(--focus); font-weight: 600; letter-spacing: .04em; text-transform: none; }
   header .num { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
   header .num b { color: var(--ink); }
+  header .flag { color: var(--blocked); font-family: var(--mono); font-size: 12px; }
   header .spacer { margin-left: auto; }
 
   .hbtn {
@@ -318,6 +319,7 @@
   <h1>Watchtower <span class="proj" id="project"></span></h1>
   <div class="num" id="counts">loading…</div>
   <div class="num" id="pipe-counts"></div>
+  <div class="flag" id="board-warn" hidden></div>
   <span class="spacer"></span>
   <!-- Which view is on. The choice is remembered in this browser, so a refresh
        comes back to the view you were working in. -->
@@ -544,6 +546,9 @@ function render(d) {
   document.body.classList.toggle('onboarding', Boolean(d.needsProject));
   $('project').textContent = d.project ?? '';
   fillColumns(d.columns);
+  const warn = [d.probeStale, d.hooksNotice].filter(Boolean).join(' · ');
+  $('board-warn').textContent = warn;
+  $('board-warn').hidden = !warn;
 
   // The pipeline is the board's own state and needs no herdr project, so the
   // "pick a project" screen must not stand in front of it.

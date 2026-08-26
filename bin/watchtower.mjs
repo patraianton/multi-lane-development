@@ -27,12 +27,15 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import { configurePipeline, handlePipeline } from './pipeline.mjs';
+import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
 const PORT = Number(process.env.WATCHTOWER_PORT || process.env.AUTOPASE_BOARD_PORT || 4878);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const STATE_DIR = path.join(ROOT, 'state');
+// WATCHTOWER_STATE_DIR lets a test (or a second board) keep its own files
+// without writing over the live state/. Unset — the repo's state/ as before.
+const STATE_DIR = path.resolve(process.env.WATCHTOWER_STATE_DIR || path.join(ROOT, 'state'));
 // On-disk state file names are deliberately left as they were: live installs
 // already carry these files, and renaming them would drop their history.
 const SEEN_FILE = path.join(STATE_DIR, 'autopase-seen.json');
@@ -80,6 +83,16 @@ const DEFAULTS = {
   //     "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/myproject" }
   //   }
   hosts: {},
+  // Shared secret the probe sends as Authorization: Bearer. Empty — every
+  // /probe/* path answers 403 until one is set.
+  probeToken: '',
+  // Where window data comes from: "local" talks to herdr on this machine
+  // (the original board); "probe" uses the last snapshot the probe posted.
+  source: 'local',
+  // A probe snapshot older than this many seconds is stale: the header says
+  // so and /api/board lists it under problems. 60 is three times the probe's
+  // usual 15-second interval, with a little slack.
+  probeStaleSec: 60,
 };
 
 const HERDR_CANDIDATES = [
@@ -199,6 +212,10 @@ let config = { ...DEFAULTS };
 function applyConfig(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   config = { ...DEFAULTS, ...src, hosts: { ...DEFAULTS.hosts, ...(src.hosts ?? {}) } };
+  config.source = config.source === 'probe' ? 'probe' : 'local';
+  const stale = Number(config.probeStaleSec);
+  config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
+  config.probeToken = String(config.probeToken ?? '').trim();
   return config;
 }
 
@@ -877,34 +894,188 @@ function lanesFor(allLanes, stream, branch) {
   });
 }
 
+// ------------------------------------------------- probe snapshot (source=probe)
+
+const SNAPSHOT_FILE = path.join(STATE_DIR, 'probe-snapshot.json');
+const SNAPSHOT_MAX = 2 * 1024 * 1024;
+
+class PayloadTooLarge extends Error {}
+
+// Last snapshot the probe posted: { receivedAt, snapshot }. Loaded from disk
+// on the first read so a restart still has windows to draw.
+let probeSnapshot = null;
+let probeSnapshotLoaded = false;
+
+async function loadProbeSnapshot() {
+  if (probeSnapshotLoaded) return probeSnapshot;
+  const raw = await readJsonSoft(SNAPSHOT_FILE, null);
+  probeSnapshotLoaded = true;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.snapshot
+      && typeof raw.snapshot === 'object' && !Array.isArray(raw.snapshot)) {
+    probeSnapshot = {
+      receivedAt: typeof raw.receivedAt === 'string' ? raw.receivedAt : null,
+      // A file written by an older build (or edited by hand) can still hold
+      // rubbish in its lists, so it is cleaned on the way in as well.
+      snapshot: normalizeSnapshot(raw.snapshot),
+    };
+  } else {
+    probeSnapshot = null;
+  }
+  return probeSnapshot;
+}
+
+async function saveProbeSnapshot(body) {
+  const stored = { receivedAt: new Date().toISOString(), snapshot: normalizeSnapshot(body) };
+  const prev = probeSnapshot;
+  probeSnapshot = stored;
+  probeSnapshotLoaded = true;
+  try {
+    await writeJsonAtomic(SNAPSHOT_FILE, stored);
+  } catch (e) {
+    probeSnapshot = prev;
+    throw new Error(`could not save the probe snapshot to disk: ${String(e?.message || e)}`);
+  }
+  return stored;
+}
+
+function asList(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+// The probe payload arrives from another machine, so any of its lists can hold
+// a null, a number or a string where the board expects an object. Everything
+// downstream reads them as objects (`t.tab_id`, `w.workspace_id`), and one null
+// used to be enough to make /data and /api/board answer 500 for good, because
+// the snapshot was kept on disk and read back after a restart. The rubbish is
+// dropped once, here, on the way in and on the way out.
+function objectList(v) {
+  return asList(v).filter(x => x && typeof x === 'object' && !Array.isArray(x));
+}
+
+function normalizeSnapshot(snap) {
+  const src = snap && typeof snap === 'object' && !Array.isArray(snap) ? snap : {};
+  return {
+    ...src,
+    windows: objectList(src.windows),
+    tabs: objectList(src.tabs),
+    panes: objectList(src.panes),
+    agents: objectList(src.agents),
+  };
+}
+
+// Titles and the agent kind live on the agent list in the probe payload, not
+// always on the pane. Copy them across so collect() can keep reading panes
+// the way it does for a local herdr snapshot.
+function attachAgentFields(panes, agents) {
+  const byPane = new Map();
+  for (const a of agents) {
+    if (a && typeof a === 'object' && a.pane_id) byPane.set(a.pane_id, a);
+  }
+  return panes.filter(p => p && typeof p === 'object').map((p) => {
+    const a = byPane.get(p.pane_id);
+    if (!a) return p;
+    return {
+      ...p,
+      agent: p.agent ?? a.agent ?? null,
+      agent_status: p.agent_status ?? a.agent_status,
+      cwd: p.cwd || a.cwd,
+      terminal_title: p.terminal_title ?? a.terminal_title,
+      terminal_title_stripped: p.terminal_title_stripped ?? a.terminal_title_stripped,
+    };
+  });
+}
+
+function probeStaleMessage() {
+  if (config.source !== 'probe') return null;
+  const receivedAt = probeSnapshot?.receivedAt ?? null;
+  const receivedMs = receivedAt ? Date.parse(receivedAt) : NaN;
+  const limitMs = (config.probeStaleSec ?? DEFAULTS.probeStaleSec) * 1000;
+  const stale = !Number.isFinite(receivedMs) || (Date.now() - receivedMs) > limitMs;
+  if (!stale) return null;
+  const since = Number.isFinite(receivedMs) ? new Date(receivedMs).toISOString() : 'never';
+  return `probe stale since ${since}`;
+}
+
+function probeSourceRow(stale) {
+  if (!stale) return null;
+  const receivedMs = probeSnapshot?.receivedAt ? Date.parse(probeSnapshot.receivedAt) : NaN;
+  return {
+    name: 'probe',
+    ok: false,
+    error: stale,
+    ageMs: Number.isFinite(receivedMs) ? Date.now() - receivedMs : null,
+    tookMs: null,
+  };
+}
+
+async function herdrBoardState() {
+  if (config.source === 'probe') {
+    const stored = await loadProbeSnapshot();
+    if (!stored?.snapshot) {
+      return { snap: { workspaces: [], tabs: [], panes: [] }, wsList: [], agents: [] };
+    }
+    const snap = normalizeSnapshot(stored.snapshot);
+    const windows = snap.windows;
+    const agents = snap.agents;
+    const focused = snap.focused && typeof snap.focused === 'object' ? snap.focused : {};
+    return {
+      snap: {
+        workspaces: windows,
+        tabs: snap.tabs,
+        panes: attachAgentFields(snap.panes, agents),
+        focused_tab_id: focused.tabId ?? null,
+        focused_workspace_id: focused.workspaceId ?? null,
+        focused_pane_id: focused.paneId ?? null,
+      },
+      wsList: windows,
+      agents,
+    };
+  }
+  const [snapRes, wsListRes, agentListRes] = await Promise.all([
+    herdr(['api', 'snapshot']),
+    herdr(['workspace', 'list']).catch(() => null),
+    herdr(['agent', 'list']).catch(() => null),
+  ]);
+  return {
+    snap: snapRes?.result?.snapshot ?? {},
+    wsList: wsListRes?.result?.workspaces ?? [],
+    agents: agentListRes?.result?.agents ?? [],
+  };
+}
+
 async function collect() {
   cfgSource.tick();
   const sel = selection();
 
-  const [snapRes, wsListRes, agentListRes, seen, hand] = await Promise.all([
-    herdr(['api', 'snapshot']),
-    herdr(['workspace', 'list']).catch(() => null),
-    herdr(['agent', 'list']).catch(() => null),
+  const [board, seen, hand] = await Promise.all([
+    herdrBoardState(),
     loadSeen(),
     loadCards(),
   ]);
 
-  const snap = snapRes?.result?.snapshot ?? {};
-  const wsById = new Map((snap.workspaces ?? []).map(w => [w.workspace_id, w]));
-  const tabById = new Map((snap.tabs ?? []).map(t => [t.tab_id, t]));
-  const allPanes = snap.panes ?? [];
-  const agents = agentListRes?.result?.agents ?? [];
+  // Every list is filtered again here: collect() also runs on a local herdr
+  // snapshot, and a single non-object in any of them must not be able to take
+  // the whole board down with a 500.
+  const snap = board.snap;
+  const wsById = new Map(objectList(snap.workspaces).map(w => [w.workspace_id, w]));
+  const tabById = new Map(objectList(snap.tabs).map(t => [t.tab_id, t]));
+  const allPanes = objectList(snap.panes);
+  const agents = objectList(board.agents);
   const agentByPane = new Map(agents.map(a => [a.pane_id, a]));
 
-  const wsList = wsListRes?.result?.workspaces ?? [];
+  const wsList = objectList(board.wsList);
   const wsMeta = new Map(wsList.map(w => [w.workspace_id, w]));
 
   const projects = projectList(allPanes, wsById);
   const now = new Date().toISOString();
+  const stale = probeStaleMessage();
 
   // No project chosen yet: the page shows the onboarding screen instead of the
   // board, and nothing slow (ssh, gh) is asked for.
   if (sel.mode === 'none') {
+    const sources = [{ name: 'project', ok: false, error: 'no project chosen yet', ageMs: 0, tookMs: null }];
+    const probeRow = probeSourceRow(stale);
+    if (probeRow) sources.push(probeRow);
     return {
       generatedAt: now,
       needsProject: true,
@@ -922,7 +1093,9 @@ async function collect() {
       repo: config.repo || null,
       prsOpen: 0,
       umbrellas: [],
-      sources: [{ name: 'project', ok: false, error: 'no project chosen yet', ageMs: 0, tookMs: null }],
+      sources,
+      probeStale: stale,
+      hooksNotice: await hooksNotice(),
     };
   }
 
@@ -1012,7 +1185,10 @@ async function collect() {
 
   updateSeen(seen, panes, now);
   writeJsonAtomic(SEEN_FILE, seen).catch(() => {});
-  refreshPanes(panes.map(p => p.pane_id));
+  // Screens and explain come from herdr on this machine. In probe mode the
+  // board is not next to herdr, so those calls would hang; the snapshot is
+  // the window data.
+  if (config.source !== 'probe') refreshPanes(panes.map(p => p.pane_id));
 
   const streams = streamsSource.value;
   const programs = programsSource.value ?? new Map();
@@ -1234,6 +1410,8 @@ async function collect() {
 
   const sources = [cfgSource, streamsSource, programsSource, lanesSource, prSource, umbrellaSource]
     .map(s => ({ name: s.name, ok: s.ok, error: s.error, ageMs: s.at ? Date.now() - s.at : null, tookMs: s.tookMs }));
+  const probeRow = probeSourceRow(stale);
+  if (probeRow) sources.push(probeRow);
 
   return {
     generatedAt: now,
@@ -1258,6 +1436,8 @@ async function collect() {
     prsOpen: prs.length,
     umbrellas: [...umbrellas.values()],
     sources,
+    probeStale: stale,
+    hooksNotice: await hooksNotice(),
   };
 }
 
@@ -1475,6 +1655,83 @@ function renderToonCard(c) {
 // the pipeline endpoints answer in the same shape and reject a bad parameter
 // with the same words.
 
+function probeAuthError(req) {
+  const token = String(config.probeToken ?? '').trim();
+  if (!token) return { code: 403, text: 'probe access is not configured' };
+  const hdr = String(req.headers.authorization ?? '').trim();
+  const m = /^Bearer\s+(.+)$/i.exec(hdr);
+  if (!m || m[1].trim() !== token) return { code: 401, text: 'unauthorized' };
+  return null;
+}
+
+// Reading the body without killing the connection. A body with no
+// Content-Length (chunked) is only known to be too large half way through it,
+// and tearing the socket down there left the probe with a reset connection
+// instead of an answer. So the rest is read and thrown away — up to a sane
+// bound — and the request then fails as 413, which the client can actually
+// read.
+const SNAPSHOT_DRAIN_MAX = 16 * 1024 * 1024;
+
+function readSnapshotBytes(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let over = false;
+    let discarded = 0;
+    const finish = (fn, arg) => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onErr);
+      fn(arg);
+    };
+    const onData = (chunk) => {
+      if (over) {
+        discarded += chunk.length;
+        // Past this point the sender is not going to stop on its own; there is
+        // nothing to be gained by reading further.
+        if (discarded > SNAPSHOT_DRAIN_MAX) finish(reject, new PayloadTooLarge('payload too large'));
+        return;
+      }
+      size += chunk.length;
+      if (size > SNAPSHOT_MAX) {
+        over = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      if (over) finish(reject, new PayloadTooLarge('payload too large'));
+      else finish(resolve, Buffer.concat(chunks));
+    };
+    const onErr = (e) => finish(reject, e);
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onErr);
+  });
+}
+
+async function readSnapshotBody(req) {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > SNAPSHOT_MAX) {
+    throw new PayloadTooLarge('payload too large');
+  }
+  const body = await readSnapshotBytes(req);
+  if (!body.length) throw new BadRequest('malformed snapshot: body is empty');
+  let parsed;
+  try { parsed = JSON.parse(body.toString('utf8')); }
+  catch { throw new BadRequest('malformed snapshot: body cannot be parsed'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new BadRequest('malformed snapshot: an object was expected');
+  }
+  for (const key of ['windows', 'tabs', 'panes', 'agents']) {
+    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+      throw new BadRequest(`malformed snapshot: ${key} must be an array`);
+    }
+  }
+  return parsed;
+}
+
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
 // A project name comes from the herdr snapshot: a folder name, so no control
 // characters, no path separators and nothing longer than a folder can be.
@@ -1503,6 +1760,32 @@ const server = http.createServer(async (req, res) => {
     // asked first and answers only its own paths, so the windows view below is
     // reached exactly as before.
     if (await handlePipeline(req, res, url, PORT)) return;
+
+    const probePath = url.pathname === '/hooks/enqueue' || url.pathname.startsWith('/probe/');
+    if (probePath) {
+      const denied = probeAuthError(req);
+      if (denied) return sendText(res, denied.code, denied.text);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/probe/snapshot') {
+      const body = await readSnapshotBody(req);
+      const stored = await saveProbeSnapshot(body);
+      return send(res, 200, JSON.stringify({ ok: true, receivedAt: stored.receivedAt }));
+    }
+    if (req.method === 'GET' && url.pathname === '/probe/hooks') {
+      return send(res, 200, JSON.stringify({ hooks: await listHooks() }));
+    }
+    if (req.method === 'POST' && url.pathname === '/probe/hooks/ack') {
+      const body = await readBody(req);
+      const result = await ackHooks(body.ids);
+      return send(res, 200, JSON.stringify({ ok: true, removed: result.removed }));
+    }
+    if (req.method === 'POST' && url.pathname === '/hooks/enqueue') {
+      const body = await readBody(req);
+      const hook = await enqueueHook(body.window, body.text);
+      return send(res, 200, JSON.stringify({ ok: true, hook }));
+    }
+
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -1660,6 +1943,12 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, '{"error":"no such path"}');
   } catch (e) {
+    if (e instanceof PayloadTooLarge) {
+      // The answer goes out first; the connection is closed after it, so the
+      // client reads 413 rather than a reset.
+      if (!res.headersSent) res.setHeader('Connection', 'close');
+      return sendText(res, 413, e.message);
+    }
     if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
   }
@@ -1667,6 +1956,8 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
+configureHooks(STATE_DIR);
+await loadProbeSnapshot();
 await cfgSource.tick();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
