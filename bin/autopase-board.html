@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>autopase — всё в одном месте</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #080d13;
+    --panel: #111b26;
+    --panel-hi: #172433;
+    --panel-low: #0a1119;
+    --line: #253445;
+    --line-hot: #40546a;
+    --ink: #e5edf5;
+    --ink-mid: #9cafc1;
+    --ink-dim: #617487;
+    --blocked: #ff5c5f;
+    --done: #ffb44a;
+    --working: #35d6a0;
+    --idle: #718397;
+    --unknown: #53606f;
+    --focus: #78ddff;
+    --violet: #b99cff;
+    --ui: "Segoe UI", system-ui, sans-serif;
+    --mono: Consolas, "Cascadia Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; }
+  body {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--ui);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  /* ---- шапка ---- */
+  header {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #121c28, #0c141d);
+  }
+  header h1 {
+    margin: 0; font-size: 15px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  }
+  header .num { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
+  header .num b { color: var(--ink); }
+  .srcs { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-left: auto; }
+  .src {
+    font-family: var(--mono); font-size: 10px; padding: 1px 6px;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--ink-dim);
+  }
+  .src.ok { color: var(--working); border-color: #1f6a52; }
+  .src.bad { color: var(--blocked); border-color: #6a2224; }
+
+  /* ---- полоса полос ---- */
+  .lanes-strip {
+    display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; min-width: 0;
+    padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel-low);
+  }
+  .host {
+    flex: 1 1 260px; min-width: 0; max-width: 100%;
+    border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px;
+    overflow-wrap: anywhere;
+    background: #0c141d;
+  }
+  .host > .hname { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-mid); }
+  .host.bad > .hname { color: var(--blocked); }
+  .host .lane { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
+  .host .lane b { color: var(--ink); font-weight: 600; }
+  .host .lane.busy { color: var(--working); }
+  .host .lane.busy b { color: var(--working); }
+  .host .lane .who { color: var(--violet); }
+  .host .extra { font-size: 10px; color: var(--ink-dim); font-family: var(--mono); }
+
+  /* ---- колонки ---- */
+  .board { display: grid; gap: 8px; padding: 8px 12px 16px; overflow: auto; align-items: start;
+           grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .col { min-width: 0; overflow-wrap: anywhere; }
+  .col > h2 {
+    margin: 0 0 6px; padding: 4px 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-mid); border-bottom: 1px solid var(--line);
+  }
+  .col > h2 span { color: var(--ink-dim); font-family: var(--mono); }
+  .col.ask > h2 { color: var(--blocked); border-color: #6a2224; }
+
+  /* ---- карточка ---- */
+  .card {
+    border: 1px solid var(--line); border-left: 3px solid var(--unknown); border-radius: 4px;
+    background: var(--panel); margin-bottom: 8px; padding: 7px 9px; cursor: pointer;
+  }
+  .card:hover { background: var(--panel-hi); border-color: var(--line-hot); }
+  .card.s-working { border-left-color: var(--working); }
+  .card.s-blocked { border-left-color: var(--blocked); }
+  .card.s-done    { border-left-color: var(--done); }
+  .card.s-idle    { border-left-color: var(--idle); }
+  .card.s-unknown { border-left-color: var(--unknown); }
+  .card.here { outline: 1px solid var(--focus); }
+
+  .card .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  .card .nm { font-weight: 700; font-size: 13px; }
+  .card .place { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+  .card .state { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .s-working .state { color: var(--working); }
+  .s-blocked .state { color: var(--blocked); }
+  .s-done .state { color: var(--done); }
+  .s-idle .state, .s-unknown .state { color: var(--idle); }
+
+  .card .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
+  .card .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
+  .card .k { color: var(--ink-dim); }
+  .card .recap {
+    margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
+    background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
+    max-height: 4.6em; overflow: hidden;
+  }
+  .card .ask {
+    margin-top: 5px; padding: 4px 6px; border: 1px solid #6a2224; border-radius: 3px;
+    background: #1d0f11; color: #ffb3b4; font-size: 11.5px;
+  }
+  .chip {
+    display: inline-block; margin: 3px 4px 0 0; padding: 1px 6px; border-radius: 9px;
+    border: 1px solid var(--line); font-family: var(--mono); font-size: 10.5px; color: var(--ink-mid);
+  }
+  .chip.green { color: var(--working); border-color: #1f6a52; }
+  .chip.red { color: var(--blocked); border-color: #6a2224; }
+  .chip.run { color: var(--done); border-color: #6a5122; }
+  .chip.none { color: var(--ink-dim); }
+  .chip.lane { color: var(--working); border-color: #1f6a52; }
+  .chip.umb { color: var(--violet); border-color: #4a3a70; }
+  .chip a, .card a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  .empty { color: var(--ink-dim); font-size: 11px; padding: 4px 6px; }
+  .err { margin: 6px 12px; padding: 6px 9px; border: 1px solid #6a2224; background: #1d0f11; color: #ffb3b4;
+         font-family: var(--mono); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>autopase — всё в одном месте</h1>
+  <div class="num" id="counts">загрузка…</div>
+  <div class="srcs" id="srcs"></div>
+</header>
+<div class="lanes-strip" id="strip"></div>
+<div class="board" id="board"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pageVersion = null;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+// «сколько времени в этом состоянии» — человеческими словами
+function since(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'только что';
+  if (m < 60) return m + ' мин';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' ч ' + (m % 60) + ' мин';
+  return Math.floor(h / 24) + ' сут ' + (h % 24) + ' ч';
+}
+
+const STATE_RU = { working: 'работает', idle: 'ждёт', blocked: 'заблокировано', done: 'закончило', unknown: 'непонятно' };
+
+function laneChip(l) {
+  const br = l.branch ? ' · ' + esc(l.branch) : '';
+  return '<span class="chip lane">полоса ' + esc(l.host) + ' ' + esc(l.lane) + br + '</span>';
+}
+
+function prChip(p) {
+  return '<span class="chip ' + esc(p.ci.color) + '">'
+    + '<a href="' + esc(p.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR #' + p.number + '</a>'
+    + ' · ' + esc(p.ci.text) + (p.draft ? ' · черновик' : '') + ' · ' + esc(p.via) + '</span>';
+}
+
+function card(c, focusedTab) {
+  const bits = [];
+  bits.push('<div class="top">'
+    + '<span class="nm">' + esc(c.name) + '</span>'
+    + '<span class="place">' + esc(c.place) + '</span>'
+    + '<span class="state">' + esc(STATE_RU[c.status] ?? c.status) + ' · ' + esc(since(c.since)) + '</span>'
+    + (c.focused ? '<span class="place" style="color:var(--focus)">вы здесь</span>' : '')
+    + '</div>');
+
+  if (c.title && c.title !== c.name) bits.push('<div class="row">' + esc(c.title) + '</div>');
+
+  // модель, учётка, ветка
+  const f = c.footer ?? {};
+  const line1 = [];
+  if (f.model) line1.push(esc(f.model));
+  if (f.account) line1.push(esc(f.account));
+  if (f.effort) line1.push('усилие ' + esc(f.effort));
+  if (f.contextPct != null) line1.push('контекст ' + f.contextPct + '%');
+  if (c.agent && !f.model) line1.push(esc(c.agent));
+  if (line1.length) bits.push('<div class="row mono">' + line1.join(' · ') + '</div>');
+
+  const line2 = [];
+  if (c.branch) line2.push('ветка ' + esc(c.branch));
+  else if (c.detached) line2.push('голова отсоединена (' + esc(c.detached) + ')');
+  if (c.isWorktree) line2.push('копия ' + esc(c.repoName ?? ''));
+  if (c.folder && c.folder !== String(c.name).toLowerCase()) line2.push('папка ' + esc(c.folder));
+  if (c.window && c.window !== c.name) line2.push('окно ' + esc(c.window));
+  if (line2.length) bits.push('<div class="row mono">' + line2.join(' · ') + '</div>');
+
+  if (c.explain && (c.explain.ruleName || c.explain.rule)) {
+    const e = c.explain;
+    bits.push('<div class="row mono" title="' + esc(e.ruleWhere ?? '') + '">правило: '
+      + esc(e.ruleName ?? e.rule)
+      + (e.evidence ? ' · «' + esc(e.evidence) + '»' : '') + '</div>');
+  }
+
+  if (c.askReasons && c.askReasons.length) {
+    bits.push('<div class="ask">' + c.askReasons.map(esc).join('<br>') + '</div>');
+  }
+
+  const chips = [];
+  for (const l of c.lanes) chips.push(laneChip(l));
+  if (!c.lanes.length && c.laneSlots.length) {
+    chips.push('<span class="chip none">полоса свободна (' + esc(c.laneSlots.join(', ')) + ')</span>');
+  }
+  for (const p of c.prs) chips.push(prChip(p));
+  if (c.umbrella) {
+    const u = c.umbrella;
+    const link = u.url
+      ? '<a href="' + esc(u.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">зонтик #' + u.number + '</a>'
+      : 'зонтик #' + u.number;
+    const askBit = u.ask
+      ? ' · ' + esc(u.ask.word) + (u.ask.answered ? ' (закрыт)' : ' ' + esc(since(u.ask.at)) + ' без ответа')
+      : '';
+    chips.push('<span class="chip umb">' + link + askBit + '</span>');
+  }
+  if (chips.length) bits.push('<div>' + chips.join('') + '</div>');
+
+  if (c.recap) {
+    bits.push('<div class="recap">' + esc(c.recap) + '</div>');
+    bits.push('<div class="row mono">последние слова: ' + esc(c.recapFrom ?? '') + '</div>');
+  }
+
+  return '<div class="card s-' + esc(c.status) + (c.tab === focusedTab ? ' here' : '') + '" data-tab="'
+    + esc(c.tab) + '" title="' + esc(c.cwd) + '">' + bits.join('') + '</div>';
+}
+
+function hostBox(h, cards) {
+  const owner = {};
+  for (const c of cards) for (const l of c.lanes) owner[l.host + '|' + l.lane] = c.name;
+  const rows = (h.lanes ?? []).map(l => {
+    const who = owner[h.host + '|' + l.lane];
+    return '<div class="lane' + (l.busy ? ' busy' : '') + '"><b>' + esc(l.lane) + '</b> '
+      + (l.busy ? 'занята' : 'свободна')
+      + (l.branch ? ' · ' + esc(l.branch) : '')
+      + (who ? ' · <span class="who">' + esc(who) + '</span>' : (l.busy ? ' · <span class="who">ничья</span>' : ''))
+      + '</div>';
+  }).join('');
+  const extras = (h.extras ?? []).map(e => '<div class="extra">' + esc(e) + '</div>').join('');
+  return '<div class="host' + (h.ok ? '' : ' bad') + '">'
+    + '<div class="hname">' + esc(h.host) + ' <span style="color:var(--ink-dim)">' + esc(h.target) + '</span></div>'
+    + (h.ok ? (rows || '<div class="extra">полос не видно</div>') : '<div class="extra">' + esc(h.error ?? 'нет связи') + '</div>')
+    + extras + '</div>';
+}
+
+function render(d) {
+  if (pageVersion === null) pageVersion = d.pageVersion;
+  else if (d.pageVersion && d.pageVersion !== pageVersion) { location.reload(); return; }
+
+  const ask = d.cards.filter(c => c.column === 'ask').length;
+  const laneCount = d.cards.reduce((n, c) => n + c.lanes.length, 0);
+  $('counts').innerHTML = '<b>' + d.cards.length + '</b> окон autopase · <b>' + ask + '</b> ждут слова · <b>'
+    + laneCount + '</b> полос пишут · <b>' + d.prsOpen + '</b> открытых PR · '
+    + esc(new Date(d.generatedAt).toLocaleTimeString('ru-RU'))
+    + (d.hidden.length ? ' · скрыто: ' + esc(d.hidden.join(', ')) : '');
+
+  $('srcs').innerHTML = d.sources.map(s =>
+    '<span class="src ' + (s.ok ? 'ok' : 'bad') + '" title="' + esc(s.error ?? '') + '">'
+    + esc(s.name) + (s.ok ? '' : ' ✗') + '</span>').join('');
+
+  $('strip').innerHTML = (d.hosts ?? []).map(h => hostBox(h, d.cards)).join('')
+    || '<div class="extra">полосы ещё не опрошены</div>';
+
+  $('board').innerHTML = d.columns.map(col => {
+    const list = d.cards.filter(c => c.column === col.key);
+    return '<div class="col ' + esc(col.key) + '"><h2>' + esc(col.title) + ' <span>' + list.length + '</span></h2>'
+      + (list.length ? list.map(c => card(c, d.focusedTab)).join('') : '<div class="empty">пусто</div>')
+      + '</div>';
+  }).join('');
+
+  for (const el of document.querySelectorAll('.card')) {
+    el.onclick = () => fetch('/focus', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tab: el.dataset.tab }),
+    }).catch(() => {});
+  }
+}
+
+let failures = 0;
+async function poll() {
+  try {
+    const r = await fetch('/data', { cache: 'no-store' });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    const old = document.querySelector('.err');
+    if (old) old.remove();
+    failures = 0;
+    render(d);
+  } catch (e) {
+    failures++;
+    if (failures >= 2 && !document.querySelector('.err')) {
+      const div = document.createElement('div');
+      div.className = 'err';
+      div.textContent = 'доска не получила данные: ' + (e && e.message ? e.message : e);
+      document.body.insertBefore(div, $('board'));
+    }
+  } finally {
+    setTimeout(poll, 3000);
+  }
+}
+poll();
+</script>
+</body>
+</html>
