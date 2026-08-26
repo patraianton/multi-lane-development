@@ -19,7 +19,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, rename, mkdir, stat, readdir, open } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdir, stat, readdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +27,8 @@ const PORT = Number(process.env.AUTOPASE_BOARD_PORT || 4878);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const STATE_DIR = path.join(ROOT, 'state');
 const SEEN_FILE = path.join(STATE_DIR, 'autopase-seen.json');
+// Правки доски руками: спрятанные окна и карточки, добавленные владельцем.
+const CARDS_FILE = path.join(STATE_DIR, 'autopase-cards.json');
 const CONFIG_FILE = path.join(STATE_DIR, 'autopase-board.json');
 const PAGE_FILE = path.join(ROOT, 'bin', 'autopase-board.html');
 const HOME = process.env.USERPROFILE ?? '';
@@ -88,10 +90,33 @@ async function readJsonSoft(file, fallback) {
   catch { return fallback; }
 }
 
+// Запись файла состояния: сначала во временный файл, потом переименование.
+// Две тонкости, за которые уже платили:
+//   1. имя временного файла уникальное — иначе две одновременные записи
+//      пишут в один и тот же <файл>.tmp и вторая переименовывает обрывок;
+//   2. записи одного файла выстроены в очередь — переименования не обгоняют
+//      друг друга и не спотыкаются об уже переименованный временный файл.
+const writeQueues = new Map();
+
 async function writeJsonAtomic(file, obj) {
-  const tmp = file + '.tmp';
-  await writeFile(tmp, JSON.stringify(obj, null, 2));
-  await rename(tmp, file);
+  const text = JSON.stringify(obj, null, 2);
+  const prev = writeQueues.get(file) ?? Promise.resolve();
+  const run = prev.then(async () => {
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    try {
+      await writeFile(tmp, text);
+      await rename(tmp, file);
+    } catch (e) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw e;
+    }
+  });
+  // В очереди держим версию, которая никогда не падает: чужая неудача не
+  // должна отменить следующую запись.
+  const tail = run.catch(() => {});
+  writeQueues.set(file, tail);
+  tail.then(() => { if (writeQueues.get(file) === tail) writeQueues.delete(file); });
+  return run;
 }
 
 // Запуск внешней команды. Никогда не бросает — возвращает текст или null.
@@ -639,6 +664,97 @@ function updateSeen(seen, panes, nowIso) {
   }
 }
 
+// ------------------------------------------- правки доски руками (крестик, «+»)
+//
+// Всё, что владелец сделал руками, лежит в одном файле state/autopase-cards.json:
+//   { "hidden": [ { "tab": "w5:t3", "cwd": "…", "name": "…", "at": "…" } ],
+//     "manual": [ { "id": "m…", "title": "…", "text": "…", "column": "idle", "at": "…" } ] }
+// hidden — автокарточки, спрятанные крестиком; их всегда можно вернуть из списка
+// «скрытые: N». manual — карточки, заведённые кнопкой «+»; они удаляются насовсем.
+
+let cardsState = null;
+
+// Карточка — это не вкладка: одна вкладка с двумя панелями в разных рабочих
+// папках даёт две карточки. Поэтому прячем по той же паре, по которой карточка
+// и собирается: вкладка + рабочая папка.
+function cardKey(tab, cwd) {
+  return `${tab}|${normPath(cwd)}`;
+}
+
+function normCardsState(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const hidden = [];
+  const seenKeys = new Set();
+  for (const h of Array.isArray(src.hidden) ? src.hidden : []) {
+    const tab = typeof h === 'string' ? h : String(h?.tab ?? '');
+    if (!tab) continue;
+    // Старые записи (без рабочей папки) не выбрасываем: они прячут вкладку
+    // целиком, как раньше, пока владелец не вернёт окно на доску.
+    const cwd = typeof h === 'string' ? '' : String(h?.cwd ?? '');
+    const key = cardKey(tab, cwd);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    hidden.push({ tab, cwd, name: String(h?.name ?? '').slice(0, 200) || tab, at: h?.at ?? null });
+  }
+  const manual = [];
+  for (const m of Array.isArray(src.manual) ? src.manual : []) {
+    const id = String(m?.id ?? '');
+    if (!id) continue;
+    manual.push({
+      id,
+      title: String(m?.title ?? '').slice(0, 200),
+      text: String(m?.text ?? '').slice(0, 2000),
+      column: COLUMNS.some(c => c.key === m?.column) ? m.column : 'idle',
+      at: m?.at ?? null,
+    });
+  }
+  return { hidden, manual };
+}
+
+// Читаем файл один раз на всю жизнь доски. Чтение обязано быть однократным и
+// при одновременных запросах: иначе каждый из них заводит СВОЙ разбор файла, и
+// правки, сделанные в чужом, пропадают (12 одновременных «+» давали в файле
+// одну карточку).
+let cardsLoading = null;
+async function loadCards() {
+  if (cardsState) return cardsState;
+  if (!cardsLoading) {
+    cardsLoading = (async () => {
+      const state = normCardsState(await readJsonSoft(CARDS_FILE, null));
+      cardsState = state;
+      cardsLoading = null;
+      return state;
+    })();
+  }
+  return cardsLoading;
+}
+
+async function saveCards() {
+  await writeJsonAtomic(CARDS_FILE, cardsState);
+}
+
+// Правка руками: сначала меняем в памяти, потом пишем на диск. Если запись не
+// удалась — откатываем память обратно, иначе доска показывала бы карточку как
+// сохранённую, а после перезапуска её бы не было.
+async function commitCards(mutate) {
+  const hand = await loadCards();
+  const backup = { hidden: hand.hidden.slice(), manual: hand.manual.slice() };
+  const result = mutate(hand);
+  if (result === false) return hand;   // менять нечего — и писать нечего
+  try {
+    await saveCards();
+  } catch (e) {
+    hand.hidden = backup.hidden;
+    hand.manual = backup.manual;
+    throw new Error(`правку не удалось сохранить на диск: ${String(e?.message || e)}`);
+  }
+  return hand;
+}
+
+function newManualId() {
+  return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
 // ---------------------------------------------------- ветка рабочей копии
 
 const branchCache = new Map();
@@ -680,6 +796,22 @@ function matchesStream(stream, branch) {
   return (stream.branch_prefix ?? []).some(p => branch.startsWith(p));
 }
 
+// Полосы этого окна: сначала по префиксу ветки писателя, потом по прямому
+// совпадению с веткой рабочей копии, потом по названию задания.
+function lanesFor(allLanes, stream, branch) {
+  return allLanes.filter(l => {
+    if (!l.busy) return false;
+    if (matchesStream(stream, l.branch)) return true;
+    if (branch && l.branch === branch) return true;
+    if (l.task && stream) {
+      return (stream.lanes ?? []).some(cfgLane => {
+        try { return new RegExp(cfgLane.task_match, 'i').test(l.task); } catch { return false; }
+      });
+    }
+    return false;
+  });
+}
+
 function ageMs(iso) {
   const t = Date.parse(iso ?? '');
   return Number.isNaN(t) ? null : Date.now() - t;
@@ -696,11 +828,12 @@ async function collect() {
   // Первый заход ждёт медленные источники один раз, иначе доска открылась бы пустой.
   if (first.length) await Promise.allSettled(first);
 
-  const [snapRes, wsListRes, agentListRes, seen] = await Promise.all([
+  const [snapRes, wsListRes, agentListRes, seen, hand] = await Promise.all([
     herdr(['api', 'snapshot']),
     herdr(['workspace', 'list']).catch(() => null),
     herdr(['agent', 'list']).catch(() => null),
     loadSeen(),
+    loadCards(),
   ]);
 
   const snap = snapRes?.result?.snapshot ?? {};
@@ -735,6 +868,50 @@ async function collect() {
     if (hide.includes(folder) || hide.includes(wsLabel)) { hidden.push(folder || wsLabel); return false; }
     return true;
   });
+  // Окна, спрятанные крестиком. Прячем ровно ту карточку, на которой нажали
+  // крестик: пара «вкладка + рабочая папка», как в ключе сборки выше. Вернуть
+  // их можно из списка «скрытые: N».
+  const nameOf = (p) => {
+    const ws = wsById.get(p.workspace_id);
+    const meta = wsMeta.get(p.workspace_id);
+    const tab = tabById.get(p.tab_id);
+    const tabCount = ws?.tab_count ?? 1;
+    const tabLabel = tab?.label && !/^\d+$/.test(tab.label) ? tab.label : null;
+    return (tabCount > 1 && tabLabel) || meta?.label || ws?.label || path.basename(normPath(p.cwd));
+  };
+  const hiddenKeys = new Set(hand.hidden.filter(h => h.cwd).map(h => cardKey(h.tab, h.cwd)));
+  // Записи старого образца (без рабочей папки) прячут вкладку целиком.
+  const hiddenTabs = new Set(hand.hidden.filter(h => !h.cwd).map(h => h.tab));
+  const hiddenPanes = [];
+  if (hiddenKeys.size || hiddenTabs.size) {
+    panes = panes.filter(p => {
+      if (hiddenKeys.has(cardKey(p.tab_id, p.cwd)) || hiddenTabs.has(p.tab_id)) {
+        hiddenPanes.push(p);
+        return false;
+      }
+      return true;
+    });
+  }
+  // Скрытое не живёт вечно: если вкладки в снимке herdr больше нет, запись
+  // выбрасываем — иначе новая вкладка с тем же id молча не появилась бы на
+  // доске. У живых записей заодно освежаем имя, чтобы в списке «скрытые» не
+  // висело чужое старое название.
+  {
+    const alive = new Map(hiddenPanes.map(p => [cardKey(p.tab_id, p.cwd), p]));
+    let changed = false;
+    hand.hidden = hand.hidden.filter(h => {
+      const pane = alive.get(cardKey(h.tab, h.cwd));
+      if (pane) {
+        const nm = nameOf(pane);
+        if (nm && nm !== h.name) { h.name = nm; changed = true; }
+        return true;
+      }
+      if (tabById.has(h.tab)) return true;   // вкладка жива, панель ещё не поднялась
+      changed = true;
+      return false;
+    });
+    if (changed) saveCards().catch(() => {});
+  }
   panes.sort((a, b) => a.pane_id.localeCompare(b.pane_id));
 
   const now = new Date().toISOString();
@@ -752,31 +929,17 @@ async function collect() {
   const cards = [];
   for (const p of panes) {
     const ws = wsById.get(p.workspace_id);
-    const tab = tabById.get(p.tab_id);
     const meta = wsMeta.get(p.workspace_id);
     const cwd = String(p.cwd ?? '');
     const folder = path.basename(normPath(cwd));
     const agent = agentByPane.get(p.pane_id) ?? null;
     const status = KNOWN_STATUSES.has(p.agent_status) ? p.agent_status : 'unknown';
     const tabCount = ws?.tab_count ?? 1;
-    const tabName = tab?.label && !/^\d+$/.test(tab.label) ? tab.label : null;
     const screen = paneCache.get(p.pane_id) ?? null;
     const { branch, detached } = await checkoutBranch(cwd);
     const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
 
-    // Полосы этого окна: сначала по префиксу ветки писателя, потом по прямому
-    // совпадению с веткой рабочей копии, потом по названию задания.
-    const lanes = allLanes.filter(l => {
-      if (!l.busy) return false;
-      if (matchesStream(stream, l.branch)) return true;
-      if (branch && l.branch === branch) return true;
-      if (l.task && stream) {
-        return (stream.lanes ?? []).some(cfgLane => {
-          try { return new RegExp(cfgLane.task_match, 'i').test(l.task); } catch { return false; }
-        });
-      }
-      return false;
-    });
+    const lanes = lanesFor(allLanes, stream, branch);
     // Полосы, которые в STREAM-WATCH числятся за окном, но сейчас свободны.
     const laneSlots = [...new Set((stream?.lanes ?? []).map(l => `${l.host}: ${l.task_match}`))];
 
@@ -870,7 +1033,7 @@ async function collect() {
       place: `${p.workspace_id}:${p.pane_id.split(':')[1] ?? ''}`,
       // В окне с несколькими вкладками имя даёт вкладка («grok»,
       // «sheepdog-autopase»); безымянные вкладки («1», «2») именем не считаются.
-      name: (tabCount > 1 && tabName) || meta?.label || ws?.label || folder,
+      name: nameOf(p),
       window: meta?.label || ws?.label || null,
       folder,
       cwd,
@@ -915,10 +1078,61 @@ async function collect() {
     delete c.mentioned;
   }
 
+  // Карточки, заведённые руками. Они не привязаны ни к окну, ни к полосе, ни к
+  // PR — только заголовок, текст и колонка, — поэтому добавляются последними,
+  // уже после разбора PR по окнам.
+  for (const m of hand.manual) {
+    cards.push({
+      manual: true,
+      id: m.id,
+      pane: null,
+      tab: null,
+      ws: null,
+      place: 'вручную',
+      name: m.title,
+      window: null,
+      folder: null,
+      cwd: '',
+      branch: null,
+      detached: null,
+      status: 'unknown',
+      focused: false,
+      since: m.at,
+      title: '',
+      agent: null,
+      explain: null,
+      footer: null,
+      lanes: [],
+      laneSlots: [],
+      prs: [],
+      umbrella: null,
+      program: null,
+      recap: m.text || null,
+      recapFrom: m.text ? 'вписано руками' : null,
+      askReasons: [],
+      column: m.column,
+      tabCount: 1,
+    });
+  }
+
+  // Хозяева занятых полос. Считаем по ВСЕМ окнам, включая спрятанные
+  // крестиком: скрытие — дело доски, а полоса от него ничьей не становится.
+  const laneOwners = {};
+  for (const c of cards) for (const l of c.lanes) laneOwners[`${l.host}|${l.lane}`] = c.name;
+  for (const p of hiddenPanes) {
+    const cwd = String(p.cwd ?? '');
+    const folder = path.basename(normPath(cwd));
+    const { branch } = await checkoutBranch(cwd);
+    const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
+    for (const l of lanesFor(allLanes, stream, branch)) {
+      const key = `${l.host}|${l.lane}`;
+      if (!laneOwners[key]) laneOwners[key] = `${nameOf(p)} (скрыто с доски)`;
+    }
+  }
+
   // Полосы, которые заняты, но ни к какому окну не привязались.
-  const claimed = new Set(cards.flatMap(c => c.lanes.map(l => `${l.host}|${l.lane}`)));
   for (const l of allLanes) {
-    if (l.busy && !claimed.has(`${l.host}|${l.lane}`)) l.orphan = true;
+    if (l.busy && !laneOwners[`${l.host}|${l.lane}`]) l.orphan = true;
   }
 
   const sources = [cfgSource, streamsSource, programsSource, lanesSource, prSource, umbrellaSource]
@@ -929,7 +1143,12 @@ async function collect() {
     columns: COLUMNS,
     cards,
     hosts: laneHosts,
+    // Хозяева полос отдельно от карточек: спрятанное окно карточки не даёт,
+    // но полосу свою не бросает.
+    laneOwners,
     hidden: [...new Set(hidden)],
+    // Спрятанное крестиком — отдельно от config.hide: это можно вернуть с доски.
+    handHidden: hand.hidden,
     windowsTotal: (snap.workspaces ?? []).length,
     focusedTab: snap.focused_tab_id ?? null,
     ctoPane: streams?.ctoPane ?? null,
@@ -947,6 +1166,31 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.end(body);
 }
 
+// Плохой запрос от страницы — это не поломка доски: отвечаем 400 и своим
+// текстом, а не английской руганью разборщика JSON, которую страница показала
+// бы владельцу прямо у кнопки.
+class BadRequest extends Error {}
+
+// Тело POST-запроса. Больше сотни килобайт доска не принимает: там всё равно
+// только заголовок карточки и пара строк текста.
+async function readBody(req) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > 100000) throw new BadRequest('слишком длинный запрос');
+  }
+  if (!body) return {};
+  let parsed;
+  try { parsed = JSON.parse(body); }
+  catch { throw new BadRequest('плохой запрос: тело не разобрать'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new BadRequest('плохой запрос: ожидался объект');
+  }
+  return parsed;
+}
+
+const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
@@ -961,15 +1205,77 @@ const server = http.createServer(async (req, res) => {
     // Единственное действие доски: перевести herdr на выбранную вкладку.
     // Ничего в чужие окна не пишется и не запускается.
     if (req.method === 'POST' && url.pathname === '/focus') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
-      const { tab } = JSON.parse(body);
-      if (!/^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/.test(String(tab))) return send(res, 400, '{"error":"плохой id вкладки"}');
+      const { tab } = await readBody(req);
+      if (!TAB_RX.test(String(tab))) return send(res, 400, '{"error":"плохой id вкладки"}');
       await herdr(['tab', 'focus', String(tab)]);
       return send(res, 200, '{"ok":true}');
     }
+
+    // Крестик на автокарточке: окно уходит с доски до тех пор, пока его не
+    // вернут из списка «скрытые». Ничего в самом окне не меняется.
+    if (req.method === 'POST' && url.pathname === '/card/hide') {
+      const { tab, cwd, name } = await readBody(req);
+      const id = String(tab ?? '');
+      if (!TAB_RX.test(id)) return send(res, 400, '{"error":"плохой id вкладки"}');
+      // Прячем карточку, а не вкладку целиком: у вкладки может быть вторая
+      // панель в другой рабочей папке — это отдельная карточка.
+      const dir = String(cwd ?? '').slice(0, 400);
+      const key = cardKey(id, dir);
+      const hand = await commitCards(h => {
+        if (h.hidden.some(x => cardKey(x.tab, x.cwd) === key)) return false;
+        h.hidden = [...h.hidden, {
+          tab: id, cwd: dir,
+          name: String(name ?? '').slice(0, 200) || id,
+          at: new Date().toISOString(),
+        }];
+      });
+      return send(res, 200, JSON.stringify({ ok: true, hidden: hand.hidden }));
+    }
+
+    // Вернуть спрятанное окно на доску.
+    if (req.method === 'POST' && url.pathname === '/card/unhide') {
+      const { tab, cwd } = await readBody(req);
+      const id = String(tab ?? '');
+      const key = cardKey(id, String(cwd ?? ''));
+      const hand = await commitCards(h => {
+        const rest = h.hidden.filter(x => cardKey(x.tab, x.cwd) !== key);
+        if (rest.length === h.hidden.length) return false;
+        h.hidden = rest;
+      });
+      return send(res, 200, JSON.stringify({ ok: true, hidden: hand.hidden }));
+    }
+
+    // Карточка, вписанная руками: заголовок обязателен, текст и колонка — нет.
+    if (req.method === 'POST' && url.pathname === '/card/add') {
+      const { title, text, column } = await readBody(req);
+      const t = String(title ?? '').trim().slice(0, 200);
+      if (!t) return send(res, 400, '{"error":"нужен заголовок"}');
+      const col = COLUMNS.some(c => c.key === column) ? column : 'idle';
+      const item = {
+        id: newManualId(),
+        title: t,
+        text: String(text ?? '').trim().slice(0, 2000),
+        column: col,
+        at: new Date().toISOString(),
+      };
+      await commitCards(h => { h.manual = [...h.manual, item]; });
+      return send(res, 200, JSON.stringify({ ok: true, card: item }));
+    }
+
+    // Крестик на ручной карточке: удаляем насовсем, возвращать нечего.
+    if (req.method === 'POST' && url.pathname === '/card/remove') {
+      const { id } = await readBody(req);
+      const key = String(id ?? '');
+      const hand = await commitCards(h => {
+        const rest = h.manual.filter(m => m.id !== key);
+        if (rest.length === h.manual.length) return false;
+        h.manual = rest;
+      });
+      return send(res, 200, JSON.stringify({ ok: true, manual: hand.manual.length }));
+    }
     send(res, 404, '{"error":"нет такого пути"}');
   } catch (e) {
+    if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
   }
 });
