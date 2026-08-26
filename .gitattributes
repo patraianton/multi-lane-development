@@ -1,0 +1,4 @@
+# Пакетники Windows (.cmd) разбираются только с CRLF: с LF cmd.exe рвёт строки
+# посреди слова, печатает мусор в stdout, а код выхода при этом остаётся 0.
+*.cmd text eol=crlf
+*.vbs text eol=crlf
