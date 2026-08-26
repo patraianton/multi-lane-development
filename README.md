@@ -1,163 +1,153 @@
-# sheepdog
+# sheepdog-autopase — доска «Autopase в одном месте»
 
-A live kanban board that herds your coding-agent fleet.
+Живая доска, на которой видно всю разработку autopase.lv сразу: какие окна
+открыты, что каждое сейчас делает, на какой полосе пишется код, что с
+открытыми PR и не ждёт ли кто-то слова CTO или владельца.
 
-## What it is
+Это форк [sheepdog](https://github.com/patraianton/sheepdog) — общей доски для
+любого набора окон herdr. Здесь она переделана под один проект: показываются
+только окна autopase, и на карточке лежат вещи, которых в общей доске нет —
+полосы, PR, зонтичные issue.
 
-sheepdog is a local web board for people who run many parallel coding-agent
-sessions inside [herdr](https://herdr.dev). It reads the live state of every
-session straight from herdr and lays it out as a kanban:
+Общая доска sheepdog осталась в этом же репозитории (`bin/board-server.mjs`,
+`bin/board.cmd`, порт 4877) — её никто не трогал, она может работать рядом.
 
-- **Card = session.** One open agent session, one card. Nothing is merged or
-  entered by hand — herdr is the source of truth.
-- **Columns = what to do with it, not what the agent said.** *Decisions* (an
-  open review page, a blocked session or an arrived check-back date — always
-  first; a review page counts only while it is the session's last word — once
-  the session works past it, the page is history, not a blocker; a starred
-  card with no live agent alarms here too — restarting it is your call), *Focus* (the cards you picked for deep work), *Running* (only what
-  actually runs: live sessions on top — starred first, with a green LIVE
-  highlight — and cron work resting between wakeups), *Tools* (maintenance,
-  thin rows, never alarms), *Parked*
-  (consciously paused or simply stopped — a "runs" role without a live
-  agent waits here until brought back). The raw herdr state stays on every
-  card as a lamp. In every column whatever is running right now floats to
-  the top. Cards move by themselves; you never drag them.
-- **Deep focus.** A header toggle that hides everything except the cards you
-  picked with ◎ — star alarms included. The pick survives reloads.
-- **Check-back dates.** A card can carry "check on DD.MM" (presets +3 d /
-  +1 week / +2 weeks). Until the date it waits as a thin Parked row; on the
-  day it surfaces in Decisions by itself.
-- **Recap line on live cards.** A small local model (any OpenAI-compatible
-  server; set `SHEEPDOG_RECAP_URL` / `SHEEPDOG_RECAP_MODEL`, default LM
-  Studio at `127.0.0.1:1234`) summarizes each live session's journal tail
-  into one line, in a serial background queue so the board's poll never
-  waits for the GPU. Until a summary exists — or if the model server is
-  down — the card shows the session's last words instead.
-- **Refreshes every 3 seconds.** The "stuck for N h" timer shows how long a
-  card has been sitting in its current state.
-- **Click a card to jump there.** The board focuses that herdr tab; the tab
-  currently focused in herdr is highlighted on the board ("you are here").
-- **Three tabs:** *Mine* (your own work, kanban), *Team* (one row per person,
-  with "waiting on you" counters fed from `state/team.json`), *Other*
-  (windows you explicitly set aside, as a plain list).
-- **A restart empties nothing.** After a herdr restart the windows come back
-  before their agents do; those windows stay on the board as inactive cards
-  (dimmed, marked ○ "no agent") until you bring the sessions back. Every
-  card also names what it belongs to: a tab shows its main window
-  (`WINDOW /`), a linked worktree its parent repo (`TREE /`), a plain
-  checkout its repo (`REPO /`). An auto-named worktree window is titled by
-  the branch checked out in it — the branch is the work; renaming the window
-  by hand overrides that.
-- **The only manual input** is what herdr cannot know: priority (P1/P2/P3),
-  a life-direction tag for color-coding, a "must not stop" star (the card
-  turns red if a starred session goes quiet), a kind — temporary (⏱),
-  ongoing (∞) or cron-driven (↻, work happens on a schedule so an idle
-  session is fine) — a role (runs / tool / parked, or auto), a deep-focus
-  pick (◎), a check-back date and a short note. All of it is set by clicking
-  on the card and stored in `state/projects.json`, keyed by the session's
-  working directory.
-- **Power button on a card** (⏻, asks "sure?") tells the session to save
-  everything important to the project's memory and commit, waits for it to
-  finish, logs the window to `state/closed.jsonl`, then closes it. If the
-  session asks a question instead, closing stops and the board tells you.
+![Доска](docs/board.png)
 
-## Why
+---
 
-One operator, dozens of parallel agent sessions. Past a certain fleet size
-you stop remembering which window is blocked on you, which one finished an
-hour ago, and which one silently died. Any board that needs manual updating
-rots in two days — so this one updates itself and only asks you for the two
-things no tool can know: what matters most, and which part of your life it
-belongs to.
+## Как запустить
 
-## Quickstart
+Нужны: Windows, Node.js 18+, herdr, `gh` (вход выполнен), ключ `~/.ssh/id_ed25519`
+для серверов с полосами.
 
-Requirements: Windows, Node.js 16+, herdr installed (in `PATH` or in its
-default install folder).
+    bin\autopase-board.cmd
 
-```
-node bin/board-server.mjs --open
-```
+Доска откроется на `http://127.0.0.1:4878` и дальше обновляется сама раз в три
+секунды. Без окна консоли (например, в автозапуск при входе в Windows) —
+`bin\autopase-board-hidden.vbs`.
 
-or just run `bin\board.cmd`. The board opens at `http://127.0.0.1:4877`.
+Другой порт: `set AUTOPASE_BOARD_PORT=4900` перед запуском.
 
-Optional autostart on Windows logon: create a scheduled task that runs
-`bin\board-hidden.vbs` (starts the server with no console window).
+---
 
-## Optional: pending review pages (lavish-axi)
+## Что на доске
 
-If you route decisions through [lavish-axi](https://github.com/kunchenguid/lavish-axi)
-review pages instead of reading terminals, the board can show them: while the
-board is open it asks the `lavish-axi` CLI for its open sessions once a minute
-and pins each artifact to the closest card by its project folder — a magenta
-"◈ LAVISH" strip that opens the review page in a new tab, plus a total in the
-header. If the CLI is not installed, the feature stays off silently.
+**Верхняя строка** — сколько окон autopase открыто, сколько ждут слова, сколько
+полос пишет код прямо сейчас, сколько открытых PR. Справа — лампочки источников
+данных: зелёная значит «источник ответил», красная — «не ответил» (наведите
+мышью, чтобы увидеть текст ошибки). Доска при этом продолжает работать: каждый
+источник живёт отдельно и падение одного не гасит остальные.
 
-## Optional: watching a second machine
+**Полоса под шапкой** — три места, где пишется код: **lanes-01**
+(`root@2.29.10.164`), **Hetzner** (`root@89.167.116.229`) и **Mac**. Для каждой
+полосы видно, занята она или свободна, какая ветка на ней лежит и какое окно за
+неё отвечает. Полоса, которая занята, но ни к какому окну не привязалась,
+подписана «ничья» — это повод разобраться.
 
-If part of your fleet runs on another computer, the board can poll it over
-ssh (read-only: it lists agent processes) and show a green "agent running on
-second machine" line on the matching cards, so a starred card doesn't raise
-a false alarm while the real work happens elsewhere.
+**Колонки:**
 
-Set the ssh alias of that machine in the environment:
+| колонка | что в ней |
+|---|---|
+| **Нужен CTO / владелец** | окно `blocked`, либо в его последних словах есть «ВОПРОС CTO» / «ОТВЕТ ВЛАДЕЛЬЦУ», либо такой комментарий висит в зонтичном issue без ответа. Всегда первая — это то, что стоит без человека |
+| **В работе** | окно сейчас работает |
+| **Молчит, полоса пишет** | окно молчит, но его полоса занята — работа идёт не в окне, а на сервере |
+| **Простаивает** | окно с живым агентом, но без работы и без полос |
+| **Без агента** | окно есть, агента в нём нет (herdr вернул `unknown`) |
 
-```
-SHEEPDOG_REMOTE_HOST=<your-ssh-alias> node bin/board-server.mjs
-```
+**Карточка = одна вкладка herdr.** На ней:
 
-The mapping "task on the second machine → local project folder" lives in
-`state/remote-bridge.json`. If the variable is not set, the feature is off
-and nothing is polled. By default the board looks for checkouts under
-`Developer/`, `projects/`, `work/` or `src/` on that machine; a `_dirs` array
-in the same file overrides the list.
+- имя рабочей копии и место в herdr (`w5A:p1`);
+- состояние (работает / ждёт / заблокировано / закончило) и **сколько времени
+  оно держится**;
+- по какому правилу herdr так решил (`agent explain`) и по какому куску экрана —
+  наведите мышью, чтобы увидеть область и приоритет правила;
+- модель, учётная запись, усилие и заполненность контекста — прочитаны с нижней
+  строки экрана окна;
+- ветка рабочей копии (или «голова отсоединена», если ветки нет);
+- **полосы**, на которых пишется код этого потока, с их ветками;
+- **открытые PR** с цветом CI: зелёный / красный / «CI идёт». Подписано, откуда
+  взялась привязка: «ветка окна», «префикс ветки», «ветка полосы» или «названо
+  окном»;
+- **зонтичный issue** программы и висит ли в нём вопрос без ответа;
+- **последние слова окна** — что оно сказало последним.
 
-## Privacy and footprint
+**Клик по карточке** переводит herdr на эту вкладку. Это единственное действие
+доски: больше она ничего никуда не пишет.
 
-- **Zero dependencies.** Plain Node, no `package.json`, nothing to install.
-- **Localhost only.** The server listens on `127.0.0.1:4877` and talks to
-  nothing but the local herdr CLI (and, if you enabled it, your own second
-  machine over your own ssh config). Nothing leaves your machine.
-- All board state lives in `state/` (gitignored) as small JSON files you can
-  read and edit by hand.
+---
 
-## Handing a task to a worker agent
+## Откуда берутся данные
 
-`bin/teammate.mjs` is the other half of the same idea: instead of watching
-sessions you opened by hand, an agent session opens one itself.
+Руками не вводится **ничего**. Всё читается заново при каждом обновлении:
 
-```
-node bin\teammate.mjs new "Rewrite the CSV parser, keep the tests green"
-node bin\teammate.mjs check
-node bin\teammate.mjs close tm-0814-223149
+| что | откуда | как часто |
+|---|---|---|
+| окна, вкладки, состояние агента | `herdr api snapshot`, `herdr workspace list`, `herdr agent list` | каждые 3 с |
+| правило состояния | `herdr agent explain <панель>` | каждые 12 с |
+| модель, учётка, усилие, контекст, номера PR на экране | `herdr pane read <панель> --source visible` | каждые 12 с |
+| полосы lanes-01 и Hetzner | `ssh … hzlane status` | каждые 45 с |
+| полосы Mac | `ssh mac` — ветка каждой папки `~/kitchens/autopase.lv/lane-*` плюс рабочая папка живых процессов `codex exec` | каждые 45 с |
+| открытые PR и цвет CI | `gh pr list --repo Baltic-OrangesLV/vincheck-latvia` | каждые 60 с |
+| зонтичные issue и вопросы в них | `gh issue list --label umbrella` + `gh issue view` | каждые 120 с |
+| какое окно за какие полосы и ветки отвечает | `autopase-ops/reports/active-session-monitor/STREAM-WATCH.json` | каждые 30 с |
+| номер зонтичного issue | `_conveyor/autopase.lv/specs/<ПРОГРАММА>/PROGRAM-STATE.md`, строка `umbrella: #NNNN` | каждые 30 с |
+| последние слова окна | журнал сессии Claude (`*.jsonl`); если текущая сессия ещё ничего не сказала вслух — журнал прошлой сессии этого же окна; если и там пусто — последняя содержательная строка с экрана | каждые 3 с (по времени изменения файла) |
+
+Единственное, что доска хранит сама, — `state/autopase-seen.json`: когда каждая
+панель впервые оказалась в нынешнем состоянии. Без этого не посчитать «сколько
+времени окно так стоит»: herdr время в состоянии не хранит.
+
+**Доска только читает.** Она не запускает и не останавливает полосы, ничего не
+пишет в чужие окна herdr, не трогает боевую базу, Vercel и Coolify. По ssh
+выполняются только `hzlane status`, `pgrep`, `git rev-parse` и `lsof`.
+
+---
+
+## Настройки
+
+По умолчанию всё уже прописано в `bin/autopase-board.mjs` (раздел `DEFAULTS`).
+Переопределить, ничего не трогая в коде, можно файлом `state/autopase-board.json`
+(он не в git):
+
+```json
+{
+  "match": "autopase",
+  "hide": ["seo"],
+  "repo": "Baltic-OrangesLV/vincheck-latvia",
+  "askWords": ["ВОПРОС CTO", "ОТВЕТ ВЛАДЕЛЬЦУ"],
+  "answerWords": ["ОТВЕТ CTO", "РЕШЕНИЕ CTO"],
+  "hosts": {
+    "lanes-01": { "target": "root@2.29.10.164", "key": "id_ed25519", "kind": "hzlane" },
+    "hetzner":  { "target": "root@89.167.116.229", "key": "id_ed25519", "kind": "hzlane" },
+    "mac":      { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/autopase.lv" }
+  }
+}
 ```
 
-`new` creates a tab in the window it is run from, starts a coding agent there
-with a written brief, and records the tab, the pane and the folder in
-`state/teammates/`. The worker reports by appending one-line updates
-(`working: …`, `needs-decision: …`, `done: …`) to its own status file, so
-`check` is a single cheap pass that costs no agent tokens: it prints only what
-wants your attention and exits 1 when something does. `close` refuses to touch
-anything it cannot prove is still the tab it opened, and erases the record only
-after herdr answers that the pane is gone.
+- `match` — окно попадает на доску, если его рабочая папка содержит это слово.
+- `hide` — что не показывать. По слову владельца окно `seo` — маркетинг, а не
+  разработка, и на доске разработки ему не место.
+- `askWords` — по каким словам окно считается ждущим человека.
+- `answerWords` — какими словами вопрос в зонтике закрывают. Пока в зонтике
+  после вопроса не появится комментарий с таким словом, вопрос считается
+  висящим (в зонтике пишет одна учётная запись, по автору ответ не отличить).
 
-With `--tree`, the worker also gets its own pooled git worktree: teammate
-leases a copy of the repository from treehouse and puts it on a fresh branch
-named after the worker (`tm-…`) cut from the captain's current commit, so parallel workers never
-collide on files. The copy is wiped when it goes back to the pool at close —
-only commits survive — so `close` refuses while uncommitted changes sit in it,
-then reports how many commits landed on the branch and how to merge them.
+---
 
-See `docs/teammate.md`.
+## Чего доска не умеет
 
-## How it talks to herdr
+- Привязать PR к окну, если ветка PR не похожа ни на ветку окна, ни на префиксы
+  из `STREAM-WATCH.json`, и окно нигде не назвало его номер. Такой PR просто не
+  появится ни на одной карточке.
+- Показать полосу, которой нет ни в `hosts`, ни среди папок `lane-*` на Mac.
+- Отличить «человек ответил на вопрос в зонтике» от «поток сам дописал отчёт»,
+  если ответ не помечен словом из `answerWords`.
+- Понять, что делает окно без агента Claude: для них показывается только
+  последняя строка экрана.
 
-See `docs/herdr-api.md` — a field guide to the herdr CLI surface the board
-uses: what can be read (sessions, states, titles, windows), what can be
-written back (metadata tokens, so board data shows up inside herdr itself),
-and what herdr does not track (time in state, priority), which is exactly
-the part sheepdog stores for itself.
+---
 
-## License
+## Лицензия
 
-MIT — see `LICENSE`.
+MIT — см. `LICENSE`. Исходная доска: [sheepdog](https://github.com/patraianton/sheepdog).
