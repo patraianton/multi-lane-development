@@ -1,0 +1,16 @@
+[Unit]
+Description=Watchtower Telegram bot
+Documentation=file:///opt/watchtower/docs/TELEGRAM.md
+After=network.target watchtower.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/watchtower
+ExecStart=/usr/bin/env node bin/telegram-bot.mjs run
+Restart=always
+RestartSec=3
+EnvironmentFile=-/etc/watchtower.env
+SyslogIdentifier=watchtower-bot
+
+[Install]
+WantedBy=multi-user.target

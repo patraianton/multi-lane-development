@@ -789,6 +789,12 @@ try { if (localStorage.getItem('watchtower-view') === 'pipeline') view = 'pipeli
 let pipeSeen = '';
 let pipeTimer = null;
 const openCards = new Set();
+// Whether this board runs the subscription/Telegram flow. Only then does a
+// grilled card wait for a subscription (and lose its plain forward button);
+// a board without the feature keeps its old grilled -> Development button.
+// The server decides this in /pipeline/data; default off so a board that never
+// sends looks exactly as it did before this wave.
+let usesSubscriptions = false;
 
 // A duration in plain words — the same words the agent endpoint uses.
 function fmtDur(ms) {
@@ -871,6 +877,9 @@ function pcard(c) {
   bits.push('<div class="row mono">' + esc(STAGE_TITLE[c.stage] ?? c.stage)
     + ' · ' + esc(c.id) + '</div>');
   bits.push('<div class="row cnt">' + failLine(c) + '</div>');
+  if (usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim()) {
+    bits.push('<div class="row">waiting for a subscription</div>');
+  }
   if (c.status && c.status.text) {
     bits.push('<div class="row">' + esc(c.status.text)
       + (c.status.verdict ? ' <span class="mono">(' + esc(c.status.verdict) + ')</span>' : '') + '</div>');
@@ -920,7 +929,8 @@ function pcard(c) {
     acts.push(actBtn(c.id, 'unstuck', {}, 'return to development', 'go'));
   } else if (c.stage === 'acceptance') {
     acts.push(actBtn(c.id, 'accept', {}, 'accept', 'go'));
-  } else if (NEXT_STAGE[c.stage]) {
+  } else if (NEXT_STAGE[c.stage]
+      && !(usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim())) {
     acts.push(actBtn(c.id, 'move', { to: NEXT_STAGE[c.stage] },
       '→ ' + STAGE_TITLE[NEXT_STAGE[c.stage]], 'go'));
   }
@@ -970,6 +980,7 @@ function restoreInputs(snap) {
 
 function renderPipeline(d) {
   const snap = snapshotInputs();
+  usesSubscriptions = Boolean(d.usesSubscriptions);
   const cards = d.cards ?? [];
   const stuck = cards.filter(c => c.stage === 'stuck');
 

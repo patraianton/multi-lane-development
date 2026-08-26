@@ -272,6 +272,22 @@ the reason in plain words; the store is left exactly as it was.
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
 
+A separate path assigns who pays for the run and **walks the card forward**:
+
+```
+POST /pipeline/assign-subscription
+{ "cardId", "subscription", "by" }
+```
+
+Valid only while the card is in `grilled` and `subscription` is empty.
+`subscription` must be one of the names in the board config's
+`subscriptions` array. The board sets it, records a comment
+`subscription <name> assigned by <by>`, and moves the card to
+`development`. `by` is a string or `{ "name", "tag", "tgUserId" }`
+(what the Telegram bot sends). Wrong stage, unknown name, already
+assigned, or a missing field → `400`. Auth is the same as the other
+pipeline mutations.
+
 When `auth.founders` is empty or missing, the windows and pipeline endpoints
 stay open — the board listens on `127.0.0.1` only, as before. When the list
 is set, those paths need a founder session, a localhost-as-owner request, or
@@ -312,6 +328,8 @@ path that was open stays open.
 | `auth.cookieSecure` | `true` | the session cookie carries `Secure`. Browsers still accept it on `http://localhost`; set `false` only for a plain-HTTP deployment |
 | `apiToken` | empty | Bearer token accepted on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when sign-in is on |
 | `probeToken` | empty | unchanged: Bearer token for every `/probe/*` path |
+| `subscriptions` | empty | array of subscription names the owner may assign (Telegram buttons and `POST /pipeline/assign-subscription`) |
+| `telegram` | missing | outbound Telegram notifications; see [`TELEGRAM.md`](./TELEGRAM.md). Missing, or present without `botToken` and without `dryRun: true` → no sends, one log line at start-up |
 
 This wave does **not** send email or Telegram. `POST /auth/request` stores a
 one-time token and prints `login link for <email>: <url>` on the server's

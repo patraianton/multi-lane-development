@@ -26,7 +26,14 @@ import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
 } from './serve.mjs';
-import { configurePipeline, handlePipeline } from './pipeline.mjs';
+import { configurePipeline, handlePipeline, setPipelineBoard } from './pipeline.mjs';
+import {
+  configureTelegram,
+  notifyArtifactReady,
+  notifyAssignSubscription,
+  notifyStuck,
+  notifyAcceptance,
+} from './telegram-bot.mjs';
 import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
 import {
   configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
@@ -228,7 +235,67 @@ function applyConfig(raw) {
   // Missing, broken or empty founders list → null, and the board stays open.
   config.auth = parseAuth(src);
   reportAuthWarnings(config.auth);
+  config.subscriptions = parseSubscriptions(src.subscriptions);
+  const telegramOn = wireTelegram(src.telegram);
+  setPipelineBoard({
+    subscriptions: config.subscriptions,
+    notifyEnabled: telegramOn,
+    senders: telegramOn ? {
+      artifactReady: notifyArtifactReady,
+      assignSubscription: notifyAssignSubscription,
+      stuck: notifyStuck,
+      acceptance: notifyAcceptance,
+    } : null,
+  });
   return config;
+}
+
+function parseSubscriptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const name = (typeof item === 'string' || typeof item === 'number')
+      ? String(item).trim()
+      : String(item?.name ?? item?.id ?? '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+// Present + (botToken or dryRun:true) → senders are live. Anything else is
+// a skip, said once so a missing token is visible in the service log.
+let telegramNotice = '';
+function noteTelegram(msg) {
+  if (msg === telegramNotice) return;
+  telegramNotice = msg;
+  console.log(msg);
+}
+
+function wireTelegram(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    configureTelegram(null);
+    noteTelegram('telegram notifications skipped: no telegram config');
+    return false;
+  }
+  const token = String(raw.botToken ?? raw.token ?? '').trim();
+  const dryRun = raw.dryRun === true;
+  if (!token && !dryRun) {
+    configureTelegram(null);
+    noteTelegram('telegram notifications skipped: no botToken');
+    return false;
+  }
+  try {
+    configureTelegram({ ...raw, botToken: token, dryRun });
+  } catch (e) {
+    configureTelegram(null);
+    noteTelegram(`telegram notifications skipped: ${e.message}`);
+    return false;
+  }
+  noteTelegram(dryRun ? 'telegram notifications: dry-run' : 'telegram notifications: on');
+  return true;
 }
 
 // Risky sign-in settings are said out loud once, and again whenever they change,

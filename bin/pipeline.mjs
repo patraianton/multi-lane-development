@@ -93,14 +93,36 @@ const LIMIT = {
 
 const LINK_KEYS = ['ticket', 'branch', 'pr', 'artifact'];
 
+const NOTIFY_KINDS = ['artifact', 'stuck', 'acceptance', 'assignSubscription'];
+
 // -------------------------------------------------------------------- store
 
 let FILE = '';
 let state = null;         // { cards: [...] }
 let loading = null;
 
+// Board-wide extras the pipeline does not own (subscription names, Telegram
+// senders). watchtower.mjs sets this on every config reload.
+let BOARD = {
+  subscriptions: [],
+  notifyEnabled: false,
+  senders: null,
+};
+
 export function configurePipeline(stateDir) {
   FILE = path.join(stateDir, 'pipeline-cards.json');
+  state = null;
+  loading = null;
+}
+
+export function setPipelineBoard(next = {}) {
+  BOARD = {
+    subscriptions: Array.isArray(next.subscriptions)
+      ? next.subscriptions.map(s => String(s ?? '').trim()).filter(Boolean)
+      : [],
+    notifyEnabled: Boolean(next.notifyEnabled),
+    senders: next.senders && typeof next.senders === 'object' ? next.senders : null,
+  };
 }
 
 function str(v, limit) {
@@ -148,7 +170,14 @@ function normCard(raw) {
   }
 
   const verdict = VERDICTS.includes(src.status?.verdict) ? src.status.verdict : '';
-  return {
+  const notified = {};
+  const rawNotified = src.notified && typeof src.notified === 'object' && !Array.isArray(src.notified)
+    ? src.notified : {};
+  for (const kind of NOTIFY_KINDS) {
+    const at = isoOr(rawNotified[kind], null);
+    if (at) notified[kind] = at;
+  }
+  const card = {
     id,
     title,
     spec: str(src.spec, LIMIT.spec),
@@ -168,6 +197,10 @@ function normCard(raw) {
     },
     comments,
   };
+  // Omit an empty notified map so cards that never sent look like they did
+  // before this wave (byte-identical when Telegram is off).
+  if (Object.keys(notified).length) card.notified = notified;
+  return card;
 }
 
 function int(v) {
@@ -315,6 +348,114 @@ function need(cards, id) {
   return card;
 }
 
+function snapshotNotify(card) {
+  return {
+    stage: card.stage,
+    artifact: card.links.artifact,
+    lane: card.lane,
+    subscription: card.subscription,
+  };
+}
+
+// Decide which Telegram messages this edit earned, and stamp the card in the
+// same write so a restart cannot send the same event again. A new entry into
+// stuck / acceptance may notify again (fresh timestamp). Artifact and
+// assign-subscription fire once until that field is first set.
+function takeNotifyEvents(before, card) {
+  const events = [];
+  if (!BOARD.notifyEnabled) return events;
+  const now = new Date().toISOString();
+  const stamp = (kind) => {
+    if (!card.notified) card.notified = {};
+    card.notified[kind] = now;
+    events.push(kind);
+  };
+  if (card.stage === 'stuck' && before.stage !== 'stuck') stamp('stuck');
+  if (card.stage === 'acceptance' && before.stage !== 'acceptance') stamp('acceptance');
+  if (card.stage === 'grilled'
+      && card.links.artifact
+      && card.links.artifact !== before.artifact
+      && !card.notified?.artifact) {
+    stamp('artifact');
+  }
+  if (card.stage === 'grilled'
+      && !card.subscription
+      && card.lane
+      && !before.lane
+      && BOARD.subscriptions.length
+      && !card.notified?.assignSubscription) {
+    stamp('assignSubscription');
+  }
+  return events;
+}
+
+async function editCard(id, fn) {
+  return commit(st => {
+    const card = need(st.cards, id);
+    const before = snapshotNotify(card);
+    fn(card);
+    const events = takeNotifyEvents(before, card);
+    return { card, events };
+  });
+}
+
+function stuckDigest(card) {
+  const c = card.counters ?? {};
+  const bits = [];
+  if (c.localFails) bits.push(`local ${c.localFails}`);
+  if (c.ciFails) bits.push(`ci ${c.ciFails}`);
+  if (c.acceptanceFails) bits.push(`acceptance ${c.acceptanceFails}`);
+  const counters = bits.length
+    ? bits.join(', ') + (card.consecutiveFails ? ` (${card.consecutiveFails} in a row)` : '')
+    : (card.consecutiveFails ? `${card.consecutiveFails} in a row` : 'no counters');
+  const last = card.comments[card.comments.length - 1];
+  const comment = last
+    ? `${last.author}: ${last.text}`
+    : '(none)';
+  return `counters: ${counters}\nlast comment: ${comment}`;
+}
+
+async function emitNotifications(card, events) {
+  if (!BOARD.notifyEnabled || !events?.length || !BOARD.senders) return;
+  const s = BOARD.senders;
+  for (const kind of events) {
+    try {
+      if (kind === 'artifact' && s.artifactReady) await s.artifactReady(card);
+      else if (kind === 'stuck' && s.stuck) await s.stuck(card, stuckDigest(card));
+      else if (kind === 'acceptance' && s.acceptance) await s.acceptance(card);
+      else if (kind === 'assignSubscription' && s.assignSubscription) {
+        await s.assignSubscription(card, BOARD.subscriptions);
+      }
+    } catch (e) {
+      console.error(`${new Date().toISOString()} telegram notify ${kind} failed: ${String(e?.message || e)}`);
+    }
+  }
+}
+
+function unwrapMutation(result) {
+  if (result && typeof result === 'object' && Array.isArray(result.events) && result.card) {
+    return result;
+  }
+  return { card: result, events: [] };
+}
+
+function formatBy(by) {
+  if (by == null || by === '') return '';
+  if (typeof by === 'string' || typeof by === 'number') return String(by).trim();
+  if (typeof by !== 'object' || Array.isArray(by)) return '';
+  const name = str(by.name, LIMIT.author).trim();
+  const tag = str(by.tag, LIMIT.author).trim();
+  if (name && tag) return `${name} (${tag})`;
+  return name || tag;
+}
+
+function authorFromBy(by) {
+  if (by == null || by === '') return '';
+  if (typeof by === 'string' || typeof by === 'number') return str(by, LIMIT.author).trim();
+  if (typeof by !== 'object' || Array.isArray(by)) return '';
+  return str(by.name, LIMIT.author).trim() || str(by.tag, LIMIT.author).trim();
+}
+
 async function createCard(body) {
   const title = str(body.title, LIMIT.title).trim();
   if (!title) throw new BadRequest('a title is required');
@@ -345,8 +486,7 @@ async function moveCard(body) {
   if (!STAGE_KEYS.has(to)) {
     throw new BadRequest(`unknown stage "${to}" — stages are ${[...STAGE_KEYS].join(', ')}`);
   }
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     const allowed = MOVES[card.stage] ?? [];
     if (!allowed.includes(to)) {
       throw new BadRequest(allowed.length
@@ -357,7 +497,6 @@ async function moveCard(body) {
     enterStage(card, to, new Date().toISOString());
     // A stage passed is the run that did not fail: the streak starts over.
     card.consecutiveFails = 0;
-    return card;
   });
 }
 
@@ -366,8 +505,7 @@ async function failCard(body) {
   if (!FAIL_KINDS[kind]) {
     throw new BadRequest(`unknown failure kind "${kind}" — use local, ci or acceptance`);
   }
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     if (card.stage === 'accepted') throw new BadRequest('an accepted card cannot fail');
     if (card.stage === 'stuck') throw new BadRequest('the card is already stuck — return it to development first');
     if (!CAN_FAIL.has(card.stage)) {
@@ -380,32 +518,27 @@ async function failCard(body) {
     // row, and then the loop itself is the problem and a human has to see it.
     const to = card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development';
     enterStage(card, to, new Date().toISOString());
-    return card;
   });
 }
 
 async function unstuckCard(body) {
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     if (card.stage !== 'stuck') throw new BadRequest('the card is not stuck');
     enterStage(card, 'development', new Date().toISOString());
     // A human decided what to do about the loop, so the card gets a fresh run of
     // three attempts. Otherwise the very next failure would bounce it straight
     // back into Stuck and the decision would have bought nothing.
     card.consecutiveFails = 0;
-    return card;
   });
 }
 
 async function acceptCard(body) {
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     if (card.stage !== 'acceptance') {
       throw new BadRequest(`only a card in "acceptance" can be accepted, this one is in "${card.stage}"`);
     }
     enterStage(card, 'accepted', new Date().toISOString());
     card.consecutiveFails = 0;
-    return card;
   });
 }
 
@@ -414,10 +547,8 @@ async function commentCard(body) {
   const text = str(body.text, LIMIT.comment).trim();
   if (!author) throw new BadRequest('an author is required');
   if (!text) throw new BadRequest('a comment text is required');
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     card.comments.push({ author, text, at: new Date().toISOString() });
-    return card;
   });
 }
 
@@ -447,8 +578,7 @@ async function updateCard(body) {
   const spec = body.spec;
   if (spec !== undefined && typeof spec !== 'string') throw new BadRequest('spec must be a text');
 
-  return commit(st => {
-    const card = need(st.cards, body.id);
+  return editCard(body.id, card => {
     if (body.links) {
       for (const key of LINK_KEYS) {
         if (body.links[key] !== undefined) card.links[key] = str(body.links[key], LIMIT.link).trim();
@@ -463,7 +593,40 @@ async function updateCard(body) {
       if (verdict !== undefined) card.status.verdict = verdict;
       card.status.at = new Date().toISOString();
     }
-    return card;
+  });
+}
+
+// Owner (or the Telegram bot on their behalf) picks who pays for the run.
+// Only from Grilled, only while none is set; the card then walks into
+// Development in the same write.
+async function assignSubscription(body) {
+  const subscription = str(body.subscription, LIMIT.slotish).trim();
+  if (!subscription) throw new BadRequest('a subscription is required');
+  const by = formatBy(body.by);
+  if (!by) throw new BadRequest('who assigned it (by) is required');
+  const known = BOARD.subscriptions;
+  if (!known.includes(subscription)) {
+    throw new BadRequest(`unknown subscription "${subscription}" — known: ${
+      known.length ? known.join(', ') : '(none configured)'}`);
+  }
+  const id = String(body.cardId ?? body.id ?? '').trim();
+  if (!id) throw new BadRequest('a card id is required');
+  return editCard(id, card => {
+    if (card.stage !== 'grilled') {
+      throw new BadRequest(`a subscription can only be assigned while the card is in "grilled", this one is in "${card.stage}"`);
+    }
+    if (card.subscription) {
+      throw new BadRequest(`a subscription is already assigned ("${card.subscription}")`);
+    }
+    const now = new Date().toISOString();
+    card.subscription = subscription;
+    enterStage(card, 'development', now);
+    card.consecutiveFails = 0;
+    card.comments.push({
+      author: authorFromBy(body.by) || 'board',
+      text: `subscription ${subscription} assigned by ${by}`,
+      at: now,
+    });
   });
 }
 
@@ -478,6 +641,11 @@ async function pageData() {
     stages: STAGES,
     stuckAfter: STUCK_AFTER,
     offTheClock: [...OFF_THE_CLOCK],
+    // Whether this board uses the subscription/Telegram flow at all. A board
+    // with no subscriptions configured keeps its plain grilled -> Development
+    // button and never shows "waiting for a subscription": the assign endpoint
+    // has no names to offer there anyway.
+    usesSubscriptions: BOARD.subscriptions.length > 0,
     cards: st.cards,
   };
 }
@@ -684,6 +852,20 @@ export async function handlePipeline(req, res, url, port) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/pipeline/assign-subscription') {
+    const body = await readBody(req);
+    if (!String(body.cardId ?? body.id ?? '').trim()) {
+      send(res, 400, JSON.stringify({ error: 'a card id is required' }));
+      return true;
+    }
+    const { card, events } = unwrapMutation(await assignSubscription(body));
+    // The card is already persisted; answer the founder/agent first so a slow or
+    // hanging Telegram round-trip can never delay their action, then notify.
+    send(res, 200, JSON.stringify({ ok: true, card }));
+    await emitNotifications(card, events);
+    return true;
+  }
+
   // Every mutation: /pipeline/card/<action>, a JSON body, an English 400 when
   // the body does not say what it must.
   if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')) {
@@ -701,8 +883,11 @@ export async function handlePipeline(req, res, url, port) {
       send(res, 400, JSON.stringify({ error: 'a card id is required' }));
       return true;
     }
-    const card = await fn(body);
+    const { card, events } = unwrapMutation(await fn(body));
+    // The mutation is already persisted; answer first so a slow or hanging
+    // Telegram round-trip can never delay the founder/agent, then notify.
     send(res, 200, JSON.stringify({ ok: true, card }));
+    await emitNotifications(card, events);
     return true;
   }
 
