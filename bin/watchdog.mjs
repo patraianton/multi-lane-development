@@ -9,8 +9,10 @@
 // gh CLI when it is installed. The LLM is a shell command from config; the
 // prompt is written to its stdin.
 //
-// Run:  node bin/watchdog.mjs [--once] [--dry-run] [--config <file>]
+// Run:  node bin/watchdog.mjs [run] [--once] [--dry-run] [--max-ticks N] [--config <file>]
 // File: state/watchdog.json   (or --config)
+// `run` is the long-running loop (what the systemd unit starts). Without
+// --once the process loops anyway; `run` is the documented name for that.
 
 import { execFile, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -38,13 +40,18 @@ const GH = process.env.WATCHDOG_GH || process.env.WATCHTOWER_GH || 'gh';
 const HELP = `Watchdog: write a Status line and a moving/stalled/looping verdict on each active pipeline card.
 
 Usage:
-  node bin/watchdog.mjs [--once] [--dry-run] [--config <file>]
+  node bin/watchdog.mjs [run] [--once] [--dry-run] [--max-ticks N] [--config <file>]
   node bin/watchdog.mjs --help
+
+Commands:
+  run                loop every intervalMin minutes (default if no --once)
 
 Flags:
   --once             one sweep, then exit
-  --dry-run          gather evidence and print the prompt that WOULD go to the
-                     LLM; do not call the LLM; do not POST Status
+  --dry-run          print the evidence and the prompt that WOULD go to the
+                     LLM; do not call ssh, gh, or the LLM; do not POST Status
+  --max-ticks N      loop at most N sweeps, then exit (for tests; do not leave
+                     a loop running)
   --config <file>    config JSON (default ${CONFIG_REL})
   --help             this help
 
@@ -75,13 +82,34 @@ See docs/WATCHDOG.md.`;
 // ---------------------------------------------------------------- flags
 
 function parseFlags(argv) {
-  const out = { once: false, dryRun: false, help: false, configPath: DEFAULT_CONFIG };
+  const out = {
+    once: false, dryRun: false, help: false, configPath: DEFAULT_CONFIG, maxTicks: 0, command: '',
+  };
+  const allowed = '--once, --dry-run, --max-ticks N, --config <file>, --help, run';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--once') out.once = true;
     else if (a === '--dry-run') out.dryRun = true;
     else if (a === '--help' || a === '-h') out.help = true;
-    else if (a === '--config') {
+    else if (a === 'run') out.command = 'run';
+    else if (a === '--max-ticks') {
+      const next = argv[++i];
+      if (!next || next.startsWith('-')) {
+        throw Object.assign(new Error('--max-ticks needs a number >= 1'), { code: 2 });
+      }
+      const n = Number(next);
+      if (!Number.isFinite(n) || n < 1) {
+        throw Object.assign(new Error('--max-ticks needs a number >= 1'), { code: 2 });
+      }
+      out.maxTicks = Math.floor(n);
+    } else if (a.startsWith('--max-ticks=')) {
+      const v = a.slice('--max-ticks='.length).trim();
+      const n = Number(v);
+      if (!v || !Number.isFinite(n) || n < 1) {
+        throw Object.assign(new Error('--max-ticks needs a number >= 1'), { code: 2 });
+      }
+      out.maxTicks = Math.floor(n);
+    } else if (a === '--config') {
       const next = argv[++i];
       if (!next || next.startsWith('-')) {
         throw Object.assign(new Error('--config needs a file path'), { code: 2 });
@@ -93,12 +121,12 @@ function parseFlags(argv) {
       out.configPath = path.resolve(v);
     } else if (a.startsWith('-')) {
       throw Object.assign(
-        new Error(`unknown flag ${a}\nAllowed: --once, --dry-run, --config <file>, --help`),
+        new Error(`unknown flag ${a}\nAllowed: ${allowed}`),
         { code: 2 },
       );
     } else {
       throw Object.assign(
-        new Error(`unexpected argument ${a}\nAllowed: --once, --dry-run, --config <file>, --help`),
+        new Error(`unexpected argument ${a}\nAllowed: ${allowed}`),
         { code: 2 },
       );
     }
@@ -121,8 +149,21 @@ function die(message, code = 1) {
   process.exit(code);
 }
 
+let stopping = false;
+let sleepWake = null;
+
+function requestStop() {
+  if (stopping) return;
+  stopping = true;
+  log('stopping');
+  if (sleepWake) sleepWake();
+}
+
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { sleepWake = null; resolve(); }, ms);
+    sleepWake = () => { clearTimeout(timer); sleepWake = null; resolve(); };
+  });
 }
 
 function trimSlash(url) {
@@ -558,7 +599,7 @@ function pipelineUrl(cfg) {
 
 // ---------------------------------------------------------------- evidence + prompt
 
-async function gatherEvidence(cfg, card) {
+async function gatherEvidence(cfg, card, { dryRun } = {}) {
   const evidence = {
     laneId: card.lane || '',
     laneLog: '',
@@ -574,6 +615,10 @@ async function gatherEvidence(cfg, card) {
       evidence.laneError = known.length
         ? `no ssh command configured for lane "${card.lane}" (known: ${known.join(', ')})`
         : `no ssh command configured for lane "${card.lane}" (lanes in config is empty)`;
+    } else if (dryRun) {
+      evidence.laneError = lane.ssh
+        ? `would ssh ${lane.ssh} — ${lane.command} (NOT run in dry-run)`
+        : `would run local — ${lane.command} (NOT run in dry-run)`;
     } else {
       const got = await readLaneLog(lane);
       if (got.ok) evidence.laneLog = String(got.text ?? '');
@@ -585,9 +630,13 @@ async function gatherEvidence(cfg, card) {
 
   const pr = card.links.pr || card.links.pull || '';
   if (pr) {
-    const got = await readCi(pr);
-    if (got.ok) evidence.ci = got.text;
-    else evidence.ciError = got.error;
+    if (dryRun) {
+      evidence.ciError = `would gh pr view ${pr} (NOT run in dry-run)`;
+    } else {
+      const got = await readCi(pr);
+      if (got.ok) evidence.ci = got.text;
+      else evidence.ciError = got.error;
+    }
   } else {
     evidence.ciError = 'no PR link on the card';
   }
@@ -722,7 +771,7 @@ async function processCard(cfg, card, { dryRun }) {
   if (!isActive(card)) {
     return { id: card.id, skipped: true, reason: `stage ${card.stage || '(empty)'}` };
   }
-  const evidence = await gatherEvidence(cfg, card);
+  const evidence = await gatherEvidence(cfg, card, { dryRun });
   const prompt = buildPrompt(card, evidence);
 
   if (dryRun) {
@@ -794,7 +843,7 @@ async function sweep(cfg, { dryRun }) {
 
   if (dryRun) {
     process.stdout.write(
-      `done. no LLM call, no POSTs.${failed ? ` (${failed} card(s) failed and were skipped)` : ''}\n`);
+      `done. no LLM call, no ssh, no POSTs.${failed ? ` (${failed} card(s) failed and were skipped)` : ''}\n`);
   } else if (failed) {
     log(`sweep finished with ${failed} card(s) skipped after errors`);
   }
@@ -825,8 +874,8 @@ async function startConfig() {
 
 let cfg = await startConfig();
 
-process.on('SIGINT', () => { log('stopping'); process.exit(0); });
-process.on('SIGTERM', () => { log('stopping'); process.exit(0); });
+process.on('SIGINT', requestStop);
+process.on('SIGTERM', requestStop);
 
 async function runOnce() {
   try {
@@ -835,6 +884,7 @@ async function runOnce() {
     const msg = String(e.message || e);
     if (flags.once) throw e;
     log(msg);
+    if (flags.maxTicks) throw e;
   }
 }
 
@@ -848,13 +898,24 @@ if (flags.once) {
 }
 
 log(`watchdog started, every ${cfg.intervalMin} min, board ${cfg.boardUrl}`
-  + (flags.dryRun ? ' (dry-run: no LLM, no POSTs)' : ''));
-for (;;) {
-  await runOnce();
+  + (flags.dryRun ? ' (dry-run: no LLM, no ssh, no POSTs)' : '')
+  + (flags.maxTicks ? `, max ${flags.maxTicks} tick(s)` : ''));
+let ticks = 0;
+while (!stopping) {
+  try {
+    await runOnce();
+  } catch (e) {
+    if (flags.maxTicks) die(`watchdog: ${e.message || e}`);
+  }
+  ticks += 1;
+  if (flags.maxTicks && ticks >= flags.maxTicks) break;
+  if (stopping) break;
   try {
     cfg = await loadConfig(flags.configPath, { requireLlm: !flags.dryRun });
   } catch (e) {
     log(`keeping previous config: ${e.message}`);
   }
+  if (stopping) break;
   await sleep(cfg.intervalMin * 60 * 1000);
 }
+process.exit(0);

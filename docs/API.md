@@ -121,6 +121,13 @@ When every CI slot is held by a card, `problems` carries `ci-slots: no free CI
 slot — add capacity`. That is an alarm, not a wait: there is no queue. The same
 sentence appears in the page header. Occupancy itself is `GET /api/slots`.
 
+When an active pipeline card has a stale Status (older than twice the
+Watchdog interval, default 30 minutes), `problems` carries a `watchdog` row
+with the count and the card ids. The same count is `stale status` on
+`GET /api/pipeline`. Without a Status on the card the row is absent (the
+surface stays empty until the Watchdog has written one, unless
+`state/watchdog.json` is present).
+
 ## Clipping of long texts
 
 On a board sweep long texts are clipped and marked with their size
@@ -243,12 +250,17 @@ sat on it for two days" is never lost, it is just not charged to delivery.
 
 Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
 counters: **cards**, **stuck**, **waiting for acceptance**, **accepted**,
-**failures**), then:
+**failures**, **stale status**), then:
 
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
   (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (the watchdog's word: `moving`,
-  `stalled`, `looping`, or `-`);
+  `stalled`, `looping`, or `-`). JSON also carries `lane`, `links`, `status`
+  (`text`, `verdict`, `at`), `slot`, `subscription`, `consecutiveFails` and
+  `statusStale` so the Watchdog can score the card without a second request;
 - `stuck` — the cards waiting for a human, with how long they have been waiting;
+- `stale` — active cards (`development`, `local_check`, `ci_pr`) whose Status is
+  missing or older than twice the Watchdog interval (default 15 min → 30 min).
+  Empty until a Status exists, unless `state/watchdog.json` is present;
 - `specs` — under `?full=1` only, the spec text of every card that has one.
 
 The long parts of a card — the spec as written, every comment, the whole stage
@@ -278,6 +290,20 @@ the reason in plain words; the store is left exactly as it was.
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
+
+The Watchdog does **not** use `update`. It writes Status on a path of its own:
+
+```
+POST /pipeline/card/<id>/status
+{ "text": "Codex is running the local check on lane-2.", "verdict": "moving" }
+```
+
+`<id>` is in the path (URL-encoded). Auth is the same as the other pipeline
+mutations: founder session, localhost-as-owner, or `Authorization: Bearer
+<apiToken>`. `verdict` must be `moving`, `stalled` or `looping` — anything
+else is `400`. `text` is clipped to 400 characters. The board stores
+`card.status = { text, verdict, at }` (`at` is the time of this write).
+Posting the same Status twice is a refresh, not a second event.
 
 A separate path assigns who pays for the run and **walks the card forward**:
 
@@ -493,17 +519,19 @@ in the board header.
 ```
 pipeline: http://127.0.0.1:4878
 generated: 2026-08-26T17:36:54.960Z
-summary: cards 3, stuck 1, waiting for acceptance 0, accepted 1, failures 7
+summary: cards 3, stuck 1, waiting for acceptance 0, accepted 1, failures 7, stale status 0
 cards[3]{id,title,stage,clock,fails,verdict}:
   cmtadl1k48ian,Ship the pipeline view,accepted,3h 12m (stopped),local 3 ci 1,moving
   cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
   cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
 stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
-help[4]:
+stale: 0 — no active card has a stale Status
+help[5]:
   one card in full (spec, comments, history) — /api/pipeline/card/<id>, the whole pipeline in full — ?full=1
   stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
   clock is the delivery time; acceptance is the owner's decision and does not count — a card waiting there shows "(stopped)"
+  stale status: an active card (development, local_check, ci_pr) whose Status is missing or older than twice the Watchdog interval
   ?format=json — the same shape as plain JSON
 ```
 

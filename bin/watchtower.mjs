@@ -26,7 +26,7 @@ import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
 } from './serve.mjs';
-import { configurePipeline, handlePipeline, setPipelineBoard } from './pipeline.mjs';
+import { configurePipeline, handlePipeline, setPipelineBoard, pipelineStaleProblems } from './pipeline.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
 import {
   configureTelegram,
@@ -1987,6 +1987,24 @@ const server = http.createServer(async (req, res) => {
           + 'help: check that herdr answers — herdr api snapshot');
       }
       const view = buildAgentBoard(payload, p.full);
+      try {
+        const stale = await pipelineStaleProblems();
+        if (stale.count) {
+          const n = stale.count;
+          const ids = stale.ids.join(', ');
+          view.problems.push({
+            source: 'watchdog',
+            error: n === 1
+              ? `1 active card has a stale Status (older than ${stale.staleAfterMin}m): ${ids}`
+              : `${n} active cards have a stale Status (older than ${stale.staleAfterMin}m): ${ids}`,
+          });
+        }
+      } catch (e) {
+        view.problems.push({
+          source: 'watchdog',
+          error: `could not read pipeline Status: ${String(e?.message || e)}`,
+        });
+      }
       if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
       return sendText(res, 200, renderToonBoard(view));
     }
