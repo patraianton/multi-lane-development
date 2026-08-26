@@ -27,6 +27,7 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import { configurePipeline, handlePipeline, setPipelineBoard } from './pipeline.mjs';
+import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
 import {
   configureTelegram,
   notifyArtifactReady,
@@ -1186,6 +1187,7 @@ async function collect() {
       sources,
       probeStale: stale,
       hooksNotice: await hooksNotice(),
+      slotsAlarm: await slotsAlarmMessage(),
     };
   }
 
@@ -1528,6 +1530,7 @@ async function collect() {
     sources,
     probeStale: stale,
     hooksNotice: await hooksNotice(),
+    slotsAlarm: await slotsAlarmMessage(),
   };
 }
 
@@ -1637,6 +1640,9 @@ function buildAgentBoard(payload, full) {
     ...(payload.hosts ?? []).filter(h => !h.ok)
       .map(h => ({ source: `lane host ${h.host}`, error: clipText(h.error, full) || 'no answer' })),
   ];
+  if (payload.slotsAlarm) {
+    problems.push({ source: 'ci-slots', error: payload.slotsAlarm });
+  }
 
   return {
     board: `http://127.0.0.1:${PORT}`,
@@ -1718,6 +1724,39 @@ function renderToonBoard(v) {
     + ' its lane is building, idle — idle, off — no agent');
   // Help is a plain list, without fields: these are next steps, not data.
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
+  return out.join('\n') + '\n';
+}
+
+function slotsQuery(url) {
+  const allowed = ['format'];
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.includes(key)) {
+      return { error: `error: unknown parameter "${key}"\n`
+        + 'help: allowed is format=json (default) or format=toon' };
+    }
+    if (url.searchParams.getAll(key).length > 1) {
+      return { error: `error: parameter "${key}" given more than once\n`
+        + 'help: leave one value — the board does not guess which of them you meant' };
+    }
+  }
+  const format = url.searchParams.get('format') ?? 'json';
+  if (format !== 'toon' && format !== 'json') {
+    return { error: `error: unknown format "${format}"\n`
+      + 'help: format=json (default) or format=toon' };
+  }
+  return { format };
+}
+
+function renderToonSlots(view) {
+  const rows = (view.slots ?? []).map(s => ({
+    name: s.name,
+    card: s.card || '-',
+    since: s.since || '-',
+  }));
+  const out = [
+    toonTable('slots', rows, ['name', 'card', 'since'], 'no CI slots on the board'),
+  ];
+  if (view.alarm) out.push(`alarm: ${view.alarm}`);
   return out.join('\n') + '\n';
 }
 
@@ -1916,6 +1955,23 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
+    // CI slot occupancy. Holders live in state/ci-slots.json (written by
+    // bin/ci-slot.mjs). Auth is the same as the other /api/* reads.
+    if (req.method === 'GET' && url.pathname === '/api/slots') {
+      const p = slotsQuery(url);
+      if (p.error) return sendText(res, 400, p.error);
+      const view = await slotsForBoard();
+      const body = {
+        slots: view.slots.map(s => ({
+          name: s.name,
+          card: s.card || null,
+          since: s.since || null,
+        })),
+      };
+      if (view.alarm) body.alarm = view.alarm;
+      if (p.format === 'json') return send(res, 200, JSON.stringify(body, null, 2));
+      return sendText(res, 200, renderToonSlots(body));
+    }
     // The board for a watchdog agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
     // timers, so this costs no extra ssh or gh call.
@@ -2078,6 +2134,7 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
+configureSlots(STATE_DIR);
 configureHooks(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();

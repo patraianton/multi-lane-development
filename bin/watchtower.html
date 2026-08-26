@@ -578,7 +578,7 @@ function render(d) {
   document.body.classList.toggle('onboarding', Boolean(d.needsProject));
   $('project').textContent = d.project ?? '';
   fillColumns(d.columns);
-  const warn = [d.probeStale, d.hooksNotice].filter(Boolean).join(' · ');
+  const warn = [d.probeStale, d.hooksNotice, d.slotsAlarm].filter(Boolean).join(' · ');
   $('board-warn').textContent = warn;
   $('board-warn').hidden = !warn;
 
