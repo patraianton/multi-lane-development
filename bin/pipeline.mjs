@@ -79,6 +79,12 @@ const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
 // value is validated here so a wrong word never reaches the board).
 const VERDICTS = ['moving', 'stalled', 'looping'];
 
+// Stages the Watchdog scores. A missing or old Status on one of these is a
+// signal: the checker is meant to refresh every intervalMin minutes.
+const ACTIVE_STATUS_STAGES = new Set(['development', 'local_check', 'ci_pr']);
+const DEFAULT_WATCHDOG_INTERVAL_MIN = 15;
+const STALE_MULTIPLIER = 2;
+
 // ------------------------------------------------------------------- limits
 
 const LIMIT = {
@@ -335,6 +341,76 @@ export function fmtDur(ms) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+// ---------------------------------------------------------------- status / stale
+//
+// Status is "what is happening right now", written by the Watchdog. It is not
+// the Stage. A Status is stale when an active card has none, or the one it
+// has is older than twice the Watchdog's interval (default 15 min → 30 min).
+// Without a watchdog.json the missing-Status case is silent: the surface
+// shows nothing until a Status exists.
+
+function hasStatus(card) {
+  const s = card?.status;
+  if (!s || typeof s !== 'object') return false;
+  return Boolean(String(s.text ?? '').trim() || s.verdict || s.at);
+}
+
+function statusAgeMs(card, now = Date.now()) {
+  const t = Date.parse(card?.status?.at);
+  return Number.isFinite(t) ? Math.max(0, now - t) : null;
+}
+
+async function loadWatchdogMeta() {
+  const intervalMin = DEFAULT_WATCHDOG_INTERVAL_MIN;
+  const empty = {
+    configured: false,
+    intervalMin,
+    staleAfterMs: intervalMin * STALE_MULTIPLIER * 60 * 1000,
+  };
+  if (!FILE) return empty;
+  const raw = await readJsonSoft(path.join(path.dirname(FILE), 'watchdog.json'), null);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
+  let next = intervalMin;
+  const n = Number(raw.intervalMin);
+  if (Number.isFinite(n) && n >= 1) next = n;
+  return {
+    configured: Boolean(String(raw.boardUrl ?? '').trim()),
+    intervalMin: next,
+    staleAfterMs: next * STALE_MULTIPLIER * 60 * 1000,
+  };
+}
+
+function isStaleStatus(card, meta, now = Date.now()) {
+  if (!ACTIVE_STATUS_STAGES.has(card.stage)) return false;
+  if (!hasStatus(card)) return Boolean(meta?.configured);
+  const age = statusAgeMs(card, now);
+  if (age == null) return true;
+  return age > (meta?.staleAfterMs ?? emptyStaleAfterMs());
+}
+
+function emptyStaleAfterMs() {
+  return DEFAULT_WATCHDOG_INTERVAL_MIN * STALE_MULTIPLIER * 60 * 1000;
+}
+
+function staleList(cards, meta, now) {
+  return cards.filter(c => isStaleStatus(c, meta, now));
+}
+
+// Used by the windows agent view (/api/board problems) so a stale Status is
+// visible next to ssh/gh failures, without that view owning pipeline rules.
+export async function pipelineStaleProblems() {
+  const st = await load();
+  const meta = await loadWatchdogMeta();
+  const now = Date.now();
+  const cards = staleList(st.cards, meta, now);
+  return {
+    count: cards.length,
+    intervalMin: meta.intervalMin,
+    staleAfterMin: meta.intervalMin * STALE_MULTIPLIER,
+    ids: cards.map(c => c.id),
+  };
 }
 
 // ------------------------------------------------------------------- actions
@@ -596,6 +672,26 @@ async function updateCard(body) {
   });
 }
 
+// The Watchdog's contract: POST /pipeline/card/<id>/status { text, verdict }.
+// Id is in the path, not the body. Verdict is required and must be one of the
+// three words; text is clipped to LIMIT.status. This is a refresh, not a
+// second event — posting the same Status twice only updates `at`.
+async function writeStatus(id, body) {
+  const verdict = String(body?.verdict ?? '').trim().toLowerCase();
+  if (!VERDICTS.includes(verdict)) {
+    throw new BadRequest(
+      verdict
+        ? `unknown verdict "${verdict}" — verdicts are ${VERDICTS.join(', ')}`
+        : `a verdict is required — verdicts are ${VERDICTS.join(', ')}`);
+  }
+  const text = str(body?.text, LIMIT.status).trim();
+  return editCard(id, card => {
+    card.status.text = text;
+    card.status.verdict = verdict;
+    card.status.at = new Date().toISOString();
+  });
+}
+
 // Owner (or the Telegram bot on their behalf) picks who pays for the run.
 // Only from Grilled, only while none is set; the card then walks into
 // Development in the same write.
@@ -637,6 +733,7 @@ async function assignSubscription(body) {
 // second without a request per second.
 async function pageData() {
   const st = await load();
+  const meta = await loadWatchdogMeta();
   return {
     stages: STAGES,
     stuckAfter: STUCK_AFTER,
@@ -646,6 +743,8 @@ async function pageData() {
     // button and never shows "waiting for a subscription": the assign endpoint
     // has no names to offer there anyway.
     usesSubscriptions: BOARD.subscriptions.length > 0,
+    watchdogIntervalMin: meta.intervalMin,
+    watchdogConfigured: meta.configured,
     cards: st.cards,
   };
 }
@@ -666,8 +765,9 @@ function failCell(card) {
   return card.consecutiveFails ? `${all} (${card.consecutiveFails} in a row)` : all;
 }
 
-function agentRow(card, now) {
+function agentRow(card, now, meta) {
   const cl = clocks(card, now);
+  const present = hasStatus(card);
   return {
     id: card.id,
     title: card.title,
@@ -675,13 +775,29 @@ function agentRow(card, now) {
     clock: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     fails: failCell(card),
     verdict: card.status.verdict || '-',
+    lane: card.lane || '',
+    links: {
+      ticket: card.links.ticket || '',
+      branch: card.links.branch || '',
+      pr: card.links.pr || '',
+      artifact: card.links.artifact || '',
+    },
+    status: present
+      ? { text: card.status.text || '', verdict: card.status.verdict || '', at: card.status.at }
+      : null,
+    slot: card.slot || '',
+    subscription: card.subscription || '',
+    consecutiveFails: card.consecutiveFails,
+    statusStale: isStaleStatus(card, meta, now),
   };
 }
 
-function buildAgentPipeline(cards, full, port) {
+async function buildAgentPipeline(cards, full, port) {
   const now = Date.now();
-  const rows = cards.map(c => agentRow(c, now));
+  const meta = await loadWatchdogMeta();
+  const rows = cards.map(c => agentRow(c, now, meta));
   const stuck = cards.filter(c => c.stage === 'stuck');
+  const stale = staleList(cards, meta, now);
   const view = {
     pipeline: `http://127.0.0.1:${port}`,
     generated: new Date(now).toISOString(),
@@ -693,6 +809,7 @@ function buildAgentPipeline(cards, full, port) {
       accepted: cards.filter(c => c.stage === 'accepted').length,
       failures: cards.reduce((n, c) =>
         n + c.counters.localFails + c.counters.ciFails + c.counters.acceptanceFails, 0),
+      staleStatus: stale.length,
     },
     cards: rows,
     stuck: stuck.map(c => ({
@@ -700,6 +817,14 @@ function buildAgentPipeline(cards, full, port) {
       title: clipText(c.title, full),
       fails: failCell(c),
       waiting: fmtDur(clocks(c, now).byStage.stuck ?? 0),
+    })),
+    stale: stale.map(c => ({
+      id: c.id,
+      title: clipText(c.title, full),
+      age: (() => {
+        const age = statusAgeMs(c, now);
+        return age == null ? 'no time' : fmtDur(age);
+      })(),
     })),
   };
   if (full) {
@@ -715,11 +840,13 @@ function renderToonPipeline(v) {
     `pipeline: ${v.pipeline}`,
     `generated: ${v.generated}`,
     `summary: cards ${s.cards}, stuck ${s.stuck}, waiting for acceptance ${s.waitingForAcceptance},`
-      + ` accepted ${s.accepted}, failures ${s.failures}`,
+      + ` accepted ${s.accepted}, failures ${s.failures}, stale status ${s.staleStatus}`,
     toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
       'no cards in the pipeline'),
     toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
       'no card is stuck'),
+    toonTable('stale', v.stale, ['id', 'title', 'age'],
+      'no active card has a stale Status'),
   ];
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
   const help = [];
@@ -731,6 +858,8 @@ function renderToonPipeline(v) {
     + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; acceptance is the owner\'s decision and does not count'
     + ' — a card waiting there shows "(stopped)"');
+  help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
+    + ' missing or older than twice the Watchdog interval');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
   return out.join('\n') + '\n';
@@ -738,9 +867,13 @@ function renderToonPipeline(v) {
 
 // One card in full. This is what the agent reads before it touches a card:
 // the spec as written, every comment, and where the time went.
-function buildAgentCard(card) {
+async function buildAgentCard(card) {
   const now = Date.now();
   const cl = clocks(card, now);
+  const meta = await loadWatchdogMeta();
+  const age = statusAgeMs(card, now);
+  const ageWord = age == null ? 'no time' : `${fmtDur(age)} ago`;
+  const stale = isStaleStatus(card, meta, now);
   return {
     id: card.id,
     title: card.title,
@@ -755,9 +888,10 @@ function buildAgentCard(card) {
     subscription: card.subscription || '-',
     slot: card.slot || '-',
     links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
-    status: card.status.text
-      ? `${card.status.text} (${card.status.verdict || 'no verdict'}, ${card.status.at})`
-      : '-',
+    status: hasStatus(card)
+      ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
+        + `${stale ? ', stale' : ''})`
+      : (stale ? 'stale — watchdog has not written one yet' : '-'),
     spec: card.spec.trim() ? card.spec.replace(/\s+/g, ' ').trim() : '-',
     comments: card.comments.map(c => ({ author: c.author, at: c.at, text: c.text.replace(/\s+/g, ' ').trim() })),
     history: card.stageHistory.map(h => ({
@@ -816,7 +950,7 @@ export async function handlePipeline(req, res, url, port) {
     const p = agentParams(url, true);
     if (p.error) { sendText(res, 400, p.error); return true; }
     const st = await load();
-    const view = buildAgentPipeline(st.cards, p.full, port);
+    const view = await buildAgentPipeline(st.cards, p.full, port);
     if (p.format === 'json') send(res, 200, JSON.stringify(view, null, 2));
     else sendText(res, 200, renderToonPipeline(view));
     return true;
@@ -846,7 +980,7 @@ export async function handlePipeline(req, res, url, port) {
       }
       return true;
     }
-    const view = buildAgentCard(card);
+    const view = await buildAgentCard(card);
     if (p.format === 'json') send(res, 200, JSON.stringify(view, null, 2));
     else sendText(res, 200, renderToonCard(view));
     return true;
@@ -861,6 +995,26 @@ export async function handlePipeline(req, res, url, port) {
     const { card, events } = unwrapMutation(await assignSubscription(body));
     // The card is already persisted; answer the founder/agent first so a slow or
     // hanging Telegram round-trip can never delay their action, then notify.
+    send(res, 200, JSON.stringify({ ok: true, card }));
+    await emitNotifications(card, events);
+    return true;
+  }
+
+  // Watchdog Status write: POST /pipeline/card/<id>/status { text, verdict }.
+  // Checked before the action table so an id that happens to match an action
+  // name cannot steal this path.
+  if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')
+      && url.pathname.endsWith('/status')) {
+    const raw = url.pathname.slice('/pipeline/card/'.length, -'/status'.length);
+    let id;
+    try { id = decodeURIComponent(raw).trim(); }
+    catch { id = String(raw || '').trim(); }
+    if (!id || id.includes('/')) {
+      send(res, 400, JSON.stringify({ error: 'a card id is required' }));
+      return true;
+    }
+    const body = await readBody(req);
+    const { card, events } = unwrapMutation(await writeStatus(id, body));
     send(res, 200, JSON.stringify({ ok: true, card }));
     await emitNotifications(card, events);
     return true;

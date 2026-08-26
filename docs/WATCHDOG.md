@@ -28,28 +28,46 @@ external packages.
 ## Run
 
 ```
-node bin/watchdog.mjs
+node bin/watchdog.mjs run
 node bin/watchdog.mjs --once
 node bin/watchdog.mjs --once --dry-run --config C:\temp\watchdog.json
+node bin/watchdog.mjs run --dry-run --max-ticks 1
 ```
 
-| flag | effect |
+| flag / command | effect |
 | --- | --- |
+| `run` | the long-running loop (what the systemd unit starts). Without `--once` the process loops anyway; `run` is the documented name for that |
 | `--once` | one sweep, then exit |
-| `--dry-run` | fetch the pipeline and gather evidence (ssh, `gh`); print the prompt that **would** go to the language model; **do not** call the model; **do not** POST Status |
+| `--dry-run` | fetch the pipeline; print the evidence and the prompt that **would** go to the language model; **do not** call ssh, `gh`, or the model; **do not** POST Status |
+| `--max-ticks N` | loop at most N sweeps, then exit. For tests. Do not leave a loop running |
 | `--config <file>` | config JSON; default `state/watchdog.json` |
 | `--help` | short help |
 
 An unknown flag exits `2`. A missing or incomplete config file is a clear
 English error and exit `1`.
 
-`--dry-run` still talks to the board (to list cards) and still runs ssh / `gh`
-for evidence. The things it refuses are the model call and the Status POST.
-That is the opposite of the Probe's dry-run, which never touches the network.
+`--dry-run` still talks to the board (to list cards). It does **not** call
+ssh, `gh`, or the model, and it does not POST Status. The plan it prints
+says what those calls **would** have been.
 
 Without `--once` the process loops forever, sleeping `intervalMin` minutes
 between sweeps. It reloads the config file each cycle so a change of interval
 or command takes effect without a restart. SIGINT / SIGTERM stop it.
+
+This is a **separate process** from the board. The board (`watchtower.service`)
+serves the page and the Status write endpoint. The Watchdog
+(`watchtower-watchdog.service`) is the checker that POSTs Status. Do not fold
+it into the board process.
+
+Unit file: [`deploy/watchtower-watchdog.service`](../deploy/watchtower-watchdog.service).
+Install only after `state/watchdog.json` exists — without that file the
+process exits 1 and systemd would restart it every few seconds:
+
+```
+install -m 0644 /opt/watchtower/deploy/watchtower-watchdog.service /etc/systemd/system/watchtower-watchdog.service
+systemctl daemon-reload
+systemctl enable --now watchtower-watchdog
+```
 
 ## Config
 
@@ -120,10 +138,11 @@ cycle if the process is already looping.
    4. Run `llmCommand` with that prompt on stdin.
    5. Parse one Status line and a verdict `moving` \| `stalled` \| `looping`.
    6. `POST {boardUrl}/pipeline/card/{id}/status` with `{ text, verdict }`.
-3. Sleep `intervalMin` minutes (unless `--once`).
+3. Sleep `intervalMin` minutes (unless `--once` or `--max-ticks` is reached).
 
-`--dry-run` stops after step 2.3: it prints the evidence and the prompt, then
-moves on. No model, no POST.
+`--dry-run` stops after step 2.3: it prints the evidence (what ssh / `gh`
+**would** have been asked) and the prompt, then moves on. No ssh, no `gh`,
+no model, no POST.
 
 ## Evidence
 
@@ -258,7 +277,31 @@ on. Posting the same Status twice should be treated as a refresh, not as a
 second event.
 
 The Watchdog does not call any other board path. It does not POST
-`/pipeline/card/update`; the path above is the Status contract.
+`/pipeline/card/update`; the path above is the Status contract. The board
+implements this exact path (auth: founder session / localhost-as-owner /
+Bearer `apiToken`, same as the other pipeline writes). `verdict` must be
+one of `moving` \| `stalled` \| `looping` or the board answers 400. `text`
+is clipped to 400 characters. The card is stored as
+`status: { text, verdict, at }`.
+
+`POST /pipeline/card/update` with a `status` object can write the same
+fields. The Watchdog does not use it.
+
+## Stale Status
+
+The Watchdog is meant to refresh every `intervalMin` minutes (default 15).
+An **active** card (`development`, `local_check`, `ci_pr`) whose Status is
+missing, or older than twice that interval, is **stale** — the checker
+itself is the signal.
+
+- `/api/pipeline` summary carries `stale status N`.
+- `/api/board` `problems` carries a `watchdog` row when N > 0.
+- The pipeline card on the page colours the verdict (`moving` = ok,
+  `stalled` = warn, `looping` = alarm), shows how long ago Status was
+  written, and marks it stale.
+
+Without a `watchdog.json` the missing-Status case is silent: the surface
+shows nothing until a Status exists. An old Status is still marked.
 
 ## Resilience
 
@@ -273,7 +316,8 @@ The Watchdog does not call any other board path. It does not POST
 
 ## Dry-run output
 
-`--once --dry-run` prints a plan on stdout (logs go to stderr):
+`--once --dry-run` prints a plan on stdout (logs go to stderr). ssh and
+`gh` are not actually run:
 
 ```
 Watchdog dry-run plan
@@ -301,7 +345,7 @@ would POST http://127.0.0.1:4878/pipeline/card/c-dev/status
 skipped: stage "spec" is not active
 active stages: development, local_check, ci_pr
 
-done. no LLM call, no POSTs.
+done. no LLM call, no ssh, no POSTs.
 ```
 
 Exit code 0 if the pipeline was read. Use this with a stub config in a

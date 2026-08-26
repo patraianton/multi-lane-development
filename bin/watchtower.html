@@ -306,6 +306,17 @@
   .pcard input.text { flex: 1 1 120px; }
   .pcard .cnt { font-family: var(--mono); font-size: 10.5px; }
   .pcard .cnt b { color: var(--blocked); }
+  .pcard .status .verdict {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .pcard .status.moving .verdict { color: var(--working); }
+  .pcard .status.stalled .verdict { color: var(--done); }
+  .pcard .status.looping .verdict { color: var(--blocked); }
+  .pcard .status .age { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+  .pcard .status.stale {
+    border: 1px solid #6a5122; background: #1a140c; padding: 3px 6px; border-radius: 3px;
+  }
+  .pcard .stale-mark { color: var(--done); font-family: var(--mono); font-size: 10px; }
 
   /* Onboarding replaces the board itself, so the daily controls are out of the
      way until a project is picked. The pipeline is not a view of herdr windows
@@ -782,6 +793,7 @@ const STAGE_TITLE = {
 const ROAD = ['spec', 'grilled', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
+const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
 
 let view = 'windows';
 try { if (localStorage.getItem('watchtower-view') === 'pipeline') view = 'pipeline'; } catch (e) {}
@@ -795,6 +807,11 @@ const openCards = new Set();
 // The server decides this in /pipeline/data; default off so a board that never
 // sends looks exactly as it did before this wave.
 let usesSubscriptions = false;
+// Watchdog Status: interval (minutes) and whether a watchdog.json is present.
+// The page only marks a missing Status as stale when the checker is configured;
+// an old Status is always a mark. Default 15 matches the Watchdog's default.
+let watchdogIntervalMin = 15;
+let watchdogConfigured = false;
 
 // A duration in plain words — the same words the agent endpoint uses.
 function fmtDur(ms) {
@@ -851,6 +868,40 @@ function calcClocks(c) {
   return { total, totalFrom, byStage };
 }
 
+function hasCardStatus(c) {
+  const s = c.status;
+  return Boolean(s && ((s.text && String(s.text).trim()) || s.verdict || s.at));
+}
+
+function isStatusStale(c) {
+  if (ACTIVE_STATUS_STAGES.indexOf(c.stage) < 0) return false;
+  const limit = (Number(watchdogIntervalMin) > 0 ? Number(watchdogIntervalMin) : 15) * 2 * 60 * 1000;
+  if (!hasCardStatus(c)) return watchdogConfigured;
+  const t = Date.parse(c.status.at);
+  if (!Number.isFinite(t)) return true;
+  return (Date.now() - t) > limit;
+}
+
+function statusLine(c) {
+  const stale = isStatusStale(c);
+  if (!hasCardStatus(c)) {
+    if (!stale) return '';
+    return '<div class="row status stale" data-stale="yes"><span class="stale-mark">stale Status</span>'
+      + ' — watchdog has not written one yet</div>';
+  }
+  const v = String(c.status.verdict || '').toLowerCase();
+  const age = ago(c.status.at);
+  const cls = 'status'
+    + (v === 'moving' || v === 'stalled' || v === 'looping' ? ' ' + v : '')
+    + (stale ? ' stale' : '');
+  return '<div class="row ' + cls + '"' + (stale ? ' data-stale="yes"' : '') + '>'
+    + (c.status.text ? esc(c.status.text) + ' ' : '')
+    + (v ? '<span class="verdict">' + esc(v) + '</span>' : '')
+    + (age ? ' <span class="age">' + esc(age) + '</span>' : '')
+    + (stale ? ' <span class="stale-mark">stale Status</span>' : '')
+    + '</div>';
+}
+
 function failLine(c) {
   const n = c.counters ?? {};
   const bits = [];
@@ -880,10 +931,8 @@ function pcard(c) {
   if (usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim()) {
     bits.push('<div class="row">waiting for a subscription</div>');
   }
-  if (c.status && c.status.text) {
-    bits.push('<div class="row">' + esc(c.status.text)
-      + (c.status.verdict ? ' <span class="mono">(' + esc(c.status.verdict) + ')</span>' : '') + '</div>');
-  }
+  const statusHtml = statusLine(c);
+  if (statusHtml) bits.push(statusHtml);
 
   const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
     .map(k => k + ' ' + (LINK_FIELDS.includes(k) ? c.links[k] : c[k]));
@@ -981,16 +1030,21 @@ function restoreInputs(snap) {
 function renderPipeline(d) {
   const snap = snapshotInputs();
   usesSubscriptions = Boolean(d.usesSubscriptions);
+  watchdogIntervalMin = Number(d.watchdogIntervalMin) > 0 ? Number(d.watchdogIntervalMin) : 15;
+  watchdogConfigured = Boolean(d.watchdogConfigured);
   const cards = d.cards ?? [];
   const stuck = cards.filter(c => c.stage === 'stuck');
 
   // The header counts what this view is about: cards on the road, cards that
-  // wait for the owner, and cards that are looping.
+  // wait for the owner, and cards that are looping. Stale Status is the
+  // Watchdog falling behind — only shown when at least one card is marked.
   const moving = cards.filter(c => !['stuck', 'accepted', 'acceptance'].includes(c.stage)).length;
+  const staleN = cards.filter(isStatusStale).length;
   $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
     + cards.filter(c => c.stage === 'acceptance').length + '</b> waiting for you · <b>'
     + stuck.length + '</b> stuck · <b>'
-    + cards.filter(c => c.stage === 'accepted').length + '</b> accepted';
+    + cards.filter(c => c.stage === 'accepted').length + '</b> accepted'
+    + (staleN ? ' · <b>' + staleN + '</b> stale Status' : '');
 
   const zone = $('stuck-zone');
   zone.classList.toggle('on', stuck.length > 0);
