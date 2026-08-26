@@ -38,6 +38,8 @@ GET http://127.0.0.1:4878/api/board            short text (TOON-flavoured)
 GET http://127.0.0.1:4878/api/board?format=json
 GET http://127.0.0.1:4878/api/board?full=1
 GET http://127.0.0.1:4878/api/board/card/<name> one card in full
+GET http://127.0.0.1:4878/api/slots            CI slot occupancy (JSON)
+GET http://127.0.0.1:4878/api/slots?format=toon
 ```
 
 Parameters:
@@ -109,10 +111,15 @@ window) or `?full=1` (the whole board).
 ### problems — board sources that did not answer
 
 `source` — what failed (`lanes`, `pull-requests`, `umbrella`, `lane host mac`,
-and so on); `error` — the short reason. An empty section means every source is
-alive. This is worth reading: an empty `lanes` cell with ssh down means "the board
-does not know", not "there are no lanes". Before a project is chosen, `problems`
-carries one row, `project: no project chosen yet` — open the board and pick one.
+`ci-slots`, and so on); `error` — the short reason. An empty section means every
+source is alive. This is worth reading: an empty `lanes` cell with ssh down means
+"the board does not know", not "there are no lanes". Before a project is chosen,
+`problems` carries one row, `project: no project chosen yet` — open the board and
+pick one.
+
+When every CI slot is held by a card, `problems` carries `ci-slots: no free CI
+slot — add capacity`. That is an alarm, not a wait: there is no queue. The same
+sentence appears in the page header. Occupancy itself is `GET /api/slots`.
 
 ## Clipping of long texts
 
@@ -293,6 +300,49 @@ stay open — the board listens on `127.0.0.1` only, as before. When the list
 is set, those paths need a founder session, a localhost-as-owner request, or
 (for agents) `apiToken`. See **Auth** below. The probe endpoints use
 `probeToken`, as they always did.
+
+## CI slots
+
+A pool of dedicated CI servers. Holders live in `state/ci-slots.json`, written
+by [`bin/ci-slot.mjs`](../bin/ci-slot.mjs) (see [`EXECUTION.md`](./EXECUTION.md)).
+The board only reads the file.
+
+```
+GET http://127.0.0.1:4878/api/slots
+GET http://127.0.0.1:4878/api/slots?format=json
+GET http://127.0.0.1:4878/api/slots?format=toon
+```
+
+Auth is the same as the other `/api/*` reads: open while `auth.founders` is
+empty; otherwise a founder session, localhost-as-owner, or `apiToken`. `format`
+defaults to `json` (this endpoint's shape is a small object). `full` is not
+accepted. An unknown parameter, an unknown value, an empty value or the same
+parameter twice answers 400 with a hint, same words as `/api/board`.
+
+JSON:
+
+```json
+{
+  "slots": [
+    { "name": "ci-1", "card": "cci1", "since": "2026-08-26T12:00:00.000Z" },
+    { "name": "ci-2", "card": null, "since": null },
+    { "name": "ci-3", "card": null, "since": null }
+  ]
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `name` | Slot id, the same string the card stores in `slot` |
+| `card` | Pipeline card id holding the slot, or `null` when free |
+| `since` | When that holder was claimed, or `null` when free |
+
+When every listed slot has a `card`, the object also has
+`"alarm": "no free CI slot — add capacity"`. That is not a queue: the CI-slot
+process exits 3 and assigns nothing; the fix is adding a slot. The same
+sentence is a `problems` row (`source: ci-slots`) on `/api/board` and the page
+header flag. A missing occupancy file is an empty `slots` array and no alarm —
+there is no pool on disk yet.
 
 ## Auth
 
