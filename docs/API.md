@@ -12,6 +12,11 @@ bin\wt.cmd                 the live board as short text
 bin\wt.cmd --full          long texts in full, no clipping
 bin\wt.cmd --json          the same shape as plain JSON
 bin\wt.cmd --card <name>   one window in full
+bin\wt.cmd pipeline        the delivery pipeline as short text
+bin\wt.cmd --pipeline      the same as pipeline
+bin\wt.cmd pipeline --full specs in full, no clipping
+bin\wt.cmd pipeline --json the same shape as plain JSON
+bin\wt.cmd card <id>       one pipeline card in full
 bin\wt.cmd --help          help for every field
 ```
 
@@ -19,10 +24,12 @@ The command computes nothing itself — it asks the running server. The server h
 to be up (`bin\watchtower.cmd`). If it does not answer, the command says so and
 exits with code 1. If the port holds a board from an older build (without the
 `/api/board` endpoint), the command says that and asks for a restart — it never
-relays a foreign response body. An unknown flag exits with code 2 and lists the
-allowed ones. With `--json` errors arrive as JSON too (`{"error": …, "help": …}`),
-so parsing never breaks. The port comes from `WATCHTOWER_PORT` (the older
-`AUTOPASE_BOARD_PORT` is still read as a fallback), 4878 by default.
+relays a foreign response body. `pipeline` and `--pipeline` read `/api/pipeline`;
+`card <id>` reads `/api/pipeline/card/<id>`. An unknown flag or argument exits
+with code 2 and lists the allowed ones. With `--json` errors arrive as JSON too
+(`{"error": …, "help": …}`), so parsing never breaks. The port comes from
+`WATCHTOWER_PORT` (the older `AUTOPASE_BOARD_PORT` is still read as a fallback),
+4878 by default.
 
 ## One request
 
@@ -265,8 +272,41 @@ the reason in plain words; the store is left exactly as it was.
 | `comment` | `author`, `text` (both required) | one flat comment on the card |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
 
-There is no authentication yet — the board listens on `127.0.0.1` only. Sign-in
-arrives in a later wave.
+There is no authentication yet on the windows and pipeline endpoints — the
+board listens on `127.0.0.1` only. Sign-in arrives in a later wave. The
+probe endpoints below use a shared secret instead.
+
+## Probe
+
+The probe on the owner's machine pushes herdr window data up and pulls queued
+hooks down. The HTTP contract the probe already speaks is in
+[`PROBE.md`](./PROBE.md); this section is the board side of the same contract.
+
+Auth: every `/probe/*` path and `POST /hooks/enqueue` require
+`Authorization: Bearer <probeToken>`. Missing or wrong token → `401`
+`unauthorized` (plain English text). If `probeToken` is not set in
+`state/autopase-board.json` → `403` `probe access is not configured`.
+
+| endpoint | body | what it does |
+| --- | --- | --- |
+| `POST /probe/snapshot` | the snapshot from [`PROBE.md`](./PROBE.md) | stores it in memory and in `state/probe-snapshot.json` with a `receivedAt` stamp. Entries of `windows` / `tabs` / `panes` / `agents` that are not objects are dropped before storing. Larger than 2 MB → `413` (also for a chunked body with no `Content-Length`: the answer is `413`, not a dropped connection). Broken JSON / wrong shape → `400` |
+| `GET /probe/hooks` | — | `{ "hooks": [ { id, window, text, queuedAt }, … ] }`, oldest first. Empty queue is `{ "hooks": [] }` |
+| `POST /probe/hooks/ack` | `{ "ids": ["hk_…"] }` | drops those entries; unknown ids are ignored. Answers `{ "ok": true, "removed": N }` |
+| `POST /hooks/enqueue` | `{ "window", "text" }` (both required; `window` must be a herdr id — `w4Z:p1` or `w4Z:t1` — anything else is `400`) | queues a hook for the probe to deliver. Answers `{ "ok": true, "hook": { id, window, text, queuedAt } }` |
+
+Config fields on `state/autopase-board.json`:
+
+| field | default | meaning |
+| --- | --- | --- |
+| `probeToken` | empty | shared secret; must match the probe's `token` |
+| `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
+| `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
+
+A hook that has been waiting more than ten minutes shows `hooks queued, oldest Nm`
+in the board header.
+
+`WATCHTOWER_STATE_DIR` points the board at another folder instead of `state/`
+(tests, a second instance). Unset — `state/` next to the repo, as before.
 
 ### Sample output
 

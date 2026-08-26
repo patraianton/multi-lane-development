@@ -1,11 +1,13 @@
 // wt — Watchtower on the command line.
 //
-// A thin wrapper over GET /api/board of the running Watchtower server: it has no
-// logic of its own, the whole answer is composed by the server (bin/watchtower.mjs).
-// It exists so a watchdog agent can read the board with one command, without a
-// browser and without screenshots.
+// A thin wrapper over GET /api/board and GET /api/pipeline of the running
+// Watchtower server: it has no logic of its own, the whole answer is composed
+// by the server (bin/watchtower.mjs). It exists so a watchdog agent can read
+// the board and the pipeline with one command, without a browser and without
+// screenshots.
 //
-// Run: node bin\wt.mjs [--json] [--full] [--card <name>]   (or bin\wt.cmd)
+// Run: node bin\wt.mjs [pipeline | --pipeline | card <id>] [--json] [--full]
+//                       [--card <name>]   (or bin\wt.cmd)
 // The port comes from WATCHTOWER_PORT (AUTOPASE_BOARD_PORT is still read as a
 // fallback), 4878 by default — the same one the server listens on.
 
@@ -28,21 +30,29 @@ function selfPath() {
 }
 
 const CMD = 'bin\\wt.cmd';
+const TAKES = `${CMD} takes only pipeline, card <id>, --pipeline, --json, --full, --card <name>, --help, --version`;
 
 const HELP = `bin: ${selfPath()}
 description: ${DESCRIPTION}
 
 With no flags it prints the live board as short text (TOON-flavoured).
+pipeline or --pipeline prints the delivery pipeline. card <id> prints one
+pipeline card.
 
 Flags:
   --json          the same shape as plain JSON
   --full          long texts in full (no clipping)
-  --card <name>   one card in full: its last words, why it waits, the question
+  --pipeline      the delivery pipeline (same as the pipeline subcommand)
+  --card <name>   one window in full: its last words, why it waits, the question
                   from its umbrella issue. The name is the name cell of cards
   --help          this help
   --version       version number
 
-What is in the answer:
+Subcommands:
+  pipeline        the delivery pipeline as short text (TOON-flavoured)
+  card <id>       one pipeline card in full: spec, comments, history, clocks
+
+What is in the board answer:
   summary     counters: windows, waiting for you, lanes building, open PRs, manual, hidden
   cards       one card per line, fields:
                 column  board column: ask — needs you, running — working,
@@ -59,14 +69,33 @@ What is in the answer:
               ${CMD} --card <name> or --full
   problems    board sources that did not answer (ssh, gh). Empty means everything is alive
 
+What is in the pipeline answer:
+  summary     counters: cards, stuck, waiting for acceptance, accepted, failures
+  cards       one card per line, fields:
+                id      pipeline card id (taken by ${CMD} card <id>)
+                title   the card's title
+                stage   spec, grilled, development, local_check, ci_pr, acceptance,
+                        accepted, or stuck
+                clock   delivery time; a card in acceptance shows "(stopped)"
+                fails   local / ci / acceptance counts, or "-"
+                verdict the watchdog's word: moving, stalled, looping, or "-"
+  stuck       cards waiting for a human after three failures in a row
+  specs       under --full only, the spec text of every card that has one
+
 Examples:
   ${CMD}
   ${CMD} --full
   ${CMD} --json
   ${CMD} --card my-window
+  ${CMD} pipeline
+  ${CMD} --pipeline
+  ${CMD} pipeline --full
+  ${CMD} pipeline --json
+  ${CMD} card <id>
+  ${CMD} card <id> --json
 `;
 
-const KNOWN = new Set(['--json', '--full', '--card', '--help', '-h', '--version', '-v', '-V']);
+const KNOWN = new Set(['--json', '--full', '--card', '--pipeline', '--help', '-h', '--version', '-v', '-V']);
 
 const args = process.argv.slice(2);
 // Whether --json was asked for must be known before the first error: an agent
@@ -93,35 +122,92 @@ function asJson(text) {
   }, null, 2);
 }
 
-let wantCard = null;
+let wantWindowCard = null;
+let wantPipelineFlag = false;
+const positionals = [];
 for (let i = 0; i < args.length; i += 1) {
   const a = args[i];
-  if (!KNOWN.has(a)) {
-    die(`error: unknown flag ${a}\n`
-      + `help: ${CMD} takes only --json, --full, --card <name>, --help, --version`, 2);
-  }
   if (a === '--card') {
-    wantCard = args[i + 1] ?? '';
+    wantWindowCard = args[i + 1] ?? '';
     i += 1;
-    if (!wantCard || wantCard.startsWith('--')) {
+    if (!wantWindowCard || wantWindowCard.startsWith('--')) {
       die('error: --card was given without a card name\n'
         + `help: ${CMD} --card <name from the name cell of the cards section>`, 2);
     }
+    continue;
   }
+  if (a === '--pipeline') {
+    wantPipelineFlag = true;
+    continue;
+  }
+  if (KNOWN.has(a)) continue;
+  if (a.startsWith('-')) {
+    die(`error: unknown flag ${a}\n`
+      + `help: ${TAKES}`, 2);
+  }
+  positionals.push(a);
 }
 if (args.includes('--help') || args.includes('-h')) die(HELP, 0);
 if (args.includes('--version') || args.includes('-v') || args.includes('-V')) die(VERSION, 0);
 
+let wantPipeline = wantPipelineFlag;
+let wantPipelineCard = null;
+if (positionals.length) {
+  const cmd = positionals[0];
+  if (cmd === 'pipeline') {
+    if (positionals.length > 1) {
+      die(`error: unknown argument ${positionals[1]}\n`
+        + `help: ${TAKES}`, 2);
+    }
+    wantPipeline = true;
+  } else if (cmd === 'card') {
+    const id = positionals[1] ?? '';
+    if (!id || id.startsWith('--')) {
+      die('error: card was given without a card id\n'
+        + `help: ${CMD} card <id from the id cell of the pipeline cards section>`, 2);
+    }
+    if (positionals.length > 2) {
+      die(`error: unknown argument ${positionals[2]}\n`
+        + `help: ${TAKES}`, 2);
+    }
+    wantPipelineCard = id;
+  } else {
+    die(`error: unknown argument ${cmd}\n`
+      + `help: ${TAKES}`, 2);
+  }
+}
+
+if (wantPipeline && wantWindowCard) {
+  die('error: --pipeline cannot be combined with --card\n'
+    + `help: ${CMD} --pipeline reads the pipeline; ${CMD} --card <name> reads one window`, 2);
+}
+if (wantPipeline && wantPipelineCard) {
+  die('error: pipeline and card cannot be used together\n'
+    + `help: ${CMD} pipeline reads the list; ${CMD} card <id> reads one pipeline card`, 2);
+}
+if (wantWindowCard && wantPipelineCard) {
+  die('error: card <id> is a pipeline card; --card <name> is a window\n'
+    + `help: ${CMD} card <id>  or  ${CMD} --card <name>`, 2);
+}
+
 const wantFull = args.includes('--full');
-if (wantCard && wantFull) {
+if (wantWindowCard && wantFull) {
   die('error: --full is not needed together with --card\n'
+    + 'help: one card is printed in full anyway, without clipping', 2);
+}
+if (wantPipelineCard && wantFull) {
+  die('error: --full is not needed together with card\n'
     + 'help: one card is printed in full anyway, without clipping', 2);
 }
 
 const format = `format=${wantJson ? 'json' : 'toon'}`;
-const url = wantCard
-  ? `${BASE}/api/board/card/${encodeURIComponent(wantCard)}?${format}`
-  : `${BASE}/api/board?${format}${wantFull ? '&full=1' : ''}`;
+const url = wantPipelineCard
+  ? `${BASE}/api/pipeline/card/${encodeURIComponent(wantPipelineCard)}?${format}`
+  : wantPipeline
+    ? `${BASE}/api/pipeline?${format}${wantFull ? '&full=1' : ''}`
+    : wantWindowCard
+      ? `${BASE}/api/board/card/${encodeURIComponent(wantWindowCard)}?${format}`
+      : `${BASE}/api/board?${format}${wantFull ? '&full=1' : ''}`;
 
 let res;
 try {
@@ -141,11 +227,12 @@ try {
 const body = await res.text();
 if (!res.ok) {
   // A 404 on our endpoint means the port holds a board started before
-  // /api/board existed (or another program entirely). Its body must not be
-  // relayed: the agent would get someone else's JSON instead of the action it
-  // has to take.
-  if (res.status === 404 && !wantCard) {
-    die(`error: the board on ${BASE} is an older build — it has no /api/board endpoint\n`
+  // /api/board or /api/pipeline existed (or another program entirely). Its body
+  // must not be relayed: the agent would get someone else's JSON instead of the
+  // action it has to take.
+  if (res.status === 404 && !wantWindowCard && !wantPipelineCard) {
+    const endpoint = wantPipeline ? '/api/pipeline' : '/api/board';
+    die(`error: the board on ${BASE} is an older build — it has no ${endpoint} endpoint\n`
       + 'help: close its window and start bin\\watchtower.cmd again', 1);
   }
   const type = String(res.headers.get('content-type') || '');
@@ -154,6 +241,12 @@ if (!res.ok) {
   // not passed through: the agent needs an action, not a raw dependency body.
   if (type.startsWith('text/plain') && body.trim().startsWith('error:')) {
     die(body.trim(), 1);
+  }
+  // --json asked for JSON: a JSON error body from the pipeline is already in
+  // the shape the agent can parse, so it is printed as is.
+  if (wantJson && (wantPipeline || wantPipelineCard) && type.startsWith('application/json')) {
+    process.stdout.write(body.endsWith('\n') ? body : body + '\n');
+    process.exit(1);
   }
   die(`error: the board on ${BASE} answered with status ${res.status} and a body that is not a board\n`
     + 'help: check that bin\\watchtower.cmd is what listens on that port, and restart it', 1);

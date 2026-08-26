@@ -86,6 +86,23 @@ and tries again on the next interval.
 
 ## HTTP contract
 
+The board implements this contract. The probe is the client; the endpoints
+live on the board server (`bin/watchtower.mjs`). Unknown extra JSON fields on
+either side are ignored.
+
+Board-side config lives in `state/autopase-board.json` (the same file as the
+rest of the board settings):
+
+| field | default | meaning |
+|---|---|---|
+| `probeToken` | empty | shared secret; must match the probe's `token`. Empty — every `/probe/*` path and `POST /hooks/enqueue` answer `403` `probe access is not configured` |
+| `source` | `"local"` | `"local"` — collect windows from herdr on this machine (unchanged). `"probe"` — collect windows/panes/agents from the last posted snapshot; lanes, PRs and CI still come from this host |
+| `probeStaleSec` | `60` | a snapshot older than this many seconds (or missing) is stale: the board header shows `probe stale since <time>` and `/api/board` lists it under `problems` |
+
+A posted snapshot is kept in memory and in `state/probe-snapshot.json` (atomic
+write, survives a restart) together with a `receivedAt` stamp. The hook queue
+is `state/hooks.json`.
+
 Every request carries:
 
 ```
@@ -97,8 +114,8 @@ Authorization: Bearer {token}
 network error, HTTP status other than 2xx, or a 15-second timeout as "board
 unreachable": it logs one line and keeps looping. It does not crash.
 
-The board must implement the three endpoints below so this process can talk
-to it. Unknown extra JSON fields on either side are ignored.
+The three endpoints below (plus `POST /hooks/enqueue`) are what the probe
+and later waves actually call.
 
 ### `POST {boardUrl}/probe/snapshot`
 
@@ -198,31 +215,36 @@ Field notes:
 - Ids (`w4Z`, `w4Z:t1`, `w4Z:p1`) are stable until that window/tab/pane is
   closed; they are not reused.
 
-Response: `200` or `204`. Body is ignored. `401` / `403` if the token is
-wrong (the probe logs that and retries next interval).
+Response: `200` or `204`. Body is ignored. `401` (English text `unauthorized`)
+if the token is missing or wrong; `403` `probe access is not configured` if
+the board has no `probeToken`. A body larger than 2 MB is `413`
+`payload too large` — including a chunked body with no `Content-Length`: the
+rest of it is read and dropped so the answer still arrives, the connection is
+not torn down. Broken JSON or a body that is not an object (or whose
+`windows` / `tabs` / `panes` / `agents` fields are present but not arrays)
+is `400`. Entries inside those four lists that are not objects (a `null`, a
+number, a string) are dropped on the way in and are not stored.
 
 ### `GET {boardUrl}/probe/hooks`
 
 The queue of hooks waiting to be typed into a herdr pane. Oldest first.
 
-Response `200`, `Content-Type: application/json`:
+Response `200`, `Content-Type: application/json`. The board sends a wrapped
+object; the probe also accepts a bare array:
 
 ```json
-[
-  { "id": "hk_01", "window": "w4Z:p1", "text": "Grill card 12" }
-]
+{ "hooks": [ { "id": "hk_01", "window": "w4Z:p1", "text": "Grill card 12" } ] }
 ```
 
-An empty queue is `[]`, never a missing body.
+An empty queue is `{ "hooks": [] }`, never a missing body. Oldest first.
+Each entry also carries `queuedAt` (ISO timestamp); the probe ignores extra
+fields.
 
 | field | type | meaning |
 |---|---|---|
 | `id` | string | durable id of this hook; the ack names it |
 | `window` | string | herdr pane id to run in (`w4Z:p1`) |
 | `text` | string | command/text passed after `--` to `herdr pane run` |
-
-A wrapped object `{ "hooks": [ … ] }` is also accepted, so the server may
-send either shape. The array is the contract to implement.
 
 Leave a hook on the queue until it is acked. Delivery is at-least-once: if
 the probe delivers and then fails to ack, it will try the same hook again on
@@ -243,8 +265,26 @@ The probe only lists ids it actually ran successfully. It does not ack
 malformed hooks (missing `id` or `window`) or hooks whose `pane run` failed.
 It does not call this endpoint when `ids` would be empty.
 
-Response: `200` or `204`. Unknown ids are ignored (idempotent). Body is
-ignored.
+Response: `200` or `204`. Unknown ids are ignored (idempotent). The board
+answers `{ "ok": true, "removed": N }` — how many entries actually left the
+queue. The probe ignores the body.
+
+### `POST {boardUrl}/hooks/enqueue`
+
+Not called by the probe. Later waves (and anything holding the same token)
+queue a hook for delivery:
+
+```json
+{ "window": "w4Z:p1", "text": "Grill card 12" }
+```
+
+Same Bearer auth as `/probe/*`. `window` and `text` are required (non-empty);
+otherwise `400`. `window` must be a herdr id — `w4Z:p1` or `w4Z:t1`; anything
+else (an object, a title, a path) is `400`, because the probe could never
+deliver it and the entry would sit on the queue for ever. Response `200` with the queued entry `{ id, window, text, queuedAt }`.
+
+When a hook has been sitting on the queue for more than ten minutes the board
+header shows `hooks queued, oldest Nm`.
 
 ## Failure behaviour
 
