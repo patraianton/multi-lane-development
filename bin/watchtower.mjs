@@ -1,21 +1,20 @@
-// autopase-board — «Autopase в одном месте».
+// Watchtower — a live kanban of your coding-agent fleet.
 //
-// Форк sheepdog, переделанный под один проект: на доске только окна herdr,
-// которые работают над autopase.lv. Одна карточка = одно окно. Всё, что на
-// карточке, берётся из живых источников; руками не вводится ничего.
+// One card = one herdr window working on the selected project. Everything on a
+// card is read from live sources; nothing is typed in by hand.
 //
-// Источники:
-//   herdr api snapshot / workspace list / agent list  — окна, панели, состояние
-//   herdr agent explain <панель>                      — по какому правилу выставлено состояние
-//   herdr pane read <панель> --source visible         — нижняя строка экрана: учётка, модель, усилие
-//   ssh <полоса> hzlane status                        — полосы Hetzner и lanes-01
-//   ssh mac (git + pgrep + lsof)                      — полосы Mac (lane-a, lane-b, …)
-//   gh pr list / gh issue view                        — открытые PR, цвет CI, зонтичные issue
-//   STREAM-WATCH.json                                 — привязка окно → полосы и префиксы веток
-//   PROGRAM-STATE.md                                  — номер зонтичного issue
-//   журналы сессий Claude (*.jsonl)                   — последние слова окна
+// Sources:
+//   herdr api snapshot / workspace list / agent list  — windows, panes, state
+//   herdr agent explain <pane>                        — which rule set that state
+//   herdr pane read <pane> --source visible           — footer line: account, model, effort
+//   ssh <host> hzlane status                          — build lanes on Linux hosts
+//   ssh <host> (git + pgrep + lsof)                   — build lanes on a Mac kitchen
+//   gh pr list / gh issue view                        — open PRs, CI colour, umbrella issues
+//   stream-watch file                                 — window -> lanes and branch prefixes
+//   PROGRAM-STATE.md                                  — umbrella issue number
+//   Claude session logs (*.jsonl)                     — the window's last words
 //
-// Запуск: node bin\autopase-board.mjs [--open]   (или bin\autopase-board.cmd)
+// Run: node bin\watchtower.mjs [--open]   (or bin\watchtower.cmd)
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
@@ -23,58 +22,79 @@ import { readFile, writeFile, rename, rm, mkdir, stat, readdir, open } from 'nod
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PORT = Number(process.env.AUTOPASE_BOARD_PORT || 4878);
+// WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
+// fallback so older installs keep starting on their usual port.
+const PORT = Number(process.env.WATCHTOWER_PORT || process.env.AUTOPASE_BOARD_PORT || 4878);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const STATE_DIR = path.join(ROOT, 'state');
+// On-disk state file names are deliberately left as they were: live installs
+// already carry these files, and renaming them would drop their history.
 const SEEN_FILE = path.join(STATE_DIR, 'autopase-seen.json');
-// Правки доски руками: спрятанные окна и карточки, добавленные владельцем.
+// Hand edits of the board: hidden windows and cards added by the owner.
 const CARDS_FILE = path.join(STATE_DIR, 'autopase-cards.json');
+// Settings file: overrides DEFAULTS below and stores the chosen project.
 const CONFIG_FILE = path.join(STATE_DIR, 'autopase-board.json');
-const PAGE_FILE = path.join(ROOT, 'bin', 'autopase-board.html');
+const PAGE_FILE = path.join(ROOT, 'bin', 'watchtower.html');
 const HOME = process.env.USERPROFILE ?? '';
 const SEEN_KEEP_MS = 7 * 24 * 3600 * 1000;
 
-// Настройки по умолчанию. Их можно переопределить файлом state/autopase-board.json —
-// он не в git, поэтому у каждого своя правка.
+// Built-in defaults. Everything here can be overridden by the settings file
+// state/autopase-board.json, which is not in git — so each install keeps its
+// own hosts, repository and paths out of the repository.
 const DEFAULTS = {
-  // Окно попадает на доску, если его рабочая папка содержит это слово.
-  match: 'autopase',
-  // Окна, которые на доску не берём (маркетинг — не разработка).
-  hide: ['seo'],
-  repo: 'Baltic-OrangesLV/vincheck-latvia',
-  streamWatch: 'C:\\Users\\panto\\projects\\autopase-ops\\reports\\active-session-monitor\\STREAM-WATCH.json',
-  specsDir: 'C:\\Users\\panto\\projects\\_conveyor\\autopase.lv\\specs',
-  // Слова, по которым окно считается ждущим слова CTO или владельца.
+  // Chosen project: the herdr worktree root (~/.herdr/worktrees/<project>/…) or
+  // the repository name of a plain project folder. Empty means "not chosen yet"
+  // and the board shows the onboarding screen instead.
+  project: '',
+  // true — show every herdr window, no project filter at all.
+  allWindows: false,
+  // Legacy filter kept for older settings files: a window is shown when its
+  // working directory contains this substring. When set, it wins over project.
+  match: '',
+  // Windows never shown on the board (by folder name or window label).
+  hide: [],
+  // owner/name for `gh pr list` and `gh issue list`. Empty — GitHub is skipped.
+  repo: '',
+  // Optional JSON file that says which window owns which build lanes.
+  streamWatch: '',
+  // Optional folder with <PROGRAM>/PROGRAM-STATE.md files (umbrella issue numbers).
+  specsDir: '',
+  // Protocol markers, NOT interface text: these are the exact words your windows
+  // and umbrella issues use to flag a question for a human. They are matched
+  // against comment and screen text, so keep them in whatever language your team
+  // actually writes — set your own in state/autopase-board.json.
   askWords: ['ВОПРОС CTO', 'ОТВЕТ ВЛАДЕЛЬЦУ', 'ВОПРОС ВЛАДЕЛЬЦУ'],
-  // Слова, которыми вопрос в зонтике закрывают. Пока их нет — вопрос висит.
+  // Markers that close such a question. Until one of them appears after the
+  // question, the question counts as still open.
   answerWords: ['ОТВЕТ CTO', 'РЕШЕНИЕ CTO', 'CTO ОТВЕЧАЕТ', 'ОТВЕЧАЮ ПО ПУНКТАМ', 'СЛОВО ВЛАДЕЛЬЦА'],
-  // Полосы, где пишется код. host — что подставить в ssh, key — ключ в ~/.ssh.
-  hosts: {
-    'lanes-01': { target: 'root@2.29.10.164', key: 'id_ed25519', kind: 'hzlane' },
-    'hetzner': { target: 'root@89.167.116.229', key: 'id_ed25519', kind: 'hzlane' },
-    'mac': { target: 'mac', kind: 'mac', kitchen: '~/kitchens/autopase.lv' },
-  },
+  // Hosts where code is built. target — what to pass to ssh, key — a key in ~/.ssh.
+  // Example:
+  //   "hosts": {
+  //     "builder": { "target": "root@203.0.113.10", "key": "id_ed25519", "kind": "hzlane" },
+  //     "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/myproject" }
+  //   }
+  hosts: {},
 };
 
 const HERDR_CANDIDATES = [
   path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Herdr', 'bin', 'herdr.exe'),
   'herdr',
 ];
-const SSH = process.env.AUTOPASE_SSH || 'C:\\Windows\\System32\\OpenSSH\\ssh.exe';
-const GH = process.env.AUTOPASE_GH || 'gh';
+const SSH = process.env.WATCHTOWER_SSH || 'C:\\Windows\\System32\\OpenSSH\\ssh.exe';
+const GH = process.env.WATCHTOWER_GH || 'gh';
 
 const KNOWN_STATUSES = new Set(['blocked', 'done', 'working', 'idle', 'unknown']);
 
-// Колонки. Первая — по слову владельца: то, что стоит без него.
+// Columns. The first one is what is standing still without a human.
 const COLUMNS = [
-  { key: 'ask', title: 'Нужен CTO / владелец' },
-  { key: 'running', title: 'В работе' },
-  { key: 'waiting', title: 'Молчит, полоса пишет' },
-  { key: 'idle', title: 'Простаивает' },
-  { key: 'off', title: 'Без агента' },
+  { key: 'ask', title: 'Needs you' },
+  { key: 'running', title: 'Working' },
+  { key: 'waiting', title: 'Lane is building' },
+  { key: 'idle', title: 'Idle' },
+  { key: 'off', title: 'No agent' },
 ];
 
-// ---------------------------------------------------------------- мелочи
+// ---------------------------------------------------------------- small helpers
 
 function normPath(p) {
   if (!p) return '';
@@ -85,17 +105,28 @@ function normPath(p) {
   return s;
 }
 
+// Same trimming as normPath, but the original case is kept: project names are
+// shown to the owner and stored in the settings file, so they must not be
+// lower-cased by accident of path handling.
+function trimPath(p) {
+  let s = String(p ?? '');
+  if (s.startsWith('\\\\?\\')) s = s.slice(4);
+  s = s.replaceAll('/', '\\');
+  while (s.endsWith('\\')) s = s.slice(0, -1);
+  return s;
+}
+
 async function readJsonSoft(file, fallback) {
   try { return JSON.parse(await readFile(file, 'utf8')); }
   catch { return fallback; }
 }
 
-// Запись файла состояния: сначала во временный файл, потом переименование.
-// Две тонкости, за которые уже платили:
-//   1. имя временного файла уникальное — иначе две одновременные записи
-//      пишут в один и тот же <файл>.tmp и вторая переименовывает обрывок;
-//   2. записи одного файла выстроены в очередь — переименования не обгоняют
-//      друг друга и не спотыкаются об уже переименованный временный файл.
+// Writing a state file: to a temporary file first, then a rename. Two details
+// already paid for:
+//   1. the temporary name is unique — otherwise two concurrent writes share one
+//      <file>.tmp and the second one renames a half-written stub;
+//   2. writes of one file are queued — renames never overtake each other and
+//      never trip over an already renamed temporary file.
 const writeQueues = new Map();
 
 async function writeJsonAtomic(file, obj) {
@@ -111,15 +142,15 @@ async function writeJsonAtomic(file, obj) {
       throw e;
     }
   });
-  // В очереди держим версию, которая никогда не падает: чужая неудача не
-  // должна отменить следующую запись.
+  // The queue holds a version that never rejects: one failed write must not
+  // cancel the next one.
   const tail = run.catch(() => {});
   writeQueues.set(file, tail);
   tail.then(() => { if (writeQueues.get(file) === tail) writeQueues.delete(file); });
   return run;
 }
 
-// Запуск внешней команды. Никогда не бросает — возвращает текст или null.
+// Running an external command. Never throws — returns text or null.
 function runText(bin, args, timeout = 60000) {
   return new Promise((resolve) => {
     execFile(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
@@ -131,7 +162,7 @@ function runText(bin, args, timeout = 60000) {
   });
 }
 
-// herdr, отвечающий строкой JSON.
+// herdr calls that answer with one line of JSON.
 function herdr(args) {
   return new Promise((resolve, reject) => {
     const tryOne = (i) => {
@@ -142,14 +173,14 @@ function herdr(args) {
             return reject(new Error(`herdr ${args.join(' ')}: ${String(stderr || '').trim() || err.message}`));
           }
           try { resolve(JSON.parse(stdout)); }
-          catch { reject(new Error(`herdr ${args.join(' ')}: ответ не JSON`)); }
+          catch { reject(new Error(`herdr ${args.join(' ')}: answer is not JSON`)); }
         });
     };
     tryOne(0);
   });
 }
 
-// herdr, отвечающий обычным текстом (explain, pane read).
+// herdr calls that answer with plain text (explain, pane read).
 async function herdrText(args) {
   for (const bin of HERDR_CANDIDATES) {
     const out = await runText(bin, args, 30000);
@@ -158,8 +189,8 @@ async function herdrText(args) {
   return null;
 }
 
-// Каждый источник данных обновляется в своём темпе и в фоне: страница
-// опрашивает /data раз в 3 секунды и никогда не ждёт ни ssh, ни GitHub.
+// Every source refreshes at its own pace in the background: the page polls
+// /data every 3 seconds and never waits for ssh or for GitHub.
 function makeSource(name, everyMs, fn) {
   const src = { name, at: 0, ok: false, busy: false, error: null, value: null, tookMs: null };
   src.tick = () => {
@@ -186,20 +217,74 @@ function makeSource(name, everyMs, fn) {
   return src;
 }
 
-// --------------------------------------------------- настройки и привязки
+// --------------------------------------------------- settings and bindings
 
 let config = { ...DEFAULTS };
-const cfgSource = makeSource('config', 30000, async () => {
-  const raw = await readJsonSoft(CONFIG_FILE, {});
-  config = { ...DEFAULTS, ...raw, hosts: { ...DEFAULTS.hosts, ...(raw.hosts ?? {}) } };
-  return config;
-});
 
-// STREAM-WATCH.json — единственное место, где записано «это окно ведёт вот эти
-// полосы и пишет ветки с такими префиксами». Файл ведёт окно CTO, не доска.
+function applyConfig(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  config = { ...DEFAULTS, ...src, hosts: { ...DEFAULTS.hosts, ...(src.hosts ?? {}) } };
+  return config;
+}
+
+const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
+
+// Which project the board is showing, and how the filter is expressed.
+//   none    — nothing chosen yet, the page shows onboarding
+//   all     — every herdr window, no filter
+//   match   — legacy settings file: substring of the working directory
+//   project — herdr worktree root / repository name
+function selection() {
+  if (config.allWindows === true) return { mode: 'all', label: 'All windows' };
+  const match = String(config.match ?? '').trim();
+  const project = String(config.project ?? '').trim();
+  if (match) return { mode: 'match', match: match.toLowerCase(), label: project || match };
+  if (project) return { mode: 'project', project, label: project };
+  return { mode: 'none', label: null };
+}
+
+// The project a window belongs to: the herdr worktree root when the window sits
+// in ~/.herdr/worktrees/<project>/…, otherwise the git repository name, and as a
+// last resort the folder name itself.
+const WORKTREE_RX = /[\\/]\.herdr[\\/]worktrees[\\/]([^\\/]+)/i;
+
+function projectOf(cwd, ws) {
+  const raw = trimPath(cwd);
+  if (!raw) return '';
+  const m = raw.match(WORKTREE_RX);
+  if (m) return m[1];
+  const repo = ws?.worktree?.repo_name;
+  if (repo) return String(repo);
+  return path.basename(raw);
+}
+
+// The onboarding list: every project herdr currently has windows in, with how
+// many windows and how many of them carry an agent.
+function projectList(panes, wsById) {
+  const byName = new Map();
+  for (const p of panes) {
+    const name = projectOf(p.cwd, wsById.get(p.workspace_id));
+    if (!name) continue;
+    const key = name.toLowerCase();
+    let row = byName.get(key);
+    if (!row) { row = { project: name, windows: new Set(), agents: new Set() }; byName.set(key, row); }
+    row.windows.add(p.workspace_id);
+    // Counted by window, not by pane: one window with two agent panes is still
+    // one window with an agent, so `agents` can never exceed `windows`.
+    if (p.agent) row.agents.add(p.workspace_id);
+  }
+  return [...byName.values()]
+    .map(r => ({ project: r.project, windows: r.windows.size, agents: r.agents.size }))
+    .sort((a, b) => b.windows - a.windows || a.project.localeCompare(b.project));
+}
+
+// The stream-watch file is the only place that records "this window drives these
+// lanes and writes branches with these prefixes". The file is maintained
+// elsewhere, the board only reads it.
 const streamsSource = makeSource('stream-watch', 30000, async () => {
+  if (!config.streamWatch) return { raw: null, byPane: new Map(), byId: new Map(), ctoPane: null, repo: config.repo };
   const raw = await readJsonSoft(config.streamWatch, null);
-  if (!raw) throw new Error(`не читается ${config.streamWatch}`);
+  if (!raw) throw new Error(`cannot read ${config.streamWatch}`);
   const byPane = new Map();
   const byId = new Map();
   for (const s of raw.streams ?? []) {
@@ -210,12 +295,13 @@ const streamsSource = makeSource('stream-watch', 30000, async () => {
   return { raw, byPane, byId, ctoPane: raw.cto_pane ?? null, repo: raw.repo ?? config.repo };
 });
 
-// PROGRAM-STATE.md каждой программы: оттуда берём номер зонтичного issue.
+// PROGRAM-STATE.md of each program: that is where the umbrella issue number is.
 const programsSource = makeSource('programs', 30000, async () => {
-  const out = new Map(); // имя папки программы (в нижнем регистре) -> {umbrella, file, updated}
+  const out = new Map(); // program folder name (lower case) -> {umbrella, file, updated}
+  if (!config.specsDir) return out;
   let dirs = [];
   try { dirs = await readdir(config.specsDir, { withFileTypes: true }); }
-  catch (e) { throw new Error(`не читается ${config.specsDir}: ${e.message}`); }
+  catch (e) { throw new Error(`cannot read ${config.specsDir}: ${e.message}`); }
   for (const d of dirs) {
     if (!d.isDirectory()) continue;
     const file = path.join(config.specsDir, d.name, 'PROGRAM-STATE.md');
@@ -233,9 +319,9 @@ const programsSource = makeSource('programs', 30000, async () => {
   return out;
 });
 
-// ------------------------------------------------------------- полосы
+// ------------------------------------------------------------- build lanes
 
-// hzlane status: «lane-3: BUSY since Wed 2026-08-26 09:25:20 UTC  branch=feat/…»
+// hzlane status: "lane-3: BUSY since Wed 2026-08-26 09:25:20 UTC  branch=feat/…"
 function parseHzlane(out, hostName) {
   const lanes = [];
   const extras = [];
@@ -260,8 +346,9 @@ function parseHzlane(out, hostName) {
   return { lanes, extras };
 }
 
-// На Mac hzlane нет: полоса — папка ~/kitchens/autopase.lv/lane-*, ветка берётся
-// из git, занятость — по рабочей папке живого процесса codex exec.
+// A Mac kitchen has no hzlane: a lane is a folder <kitchen>/lane-*, the branch
+// comes from git, and "busy" is decided by the working directory of a live
+// `codex exec` process.
 const MAC_PROBE = [
   'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH;',
   'for d in KITCHEN/lane-*; do [ -d "$d" ] || continue;',
@@ -288,14 +375,14 @@ function parseMac(out, hostName, kitchenAbs) {
     if (!hit) continue;
     l.busy = true;
     l.state = 'BUSY';
-    l.since = hit.etime ? `${hit.etime} назад` : null;
+    l.since = hit.etime ? `${hit.etime} ago` : null;
     const task = /TASK-[A-Za-z0-9._-]+/.exec(hit.cmd);
     l.task = task ? task[0] : null;
   }
-  // Работа codex вне полос autopase (например, песочницы no-mistakes) на доску
-  // не идёт, но её счёт полезен: она ест те же ядра.
+  // Codex work outside the project lanes does not belong on the board, but its
+  // count is useful: it eats the same cores.
   const outside = procs.filter(p => !lanes.some(l => p.cwd && p.cwd.endsWith('/' + l.lane))).length;
-  if (outside) extras.push(`ещё ${outside} процесс(ов) codex вне полос autopase`);
+  if (outside) extras.push(`${outside} more codex process(es) outside the project lanes`);
   return { lanes, extras, kitchen: kitchenAbs };
 }
 
@@ -308,12 +395,12 @@ function sshArgs(host, remote) {
 
 async function probeHost(name, host) {
   const remote = host.kind === 'mac'
-    ? MAC_PROBE.replaceAll('KITCHEN', host.kitchen ?? '~/kitchens/autopase.lv')
+    ? MAC_PROBE.replaceAll('KITCHEN', host.kitchen ?? '~/kitchens')
     : 'hzlane status 2>&1';
   const started = Date.now();
   const out = await runText(SSH, sshArgs(host, remote), 45000);
   if (out === null) {
-    return { host: name, target: host.target, ok: false, lanes: [], extras: [], error: 'ssh не ответил', tookMs: Date.now() - started };
+    return { host: name, target: host.target, ok: false, lanes: [], extras: [], error: 'ssh did not answer', tookMs: Date.now() - started };
   }
   const parsed = host.kind === 'mac'
     ? parseMac(out, name, host.kitchen)
@@ -332,7 +419,7 @@ const lanesSource = makeSource('lanes', 45000, async () => {
 
 function ciColor(rollup) {
   const items = rollup ?? [];
-  if (!items.length) return { color: 'none', text: 'нет проверок' };
+  if (!items.length) return { color: 'none', text: 'no checks' };
   let fail = 0, run = 0, ok = 0;
   for (const it of items) {
     const v = String(it.conclusion || it.state || it.status || '').toUpperCase();
@@ -340,16 +427,17 @@ function ciColor(rollup) {
     else if (['IN_PROGRESS', 'QUEUED', 'PENDING', 'WAITING', 'REQUESTED'].includes(v)) run++;
     else ok++;
   }
-  if (fail) return { color: 'red', text: `CI красный (${fail})` };
-  if (run) return { color: 'run', text: `CI идёт (${run})` };
-  return { color: 'green', text: `CI зелёный (${ok})` };
+  if (fail) return { color: 'red', text: `CI red (${fail})` };
+  if (run) return { color: 'run', text: `CI running (${run})` };
+  return { color: 'green', text: `CI green (${ok})` };
 }
 
 const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
+  if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
     '--json', 'number,title,headRefName,isDraft,url,updatedAt,statusCheckRollup,author'], 90000);
-  if (out === null) throw new Error('gh pr list не ответил');
+  if (out === null) throw new Error('gh pr list did not answer');
   const list = JSON.parse(out);
   return list.map(p => ({
     number: p.number,
@@ -363,16 +451,18 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   }));
 });
 
-// Зонтичные issue: список + свежие комментарии, чтобы поймать «ВОПРОС CTO».
+// Umbrella issues: the list plus recent comments, so a question for a human can
+// be spotted there.
 const umbrellaSource = makeSource('umbrella', 120000, async () => {
+  const out = new Map();
   const repo = streamsSource.value?.repo ?? config.repo;
+  if (!repo) return out;
   const listOut = await runText(GH, ['issue', 'list', '--repo', repo, '--label', 'umbrella',
     '--state', 'open', '--limit', '40', '--json', 'number,title,url,updatedAt'], 90000);
-  if (listOut === null) throw new Error('gh issue list не ответил');
+  if (listOut === null) throw new Error('gh issue list did not answer');
   const numbers = new Set(JSON.parse(listOut).map(i => i.number));
-  // Плюс зонтики, названные в PROGRAM-STATE.md: они могут быть без метки.
+  // Plus umbrellas named in PROGRAM-STATE.md: they may carry no label.
   for (const p of (programsSource.value ?? new Map()).values()) if (p.umbrella) numbers.add(p.umbrella);
-  const out = new Map();
   for (const n of numbers) {
     const raw = await runText(GH, ['issue', 'view', String(n), '--repo', repo,
       '--json', 'number,title,url,updatedAt,state,comments'], 90000);
@@ -387,9 +477,9 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
       const body = String(comments[i].body ?? '');
       const hit = words.find(w => body.toUpperCase().includes(w.toUpperCase()));
       if (!hit) continue;
-      // Вопрос считается закрытым, только если ПОСЛЕ него лёг комментарий с
-      // ответом. Отчёты самого потока («запущено», «влито») ответом не считаются —
-      // в зонтике пишет одна и та же учётная запись, по автору не различить.
+      // A question counts as closed only when an answer comment landed AFTER it.
+      // Progress reports from the stream itself ("started", "merged") are not an
+      // answer — the same account writes both, so the author tells us nothing.
       const answered = comments.slice(i + 1).some(c =>
         answers.some(a => String(c.body ?? '').toUpperCase().includes(a.toUpperCase())));
       ask = {
@@ -397,7 +487,7 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
         at: comments[i].createdAt ?? null,
         author: comments[i].author?.login ?? null,
         text: body.replace(/\s+/g, ' ').slice(0, 300),
-        after: comments.length - 1 - i, // сколько комментариев легло уже после вопроса
+        after: comments.length - 1 - i, // how many comments landed after the question
         answered,
       };
       break;
@@ -416,10 +506,10 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
   return out;
 });
 
-// ------------------------------------------ экран окна и последние слова
+// ------------------------------------------ window screen and last words
 
-// Нижняя строка экрана Claude Code:
-//   museyib@timelines.ai | effort: xhigh | panto > garage-lv-directories | Opus 5 (1M context) | [====] 47% | кэш …
+// The footer line of a Claude Code screen:
+//   name@example.com | effort: xhigh | user > branch | Opus 5 (1M context) | [====] 47% | cache …
 function parseFooter(text) {
   const lines = String(text).split(/\r?\n/);
   let footer = null, mode = null;
@@ -429,8 +519,8 @@ function parseFooter(text) {
     if (!mode && /(bypass permissions|accept edits|plan mode|shift\+tab)/i.test(l)) mode = l.trim();
   }
   if (!footer) {
-    // Не Claude Code: у grok и других строка состояния нарисована в рамке
-    // («╰─ Grok 4.6 (xhigh) · always approve ─╯»). Берём её целиком как модель.
+    // Not Claude Code: other agents draw their status line inside a box
+    // ("╰─ Grok 4.6 (xhigh) · always approve ─╯"). Take it whole as the model.
     for (let i = lines.length - 1; i >= 0; i--) {
       const m = lines[i].match(/^\s*[╰└]─*\s*(\S.*?)\s*─*[╯┘]\s*$/);
       if (m && m[1].length >= 4) return { account: null, model: m[1], effort: null, contextPct: null, cache: null, mode };
@@ -441,11 +531,12 @@ function parseFooter(text) {
   const find = (rx) => parts.find(p => rx.test(p)) ?? null;
   const effort = find(/^effort:/i);
   const ctx = find(/\[[=\s]*\]|\[[=\s]+\]|\]\s*\d+%/) ?? find(/\d+%\s*$/);
-  const cache = find(/кэш/i);
+  const cache = find(/cache|кэш/i);
   const account = parts[0] && /@/.test(parts[0]) ? parts[0] : null;
-  // Модель — то, что не учётка, не effort, не «panto > …», не полоса контекста и не кэш.
+  // The model is whatever is not the account, not the effort, not the "user >
+  // branch" part, not the context bar and not the cache counter.
   const model = parts.find(p =>
-    p !== account && !/^effort:/i.test(p) && !/^panto\s*>/i.test(p) && p !== ctx && p !== cache
+    p !== account && !/^effort:/i.test(p) && !/\s>\s/.test(p) && p !== ctx && p !== cache
     && !/^\[/.test(p) && /[A-Za-zА-Яа-я]/.test(p)) ?? null;
   const pct = ctx ? (ctx.match(/(\d+)\s*%/) ?? [])[1] : null;
   return {
@@ -458,20 +549,20 @@ function parseFooter(text) {
   };
 }
 
-// Обвязка терминала: подсказки, полоски режима, приглашение оболочки. Это не
-// слова окна, и в «последние слова» такие строки попадать не должны.
+// Terminal furniture: hints, mode bars, the shell prompt. That is not what the
+// window said, and such lines must never end up in "last words".
 const CHROME = [
   /shift\+tab/i, /ctrl\+[a-z]/i, /\besc\b\s*:/i, /^PS\s+[A-Z]:\\/i, /CategoryInfo/i,
   /\(optional\)/i, /auto mode on/i, /bypass permissions/i, /for agents\s*$/i,
   /^\s*[❯>$#]/, /Update installed/i, /token(s)?\s*$/i, /^\S+=\S+&\S+=/,
   /^\s*✻/, /^\s*⎿/, /How is Claude doing/i, /^\s*\d+\s*\/\s*\d+\s+agents?\b/i,
-  /^[╰╭╮╯┌┐└┘├┤│─═]/, // строка внутри рамки — обвязка окна, а не его слова
+  /^[╰╭╮╯┌┐└┘├┤│─═]/, // a line inside a box is furniture, not speech
 ];
-// Инструменты, а не слова: «● Bash(…)», «● Created PR #…» — это отчёт о действии.
+// Tools, not words: "● Bash(…)", "● Created PR #…" — that is a report of an action.
 const TOOL_LINE = /^(Monitor|Bash|Read|Write|Edit|Search|Task|Update|Created PR|Ran \d|Fetch|Glob|Grep|WebFetch|Skill)\b/;
 
-// Строка в кавычках с экранированием (перенос строки, коды знаков) — в обычный
-// текст. Если после разбора остались одни пробелы, показывать нечего.
+// A quoted, escaped line (newlines, character codes) turned into plain text. If
+// only whitespace survives the unescaping, there is nothing to show.
 function unquote(raw) {
   let t = String(raw).trim();
   if (t.length > 1 && t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1);
@@ -485,19 +576,19 @@ function unquote(raw) {
   return t.length >= 3 ? t.slice(0, 120) : '';
 }
 
-// Рамки, стрелки и разделители словами не являются. Если после их удаления в
-// строке осталось меньше десятка настоящих знаков — это обвязка, а не речь
-// (иначе в «последние слова» попадала рамка вида «╰─ (Grok 4.6) ─╯»).
+// Box borders, arrows and separators are not words. If fewer than a dozen real
+// characters remain after removing them, the line is furniture rather than
+// speech (otherwise a box like "╰─ (Grok 4.6) ─╯" became the "last words").
 function wordyLength(l) {
   return l.replace(/[\s─═│┌┐└┘├┤┬┴┼╌╭╮╰╯▼▲►◄◇◆○●⏺|+\-–—·•]/g, '').length;
 }
 
-// Экран без «подвала»: последняя строка, которую окно действительно сказало.
+// The screen without its footer: the last line the window really said.
 function lastScreenWords(text) {
   const clean = (l) => l.replace(/\s+/g, ' ').trim().slice(0, 300);
   const junk = (l) => CHROME.some(rx => rx.test(l)) || /\beffort:/i.test(l) || wordyLength(l) < 12;
   const lines = String(text).split(/\r?\n/);
-  // Строки Claude Code начинаются с маркера ● / ⏺ — это ответ агента.
+  // Claude Code lines start with a ● / ⏺ marker — that is the agent speaking.
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = lines[i].match(/^\s*[●⏺]\s+(.{8,})$/);
     if (m && !TOOL_LINE.test(m[1]) && !junk(m[1])) return clean(m[1]);
@@ -510,9 +601,9 @@ function lastScreenWords(text) {
   return null;
 }
 
-// Экраны и правила состояния читаем реже, чем идёт опрос страницы: 40 окон ×
-// два вызова herdr — это заметно, а текст на экране так быстро не меняется.
-const paneCache = new Map(); // pane -> { at, footer, words, prs, explain, raw }
+// Screens and state rules are read less often than the page polls: 40 windows ×
+// two herdr calls is noticeable, and screen text does not change that fast.
+const paneCache = new Map(); // pane -> { at, footer, words, prs, explain }
 const PANE_TTL_MS = 12000;
 let paneRefreshing = false;
 
@@ -532,8 +623,8 @@ async function refreshPanes(panes) {
         const m = line.match(/^(agent|state|rule|evidence|manifest):\s*(.*)$/);
         if (m) explain[m[1]] = m[2].trim();
       }
-      // rule приходит как «osc_title_working (region=osc_title priority=1100)»:
-      // на карточке нужно короткое имя, подробности уходят в подсказку.
+      // rule arrives as "osc_title_working (region=osc_title priority=1100)":
+      // the card needs the short name, the details go into the tooltip.
       if (explain.rule) {
         const r = explain.rule.match(/^(\S+)\s*(?:\((.*)\))?/);
         explain.ruleName = r ? r[1] : explain.rule;
@@ -549,13 +640,13 @@ async function refreshPanes(panes) {
         explain,
       });
     }
-    // Панели, которых больше нет, из памяти убираем.
+    // Panes that no longer exist are dropped from memory.
     const live = new Set(panes);
     for (const k of paneCache.keys()) if (!live.has(k)) paneCache.delete(k);
   } finally { paneRefreshing = false; }
 }
 
-// -------------------------------------- последние слова из журнала сессии
+// -------------------------------------- last words from the session log
 
 const sessionPathCache = new Map();
 const journalCache = new Map();
@@ -569,7 +660,7 @@ async function findSessionFile(sid, cwd) {
     for (const acc of await readdir(path.join(HOME, '.claude-accounts'))) {
       roots.push(path.join(HOME, '.claude-accounts', acc));
     }
-  } catch { /* нет папки учёток — работаем с одной */ }
+  } catch { /* no per-account folders — a single home then */ }
   let file = null, dir = null;
   for (const root of roots) {
     const folder = path.join(root, 'projects', escaped);
@@ -581,9 +672,9 @@ async function findSessionFile(sid, cwd) {
   return found;
 }
 
-// Журналы соседних сессий того же окна, от свежего к старому. Нужны, когда
-// текущая сессия ещё ничего не сказала вслух (только ходила по инструментам)
-// — тогда последние слова окна лежат в её предшественнице.
+// Logs of neighbouring sessions of the same window, newest first. Needed when
+// the current session has not spoken out loud yet (only used tools) — then the
+// window's last words live in its predecessor.
 async function siblingJournals(dir, exclude) {
   if (!dir) return [];
   const out = [];
@@ -595,13 +686,13 @@ async function siblingJournals(dir, exclude) {
       const s = await stat(full).catch(() => null);
       if (s) out.push({ file: full, mtime: s.mtimeMs });
     }
-  } catch { /* папка исчезла */ }
+  } catch { /* the folder vanished */ }
   return out.sort((a, b) => b.mtime - a.mtime).slice(0, 3).map(x => x.file);
 }
 
-// Хвост журнала. Окно может час подряд ходить по инструментам, и в последней
-// четверти мегабайта не окажется ни одной сказанной вслух строки — поэтому
-// хвост берём растущими кусками, пока слова не найдутся (или не кончится файл).
+// The tail of a log. A window can spend an hour on tools, and the last quarter
+// megabyte may hold no spoken line at all — so the tail is read in growing
+// chunks until words are found (or the file ends).
 const TAIL_STEPS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024];
 
 async function readTail(file, size, len) {
@@ -620,7 +711,7 @@ function findLastSpoken(lines) {
       if (o.type !== 'assistant' || o.isSidechain) continue;
       const t = (o.message?.content ?? []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
       if (t && t.length >= 8) return t.replace(/\s+/g, ' ').slice(0, 400);
-    } catch { /* обрезанная строка журнала */ }
+    } catch { /* a truncated log line */ }
   }
   return null;
 }
@@ -636,12 +727,12 @@ async function lastAssistantText(file) {
       text = findLastSpoken(await readTail(file, s.size, len));
       if (text || len >= s.size) break;
     }
-  } catch { /* журнал не читается — покажем слова с экрана */ }
+  } catch { /* unreadable log — the screen words will do */ }
   journalCache.set(file, { mtime: s.mtimeMs, text });
   return text;
 }
 
-// ------------------------------------------------------- время в состоянии
+// ------------------------------------------------------- time in a state
 
 let seenCache = null;
 async function loadSeen() {
@@ -664,19 +755,19 @@ function updateSeen(seen, panes, nowIso) {
   }
 }
 
-// ------------------------------------------- правки доски руками (крестик, «+»)
+// ------------------------------------------- hand edits (the × and the +)
 //
-// Всё, что владелец сделал руками, лежит в одном файле state/autopase-cards.json:
+// Everything the owner did by hand lives in one file, state/autopase-cards.json:
 //   { "hidden": [ { "tab": "w5:t3", "cwd": "…", "name": "…", "at": "…" } ],
 //     "manual": [ { "id": "m…", "title": "…", "text": "…", "column": "idle", "at": "…" } ] }
-// hidden — автокарточки, спрятанные крестиком; их всегда можно вернуть из списка
-// «скрытые: N». manual — карточки, заведённые кнопкой «+»; они удаляются насовсем.
+// hidden — automatic cards hidden with the ×; they can always be restored from
+// the settings screen. manual — cards added with the +; those are deleted for good.
 
 let cardsState = null;
 
-// Карточка — это не вкладка: одна вкладка с двумя панелями в разных рабочих
-// папках даёт две карточки. Поэтому прячем по той же паре, по которой карточка
-// и собирается: вкладка + рабочая папка.
+// A card is not a tab: one tab with two panes in different working directories
+// gives two cards. So a card is hidden by the same pair it is built from:
+// tab + working directory.
 function cardKey(tab, cwd) {
   return `${tab}|${normPath(cwd)}`;
 }
@@ -688,8 +779,8 @@ function normCardsState(raw) {
   for (const h of Array.isArray(src.hidden) ? src.hidden : []) {
     const tab = typeof h === 'string' ? h : String(h?.tab ?? '');
     if (!tab) continue;
-    // Старые записи (без рабочей папки) не выбрасываем: они прячут вкладку
-    // целиком, как раньше, пока владелец не вернёт окно на доску.
+    // Older records (without a working directory) are kept: they hide the whole
+    // tab, as they used to, until the owner restores the window.
     const cwd = typeof h === 'string' ? '' : String(h?.cwd ?? '');
     const key = cardKey(tab, cwd);
     if (seenKeys.has(key)) continue;
@@ -711,10 +802,9 @@ function normCardsState(raw) {
   return { hidden, manual };
 }
 
-// Читаем файл один раз на всю жизнь доски. Чтение обязано быть однократным и
-// при одновременных запросах: иначе каждый из них заводит СВОЙ разбор файла, и
-// правки, сделанные в чужом, пропадают (12 одновременных «+» давали в файле
-// одну карточку).
+// The file is read once per board lifetime. That read must stay single even
+// under concurrent requests: otherwise each of them starts its OWN parse and
+// edits made in the others are lost (12 simultaneous "+" once produced one card).
 let cardsLoading = null;
 async function loadCards() {
   if (cardsState) return cardsState;
@@ -733,20 +823,20 @@ async function saveCards() {
   await writeJsonAtomic(CARDS_FILE, cardsState);
 }
 
-// Правка руками: сначала меняем в памяти, потом пишем на диск. Если запись не
-// удалась — откатываем память обратно, иначе доска показывала бы карточку как
-// сохранённую, а после перезапуска её бы не было.
+// A hand edit: change memory first, then write to disk. If the write failed,
+// roll memory back — otherwise the board would show the card as saved and it
+// would be gone after a restart.
 async function commitCards(mutate) {
   const hand = await loadCards();
   const backup = { hidden: hand.hidden.slice(), manual: hand.manual.slice() };
   const result = mutate(hand);
-  if (result === false) return hand;   // менять нечего — и писать нечего
+  if (result === false) return hand;   // nothing changed — nothing to write
   try {
     await saveCards();
   } catch (e) {
     hand.hidden = backup.hidden;
     hand.manual = backup.manual;
-    throw new Error(`правку не удалось сохранить на диск: ${String(e?.message || e)}`);
+    throw new Error(`could not save the edit to disk: ${String(e?.message || e)}`);
   }
   return hand;
 }
@@ -755,7 +845,7 @@ function newManualId() {
   return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-// ---------------------------------------------------- ветка рабочей копии
+// ---------------------------------------------------- checkout branch
 
 const branchCache = new Map();
 async function checkoutBranch(dir) {
@@ -773,20 +863,20 @@ async function checkoutBranch(dir) {
     if (gitDir) {
       const head = (await readFile(path.join(gitDir, 'HEAD'), 'utf8')).trim();
       const r = head.match(/refs\/heads\/(.+?)\s*$/);
-      // Голова может быть отсоединена от ветки — тогда в HEAD лежит просто
-      // номер коммита. Это важно видеть: с такой копии PR не откроешь.
+      // HEAD may be detached from any branch — then it holds a plain commit id.
+      // Worth seeing: you cannot open a PR from such a checkout.
       if (r) value = { branch: r[1], detached: null };
       else if (/^[0-9a-f]{7,40}$/i.test(head)) value = { branch: null, detached: head.slice(0, 7) };
     }
-  } catch { /* не репозиторий — ветки нет */ }
+  } catch { /* not a repository — no branch */ }
   branchCache.set(dir, { at: Date.now(), value });
   return value;
 }
 
-// ------------------------------------------------------------ сбор доски
+// ------------------------------------------------------------ collecting
 
-// Сравнение названий без учёта регистра и разделителей: «GLD-garage-lv-directories»
-// и «Garage LV directories» — про одно и то же.
+// Comparing names ignoring case and separators: "GLD-garage-lv-directories" and
+// "Garage LV directories" are about the same thing.
 function slug(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9а-я]+/gi, '');
 }
@@ -796,8 +886,8 @@ function matchesStream(stream, branch) {
   return (stream.branch_prefix ?? []).some(p => branch.startsWith(p));
 }
 
-// Полосы этого окна: сначала по префиксу ветки писателя, потом по прямому
-// совпадению с веткой рабочей копии, потом по названию задания.
+// The lanes of this window: first by the branch prefix of its writer, then by a
+// direct match with the checkout branch, then by the task name.
 function lanesFor(allLanes, stream, branch) {
   return allLanes.filter(l => {
     if (!l.busy) return false;
@@ -812,21 +902,9 @@ function lanesFor(allLanes, stream, branch) {
   });
 }
 
-function ageMs(iso) {
-  const t = Date.parse(iso ?? '');
-  return Number.isNaN(t) ? null : Date.now() - t;
-}
-
 async function collect() {
-  // Фоновые источники: просто «толкнуть», ответа не ждём.
   cfgSource.tick();
-  const first = [];
-  for (const s of [streamsSource, programsSource, lanesSource, prSource, umbrellaSource]) {
-    const p = s.tick();
-    if (s.at === 0 && p) first.push(p);
-  }
-  // Первый заход ждёт медленные источники один раз, иначе доска открылась бы пустой.
-  if (first.length) await Promise.allSettled(first);
+  const sel = selection();
 
   const [snapRes, wsListRes, agentListRes, seen, hand] = await Promise.all([
     herdr(['api', 'snapshot']),
@@ -846,21 +924,64 @@ async function collect() {
   const wsList = wsListRes?.result?.workspaces ?? [];
   const wsMeta = new Map(wsList.map(w => [w.workspace_id, w]));
 
-  const match = String(config.match ?? 'autopase').toLowerCase();
+  const projects = projectList(allPanes, wsById);
+  const now = new Date().toISOString();
+
+  // No project chosen yet: the page shows the onboarding screen instead of the
+  // board, and nothing slow (ssh, gh) is asked for.
+  if (sel.mode === 'none') {
+    return {
+      generatedAt: now,
+      needsProject: true,
+      project: null,
+      projects,
+      columns: COLUMNS,
+      cards: [],
+      hosts: [],
+      laneOwners: {},
+      hidden: [],
+      handHidden: hand.hidden,
+      windowsTotal: (snap.workspaces ?? []).length,
+      focusedTab: snap.focused_tab_id ?? null,
+      ctoPane: null,
+      repo: config.repo || null,
+      prsOpen: 0,
+      umbrellas: [],
+      sources: [{ name: 'project', ok: false, error: 'no project chosen yet', ageMs: 0, tookMs: null }],
+    };
+  }
+
+  // Background sources: just nudge them, do not wait for an answer.
+  const first = [];
+  for (const s of [streamsSource, programsSource, lanesSource, prSource, umbrellaSource]) {
+    const p = s.tick();
+    if (s.at === 0 && p) first.push(p);
+  }
+  // The very first pass waits for the slow sources once, otherwise the board
+  // would open empty.
+  if (first.length) await Promise.allSettled(first);
+
   const hide = (config.hide ?? []).map(s => String(s).toLowerCase());
 
-  // Одна вкладка — одна карточка: у панели с агентом приоритет, дальше меньший id.
+  const keep = (p) => {
+    const cwd = normPath(p.cwd);
+    if (!cwd) return false;
+    if (sel.mode === 'all') return true;
+    if (sel.mode === 'match') return cwd.includes(sel.match);
+    return projectOf(p.cwd, wsById.get(p.workspace_id)).toLowerCase() === sel.project.toLowerCase();
+  };
+
+  // One tab — one card: a pane with an agent wins, then the lower pane id.
   const rank = (p) => `${p.agent ? 0 : 1}|${p.pane_id}`;
   const best = new Map();
   for (const p of allPanes) {
-    const cwd = normPath(p.cwd);
-    if (!cwd || !cwd.includes(match)) continue;
-    const key = `${p.tab_id}|${cwd}`;
+    if (!keep(p)) continue;
+    const key = `${p.tab_id}|${normPath(p.cwd)}`;
     const cur = best.get(key);
     if (!cur || rank(p) < rank(cur)) best.set(key, p);
   }
   let panes = [...best.values()];
-  // Прячем то, что владелец просил не показывать (маркетинговое окно seo).
+  // Windows the owner asked never to show (the `hide` setting).
   const hidden = [];
   panes = panes.filter(p => {
     const folder = path.basename(normPath(p.cwd));
@@ -868,9 +989,9 @@ async function collect() {
     if (hide.includes(folder) || hide.includes(wsLabel)) { hidden.push(folder || wsLabel); return false; }
     return true;
   });
-  // Окна, спрятанные крестиком. Прячем ровно ту карточку, на которой нажали
-  // крестик: пара «вкладка + рабочая папка», как в ключе сборки выше. Вернуть
-  // их можно из списка «скрытые: N».
+  // Windows hidden with the ×. Exactly the card the × was clicked on is hidden:
+  // the pair "tab + working directory", the same key the card is built from.
+  // They can be restored from the settings screen.
   const nameOf = (p) => {
     const ws = wsById.get(p.workspace_id);
     const meta = wsMeta.get(p.workspace_id);
@@ -880,7 +1001,7 @@ async function collect() {
     return (tabCount > 1 && tabLabel) || meta?.label || ws?.label || path.basename(normPath(p.cwd));
   };
   const hiddenKeys = new Set(hand.hidden.filter(h => h.cwd).map(h => cardKey(h.tab, h.cwd)));
-  // Записи старого образца (без рабочей папки) прячут вкладку целиком.
+  // Records of the older shape (without a working directory) hide the whole tab.
   const hiddenTabs = new Set(hand.hidden.filter(h => !h.cwd).map(h => h.tab));
   const hiddenPanes = [];
   if (hiddenKeys.size || hiddenTabs.size) {
@@ -892,10 +1013,10 @@ async function collect() {
       return true;
     });
   }
-  // Скрытое не живёт вечно: если вкладки в снимке herdr больше нет, запись
-  // выбрасываем — иначе новая вкладка с тем же id молча не появилась бы на
-  // доске. У живых записей заодно освежаем имя, чтобы в списке «скрытые» не
-  // висело чужое старое название.
+  // A hidden record does not live forever: when the tab is gone from the herdr
+  // snapshot, the record is dropped — otherwise a new tab reusing the id would
+  // silently fail to appear. Live records also get their name refreshed, so the
+  // restore list never shows a stale title.
   {
     const alive = new Map(hiddenPanes.map(p => [cardKey(p.tab_id, p.cwd), p]));
     let changed = false;
@@ -906,7 +1027,7 @@ async function collect() {
         if (nm && nm !== h.name) { h.name = nm; changed = true; }
         return true;
       }
-      if (tabById.has(h.tab)) return true;   // вкладка жива, панель ещё не поднялась
+      if (tabById.has(h.tab)) return true;   // tab alive, pane not up yet
       changed = true;
       return false;
     });
@@ -914,7 +1035,6 @@ async function collect() {
   }
   panes.sort((a, b) => a.pane_id.localeCompare(b.pane_id));
 
-  const now = new Date().toISOString();
   updateSeen(seen, panes, now);
   writeJsonAtomic(SEEN_FILE, seen).catch(() => {});
   refreshPanes(panes.map(p => p.pane_id));
@@ -940,10 +1060,11 @@ async function collect() {
     const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
 
     const lanes = lanesFor(allLanes, stream, branch);
-    // Полосы, которые в STREAM-WATCH числятся за окном, но сейчас свободны.
+    // Lanes the stream file assigns to this window that are free right now.
     const laneSlots = [...new Set((stream?.lanes ?? []).map(l => `${l.host}: ${l.task_match}`))];
 
-    // Последние слова окна: журнал сессии точнее экрана, экран — запасной путь.
+    // The window's last words: the session log is more precise than the screen,
+    // the screen is the fallback.
     let recap = null;
     let recapFrom = null;
     const sid = agent?.agent_session?.value;
@@ -951,33 +1072,34 @@ async function collect() {
       const { file, dir } = await findSessionFile(sid, cwd);
       if (file) {
         recap = await lastAssistantText(file);
-        if (recap) recapFrom = 'журнал сессии';
+        if (recap) recapFrom = 'session log';
       }
       if (!recap) {
         for (const other of await siblingJournals(dir, file)) {
           recap = await lastAssistantText(other);
-          if (recap) { recapFrom = 'журнал прошлой сессии окна'; break; }
+          if (recap) { recapFrom = 'previous session log'; break; }
         }
       }
     }
-    if (!recap && screen?.words) { recap = screen.words; recapFrom = 'экран окна'; }
+    if (!recap && screen?.words) { recap = screen.words; recapFrom = 'window screen'; }
 
-    // Открытые PR этого окна. Номера, названные окном (на экране или в последних
-    // словах), — самая честная привязка там, где ветка PR не совпала с веткой окна.
+    // Open PRs of this window. Numbers the window named itself (on screen or in
+    // its last words) are the most honest binding where the PR branch does not
+    // match the window branch.
     const mentioned = new Set(screen?.prs ?? []);
     for (const m of String(recap ?? '').matchAll(/#(\d{3,5})/g)) mentioned.add(Number(m[1]));
     const cardPrs = [];
     for (const pr of prs) {
       let via = null;
-      if (branch && pr.branch === branch) via = 'ветка окна';
-      else if (matchesStream(stream, pr.branch)) via = 'префикс ветки';
-      else if (lanes.some(l => l.branch === pr.branch)) via = 'ветка полосы';
+      if (branch && pr.branch === branch) via = 'window branch';
+      else if (matchesStream(stream, pr.branch)) via = 'branch prefix';
+      else if (lanes.some(l => l.branch === pr.branch)) via = 'lane branch';
       if (via) cardPrs.push({ ...pr, via });
     }
     cardPrs.sort((a, b) => b.number - a.number);
 
-    // Зонтичный issue: из PROGRAM-STATE.md программы с таким же именем, иначе
-    // из state_file потока, иначе по номеру, названному самим окном.
+    // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
+    // else from the stream's state file, else from a number the window named.
     let program = null;
     for (const [key, val] of programs) {
       if (key === folder || key.endsWith(folder) || folder.endsWith(key)) { program = val; break; }
@@ -987,11 +1109,11 @@ async function collect() {
       program = programs.get(dirName) ?? null;
     }
     let umbrellaNo = program?.umbrella ?? null;
-    // Зонтик часто называет поток прямо в заголовке («…(POPULAR-001 + SALON-001) —
-    // категории…»), и это надёжнее случайного номера, мелькнувшего на экране.
+    // An umbrella often names the stream right in its title, and that is more
+    // reliable than a random number that flashed on a screen.
     if (!umbrellaNo) {
-      // Сначала целиком, потом по хвосту имени: один зонтик может вести две
-      // ветви сразу («…(POPULAR-001 + SALON-001)…»), и целиком имя в него не влезает.
+      // Whole name first, then the tail of it: one umbrella can drive two
+      // branches at once and the whole name will not fit in its title.
       const parts = folder.split(/[-_.]/).filter(Boolean);
       const needles = [slug(folder), slug(parts.slice(-2).join(''))].filter(n => n.length >= 6);
       for (const needle of needles) {
@@ -1007,14 +1129,14 @@ async function collect() {
     }
     const umbrella = umbrellaNo ? (umbrellas.get(umbrellaNo) ?? { number: umbrellaNo }) : null;
 
-    // Нужен ли CTO или владелец.
+    // Does this window need a human?
     const words = config.askWords ?? DEFAULTS.askWords;
     const askReasons = [];
-    if (status === 'blocked') askReasons.push('окно blocked — ждёт ответа');
+    if (status === 'blocked') askReasons.push('window is blocked — waiting for an answer');
     const hay = `${recap ?? ''} ${screen?.words ?? ''}`.toUpperCase();
-    for (const w of words) if (hay.includes(w.toUpperCase())) askReasons.push(`в последних словах «${w}»`);
+    for (const w of words) if (hay.includes(w.toUpperCase())) askReasons.push(`last words contain "${w}"`);
     if (umbrella?.ask && !umbrella.ask.answered) {
-      askReasons.push(`в зонтике #${umbrella.number} «${umbrella.ask.word}» без ответа`);
+      askReasons.push(`umbrella #${umbrella.number}: "${umbrella.ask.word}" with no answer`);
     }
 
     const laneAlive = lanes.length > 0;
@@ -1031,8 +1153,8 @@ async function collect() {
       ws: p.workspace_id,
       number: ws?.number ?? null,
       place: `${p.workspace_id}:${p.pane_id.split(':')[1] ?? ''}`,
-      // В окне с несколькими вкладками имя даёт вкладка («grok»,
-      // «sheepdog-autopase»); безымянные вкладки («1», «2») именем не считаются.
+      // In a window with several tabs the tab gives the name; unnamed tabs
+      // ("1", "2") do not count as a name.
       name: nameOf(p),
       window: meta?.label || ws?.label || null,
       folder,
@@ -1064,23 +1186,23 @@ async function collect() {
     });
   }
 
-  // Второй проход по PR: у кого ветка совпала — тот и хозяин, и на чужих
-  // карточках такой PR не всплывает. Остальные открытые PR отдаём тем окнам,
-  // которые сами их назвали (на экране или в последних словах) — иначе окно
-  // CTO, где перечислены все номера, забирало бы себе всю доску.
+  // Second pass over PRs: whoever matched by branch owns the PR, and it does not
+  // pop up on other cards. The remaining open PRs go to the windows that named
+  // them themselves — otherwise one window listing every number would take the
+  // whole board.
   const ownedByBranch = new Set(cards.flatMap(c => c.prs.map(pr => pr.number)));
   for (const c of cards) {
     for (const pr of prs) {
       if (ownedByBranch.has(pr.number) || !c.mentioned.includes(pr.number)) continue;
-      c.prs.push({ ...pr, via: 'названо окном' });
+      c.prs.push({ ...pr, via: 'named by the window' });
     }
     c.prs.sort((a, b) => b.number - a.number);
     delete c.mentioned;
   }
 
-  // Карточки, заведённые руками. Они не привязаны ни к окну, ни к полосе, ни к
-  // PR — только заголовок, текст и колонка, — поэтому добавляются последними,
-  // уже после разбора PR по окнам.
+  // Cards added by hand. They are bound to no window, no lane and no PR — only a
+  // title, a text and a column — so they are appended last, after PRs have been
+  // handed out to windows.
   for (const m of hand.manual) {
     cards.push({
       manual: true,
@@ -1088,7 +1210,7 @@ async function collect() {
       pane: null,
       tab: null,
       ws: null,
-      place: 'вручную',
+      place: 'by hand',
       name: m.title,
       window: null,
       folder: null,
@@ -1108,15 +1230,15 @@ async function collect() {
       umbrella: null,
       program: null,
       recap: m.text || null,
-      recapFrom: m.text ? 'вписано руками' : null,
+      recapFrom: m.text ? 'typed by hand' : null,
       askReasons: [],
       column: m.column,
       tabCount: 1,
     });
   }
 
-  // Хозяева занятых полос. Считаем по ВСЕМ окнам, включая спрятанные
-  // крестиком: скрытие — дело доски, а полоса от него ничьей не становится.
+  // Owners of busy lanes. Counted over ALL windows, hidden ones included:
+  // hiding is a board matter, a lane does not become unclaimed because of it.
   const laneOwners = {};
   for (const c of cards) for (const l of c.lanes) laneOwners[`${l.host}|${l.lane}`] = c.name;
   for (const p of hiddenPanes) {
@@ -1126,11 +1248,11 @@ async function collect() {
     const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
     for (const l of lanesFor(allLanes, stream, branch)) {
       const key = `${l.host}|${l.lane}`;
-      if (!laneOwners[key]) laneOwners[key] = `${nameOf(p)} (скрыто с доски)`;
+      if (!laneOwners[key]) laneOwners[key] = `${nameOf(p)} (hidden from the board)`;
     }
   }
 
-  // Полосы, которые заняты, но ни к какому окну не привязались.
+  // Lanes that are busy but did not bind to any window.
   for (const l of allLanes) {
     if (l.busy && !laneOwners[`${l.host}|${l.lane}`]) l.orphan = true;
   }
@@ -1140,60 +1262,66 @@ async function collect() {
 
   return {
     generatedAt: now,
+    needsProject: false,
+    project: sel.label,
+    projects,
     columns: COLUMNS,
     cards,
     hosts: laneHosts,
-    // Хозяева полос отдельно от карточек: спрятанное окно карточки не даёт,
-    // но полосу свою не бросает.
+    // Lane owners separately from cards: a hidden window has no card but does
+    // not abandon its lane.
     laneOwners,
     hidden: [...new Set(hidden)],
-    // Спрятанное крестиком — отдельно от config.hide: это можно вернуть с доски.
+    // Hidden with the × — separate from the `hide` setting: this can be undone.
     handHidden: hand.hidden,
     windowsTotal: (snap.workspaces ?? []).length,
     focusedTab: snap.focused_tab_id ?? null,
     ctoPane: streams?.ctoPane ?? null,
-    repo: streams?.repo ?? config.repo,
+    // `|| null` and not `??`: an unset repo is an empty string in the config, and
+    // the agent answer must show one single "no value" (`-`), not a blank line.
+    repo: (streams?.repo ?? config.repo) || null,
     prsOpen: prs.length,
     umbrellas: [...umbrellas.values()],
     sources,
   };
 }
 
-// --------------------------------------------- агентский вид доски (/api/board)
+// --------------------------------------------- the agent view (/api/board)
 //
-// Ручка для агента-сторожа: та же доска, но без картинки и без браузера. Состав
-// ответа закреплён отдельно от /data: страница живёт на /data и её поля меняются
-// вместе с вёрсткой, а агент читает /api/board, и правка страницы его не ломает.
+// An endpoint for a watchdog agent: the same board without a picture and without
+// a browser. Its shape is pinned separately from /data: the page lives on /data
+// and its fields change together with the layout, while the agent reads
+// /api/board, so editing the page does not break it.
 //
-// Что отдаём: строку сводки со счётчиками, таблицу карточек в шесть полей и
-// отдельные разделы для длинных текстов (последние слова окна, вопрос из
-// зонтика) — по мотивам TOON: те же данные, но заметно короче JSON.
+// What it returns: a summary line with counters, a table of cards in six fields,
+// and separate sections for long texts (the window's last words, the question
+// from an umbrella) — TOON-flavoured: the same data, noticeably shorter than JSON.
 
-// Сколько знаков длинного текста показываем без ?full=1.
+// How many characters of a long text are shown without ?full=1.
 const AGENT_TEXT_LIMIT = 200;
 
-// Последние слова окна — самый длинный кусок ответа и при этом справочный: в
-// обходе доски агенту нужна только зацепка, о чём окно говорило. Поэтому в
-// списке от них остаётся короткая строка, а весь текст выдаётся по запросу —
-// /api/board/card/<имя> на одно окно или ?full=1 на всю доску.
+// The window's last words are the longest part of the answer and the most
+// reference-like: on a sweep the agent only needs a hint of what the window was
+// talking about. So the list keeps a short line and the whole text is fetched on
+// demand — /api/board/card/<name> for one window, ?full=1 for the whole board.
 const AGENT_WORDS_LIMIT = 80;
 
-// Обрезка с пометкой размера: агент видит, сколько он НЕ дочитал, и знает, что
-// за остатком надо идти с ?full=1. Молча выбрасывать хвост нельзя — агент решит,
-// что это весь текст.
+// Clipping with the size marked: the agent sees how much it did NOT read and
+// knows the rest is behind ?full=1. Dropping the tail silently is not allowed —
+// the agent would take it for the whole text.
 function clipText(text, full, limit = AGENT_TEXT_LIMIT) {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!t) return '';
   if (full || t.length <= limit) return t;
-  return `${t.slice(0, limit)}… (обрезано, всего ${t.length} зн.)`;
+  return `${t.slice(0, limit)}… (clipped, ${t.length} chars total)`;
 }
 
-const CI_WORD = { green: 'зелёный', red: 'красный', run: 'идёт', none: 'без-проверок' };
+const CI_WORD = { green: 'green', red: 'red', run: 'running', none: 'no-checks' };
 
-// PR карточки одной клеткой: самый свежий номер с цветом CI, остальные — счётом.
+// A card's PRs in one cell: the newest number with its CI colour, the rest as a count.
 function prCell(prs) {
   if (!prs?.length) return '-';
-  const head = `#${prs[0].number} ${CI_WORD[prs[0].ci?.color] ?? 'CI-неизвестен'}`;
+  const head = `#${prs[0].number} ${CI_WORD[prs[0].ci?.color] ?? 'CI-unknown'}`;
   return prs.length > 1 ? `${head} +${prs.length - 1}` : head;
 }
 
@@ -1202,17 +1330,17 @@ function laneCell(lanes) {
   return lanes.map(l => `${l.host}/${l.lane}`).join(' ');
 }
 
-// Из большого снимка /data — маленький закреплённый вид. Внутренние поля
-// (explain, footer, mentioned, place, …) сюда не просачиваются намеренно.
-const nameOfCard = (c) => String(c.name || c.folder || '(без имени)');
+// From the big /data snapshot to a small pinned view. Internal fields (explain,
+// footer, mentioned, place, …) deliberately do not leak in here.
+const nameOfCard = (c) => String(c.name || c.folder || '(unnamed)');
 
-// Ждёт ли карточка слова. У окна это разобранные причины, а у карточки,
-// вписанной руками, причин не бывает вовсе (askReasons там всегда пустой) —
-// про неё говорит сама колонка: владелец положил её в «ask» именно потому,
-// что ждёт ответа. Без этой ветки ручная карточка была бы для агента невидима.
+// Is this card waiting for a human? A window has parsed reasons; a card typed by
+// hand never has any (askReasons is always empty there) — for it the column
+// speaks: the owner put it into "ask" precisely because it waits for an answer.
+// Without this branch a hand-typed card would be invisible to the agent.
 function askWhy(c) {
   if (c.askReasons?.length) return c.askReasons.join('; ');
-  if (c.manual && c.column === 'ask') return 'карточка вписана руками в колонку «ждёт слова»';
+  if (c.manual && c.column === 'ask') return 'card was put by hand into the "needs you" column';
   return '';
 }
 
@@ -1226,18 +1354,19 @@ function buildAgentBoard(payload, full) {
   const rows = cards.map(c => ({
     column: c.column,
     name: nameOfCard(c),
-    state: c.manual ? 'вручную' : (c.status ?? 'unknown'),
-    ask: askWhy(c) ? 'да' : 'нет',
+    state: c.manual ? 'manual' : (c.status ?? 'unknown'),
+    ask: askWhy(c) ? 'yes' : 'no',
     pr: prCell(c.prs),
     lanes: laneCell(c.lanes),
   }));
 
-  // Почему окно ждёт слова — отдельно от таблицы: причин бывает несколько и
-  // они длинные, в клетку такое не кладут.
+  // Why a window waits — separately from the table: there can be several reasons
+  // and they are long, such things do not go into a cell.
   //
-  // Сам вопрос из зонтичного issue у окон одной программы один и тот же, и
-  // печатать его по разу на окно — платить за одинаковый текст дважды. Поэтому
-  // в строке стоит ссылка «#1299», а текст лежит один раз в разделе questions.
+  // The question from an umbrella issue is the same for every window of one
+  // program, and printing it once per window is paying twice for identical text.
+  // So the row carries a reference like "#1299" and the text sits once in the
+  // questions section.
   const asks = [];
   const questions = [];
   const questionSeen = new Map();
@@ -1264,19 +1393,19 @@ function buildAgentBoard(payload, full) {
       text: clipText(c.recap, full, AGENT_WORDS_LIMIT),
     }));
 
-  // Источник доски мог не ответить (ssh, gh). Тогда пустая клетка «полос нет» —
-  // это незнание, а не факт; агент обязан увидеть разницу.
+  // A source may have failed to answer (ssh, gh). Then an empty "no lanes" cell
+  // means not knowing, not a fact; the agent must see the difference.
   const problems = [
     ...(payload.sources ?? []).filter(s => !s.ok)
-      .map(s => ({ source: s.name, error: clipText(s.error, full) || 'не ответил' })),
+      .map(s => ({ source: s.name, error: clipText(s.error, full) || 'no answer' })),
     ...(payload.hosts ?? []).filter(h => !h.ok)
-      .map(h => ({ source: `полоса ${h.host}`, error: clipText(h.error, full) || 'не ответил' })),
+      .map(h => ({ source: `lane host ${h.host}`, error: clipText(h.error, full) || 'no answer' })),
   ];
 
   return {
     board: `http://127.0.0.1:${PORT}`,
     generated: payload.generatedAt,
-    repo: payload.repo ?? null,
+    repo: payload.repo || null,
     full: Boolean(full),
     summary: {
       windows: auto.length,
@@ -1294,9 +1423,9 @@ function buildAgentBoard(payload, full) {
   };
 }
 
-// Одна карточка целиком: последние слова без обрезания, причина ожидания и
-// вопрос из зонтика. Нужна затем, чтобы в общем обходе доски длинные тексты
-// можно было не тащить вовсе, а дочитывать только то окно, которое интересно.
+// One card in full: last words without clipping, the reason it waits and the
+// question from its umbrella. It exists so that a board sweep need not carry
+// long texts at all and only the interesting window is read out in full.
 function buildAgentCard(payload, wanted) {
   const cards = payload.cards ?? [];
   const needle = String(wanted ?? '').trim().toLowerCase();
@@ -1308,8 +1437,8 @@ function buildAgentCard(payload, wanted) {
     card: {
       name: nameOfCard(card),
       column: card.column,
-      state: card.manual ? 'вручную' : (card.status ?? 'unknown'),
-      ask: askWhy(card) ? 'да' : 'нет',
+      state: card.manual ? 'manual' : (card.status ?? 'unknown'),
+      ask: askWhy(card) ? 'yes' : 'no',
       why: askWhy(card) || '-',
       umbrella: card.umbrella?.number ? `#${card.umbrella.number}` : '-',
       question: ask?.text ? String(ask.text).replace(/\s+/g, ' ').trim() : '-',
@@ -1321,11 +1450,11 @@ function buildAgentCard(payload, wanted) {
   };
 }
 
-// ---- вывод по мотивам TOON
+// ---- TOON-flavoured output
 
-// Значение клетки. Кавычки нужны там, где иначе поедет разбор строки: запятая,
-// двоеточие, кавычка, перенос, края с пробелами. Пустых клеток не бывает — там,
-// где нечего сказать, стоит «-».
+// A cell value. Quotes are needed where parsing would otherwise break: comma,
+// colon, quote, newline, edges made of spaces. There are no empty cells — where
+// there is nothing to say, a "-" stands.
 function toonValue(v) {
   const s = String(v ?? '');
   if (s === '') return '""';
@@ -1333,8 +1462,8 @@ function toonValue(v) {
   return s;
 }
 
-// Таблица: заголовок с числом строк и полями, дальше строки с отступом.
-// Пустая таблица — не пустота, а явный ноль со словами.
+// A table: a header with the row count and the fields, then indented rows.
+// An empty table is not emptiness but an explicit zero in words.
 function toonTable(name, rows, fields, emptyText) {
   if (!rows.length) return `${name}: 0 — ${emptyText}`;
   return [
@@ -1349,35 +1478,35 @@ function renderToonBoard(v) {
     `board: ${v.board}`,
     `generated: ${v.generated}`,
     `repo: ${v.repo ?? '-'}`,
-    `summary: окон ${s.windows}, ждут слова ${s.waitingWord}, полос пишут ${s.lanesBusy},`
-      + ` PR открытых ${s.prsOpen}, ручных ${s.manual}, скрытых ${s.hidden}`,
+    `summary: windows ${s.windows}, waiting for you ${s.waitingWord}, lanes building ${s.lanesBusy},`
+      + ` open PRs ${s.prsOpen}, manual ${s.manual}, hidden ${s.hidden}`,
     toonTable('cards', v.cards, ['column', 'name', 'state', 'ask', 'pr', 'lanes'],
-      'карточек на доске нет'),
+      'no cards on the board'),
     toonTable('asks', v.asks, ['name', 'why', 'question'],
-      'никто не ждёт слова CTO или владельца'),
+      'nobody is waiting for you'),
     toonTable('questions', v.questions, ['umbrella', 'text'],
-      'вопросов в зонтичных issue нет'),
+      'no questions in umbrella issues'),
     toonTable('words', v.words, ['name', 'from', 'text'],
-      'ни одно окно ничего не сказало'),
+      'no window has said anything'),
     toonTable('problems', v.problems, ['source', 'error'],
-      'все источники доски отвечают'),
+      'every source answers'),
   ];
   const help = [];
   if (!v.full) {
-    help.push('в words только начало последних слов; всё окно целиком —'
-      + ' /api/board/card/<имя>, вся доска целиком — ?full=1');
+    help.push('words holds only the start of the last words; one window in full —'
+      + ' /api/board/card/<name>, the whole board in full — ?full=1');
   }
-  help.push('в asks клетка question — ссылка на зонтик, сам текст в разделе questions');
-  help.push('?format=json — тот же состав аккуратным JSON');
-  help.push('колонки: ask — нужен CTO/владелец, running — в работе, waiting — молчит,'
-    + ' полоса пишет, idle — простаивает, off — без агента');
-  // Подсказки — простой список, без полей: это не данные, а следующие шаги.
+  help.push('in asks the question cell is a reference to an umbrella; the text is in the questions section');
+  help.push('?format=json — the same shape as plain JSON');
+  help.push('columns: ask — needs you, running — working, waiting — window is silent,'
+    + ' its lane is building, idle — idle, off — no agent');
+  // Help is a plain list, without fields: these are next steps, not data.
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
   return out.join('\n') + '\n';
 }
 
-// Одна карточка — простыми строчками «поле: значение»: таблицы тут не из чего
-// строить, строка одна.
+// One card as plain "field: value" lines: there is nothing to build a table
+// from, the row is single.
 function renderToonCard(c) {
   return [
     `card: ${c.name}`,
@@ -1394,72 +1523,93 @@ function renderToonCard(c) {
   ].join('\n') + '\n';
 }
 
-// Разбор параметров агентских ручек. Правила у format и full одни и те же:
-// значение должно быть названо словом. Пустое значение (?format= или ?full=) —
-// это опечатка, а не «включено», и повтор параметра (?format=toon&format=json)
-// — тоже: молча взять первый и потерять второй значит отдать не то, что просили.
+// Parsing the parameters of the agent endpoints. The rules for format and full
+// are the same: the value must be spelled out. An empty value (?format= or
+// ?full=) is a typo, not "on", and a repeated parameter
+// (?format=toon&format=json) is one too: silently taking the first and losing
+// the second means answering something other than what was asked.
 function agentParams(url, allowFull) {
   const allowed = allowFull ? ['format', 'full'] : ['format'];
   for (const key of url.searchParams.keys()) {
     if (!allowed.includes(key)) {
-      return { error: `ошибка: неизвестный параметр «${key}»\n`
-        + `help: разрешены ${allowFull ? 'format=toon|json и full=1' : 'только format=toon|json'}` };
+      return { error: `error: unknown parameter "${key}"\n`
+        + `help: allowed are ${allowFull ? 'format=toon|json and full=1' : 'format=toon|json only'}` };
     }
     if (url.searchParams.getAll(key).length > 1) {
-      return { error: `ошибка: параметр «${key}» задан несколько раз\n`
-        + 'help: оставь одно значение — какое из них нужно, доска не угадывает' };
+      return { error: `error: parameter "${key}" given more than once\n`
+        + 'help: leave one value — the board does not guess which of them you meant' };
     }
   }
   const format = url.searchParams.get('format') ?? 'toon';
   if (format !== 'toon' && format !== 'json') {
-    return { error: `ошибка: неизвестный format «${format}»\n`
-      + 'help: format=toon (по умолчанию, короткий текст) или format=json' };
+    return { error: `error: unknown format "${format}"\n`
+      + 'help: format=toon (default, short text) or format=json' };
   }
   const fullRaw = url.searchParams.get('full');
   if (fullRaw !== null && !['0', '1', 'true', 'false'].includes(fullRaw)) {
-    return { error: `ошибка: у full непонятное значение «${fullRaw}»\n`
-      + 'help: full=1 — тексты целиком, full=0 (или без параметра) — обрезанные' };
+    return { error: `error: full has an unclear value "${fullRaw}"\n`
+      + 'help: full=1 — texts in full, full=0 (or no parameter) — clipped' };
   }
   return { format, full: fullRaw !== null && fullRaw !== '0' && fullRaw !== 'false' };
 }
 
-// -------------------------------------------------------------- сервер
+// -------------------------------------------------------------- server
 
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
   res.end(body);
 }
 
-// Ответ агенту обычным текстом — и удача, и ошибка. Ошибку он читает так же,
-// как данные, поэтому она короткая, по-русски и с подсказкой, что делать.
+// An answer to an agent is plain text, both on success and on failure. It reads
+// an error the same way it reads data, so the error is short and carries a hint
+// about what to do next.
 function sendText(res, code, body) {
   send(res, code, body.endsWith('\n') ? body : body + '\n', 'text/plain; charset=utf-8');
 }
 
-// Плохой запрос от страницы — это не поломка доски: отвечаем 400 и своим
-// текстом, а не английской руганью разборщика JSON, которую страница показала
-// бы владельцу прямо у кнопки.
+// A bad request from the page is not a board failure: answer 400 with our own
+// text rather than the JSON parser's complaint, which the page would show to the
+// owner right next to the button.
 class BadRequest extends Error {}
 
-// Тело POST-запроса. Больше сотни килобайт доска не принимает: там всё равно
-// только заголовок карточки и пара строк текста.
+// The body of a POST request. The board accepts no more than a hundred kilobytes:
+// there is only a card title and a couple of lines of text in there anyway.
 async function readBody(req) {
   let body = '';
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 100000) throw new BadRequest('слишком длинный запрос');
+    if (body.length > 100000) throw new BadRequest('request too long');
   }
   if (!body) return {};
   let parsed;
   try { parsed = JSON.parse(body); }
-  catch { throw new BadRequest('плохой запрос: тело не разобрать'); }
+  catch { throw new BadRequest('bad request: body cannot be parsed'); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new BadRequest('плохой запрос: ожидался объект');
+    throw new BadRequest('bad request: an object was expected');
   }
   return parsed;
 }
 
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
+// A project name comes from the herdr snapshot: a folder name, so no control
+// characters, no path separators and nothing longer than a folder can be.
+const PROJECT_RX = /^[^\\/\r\n\t\u0000-\u001f]{1,200}$/;
+
+// Saving the chosen project into the settings file. Everything else in that file
+// is kept as it is: it holds the owner's hosts, repository and paths.
+async function saveSelection(patch) {
+  const raw = await readJsonSoft(CONFIG_FILE, {});
+  const base = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const next = { ...base, ...patch };
+  await writeJsonAtomic(CONFIG_FILE, next);
+  applyConfig(next);
+  // The file has just been read into memory — do not let the periodic reload
+  // race with this write.
+  cfgSource.at = Date.now();
+  cfgSource.ok = true;
+  cfgSource.error = null;
+  return next;
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -1472,9 +1622,9 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
-    // Доска для агента-сторожа: без страницы, без картинок, коротким текстом.
-    // Собираем тем же collect(), что и /data, — источники внутри него ходят
-    // наружу по своим таймерам, так что лишнего похода в ssh и gh тут нет.
+    // The board for a watchdog agent: no page, no pictures, short text. Built by
+    // the same collect() as /data — the sources inside it go out on their own
+    // timers, so this costs no extra ssh or gh call.
     if (req.method === 'GET' && url.pathname === '/api/board') {
       const p = agentParams(url, true);
       if (p.error) return sendText(res, 400, p.error);
@@ -1483,15 +1633,15 @@ const server = http.createServer(async (req, res) => {
         payload = await collect();
       } catch (e) {
         return sendText(res, 500,
-          `ошибка: доску собрать не удалось: ${String(e?.message || e)}\n`
-          + 'help: проверь, что herdr отвечает — herdr api snapshot');
+          `error: could not collect the board: ${String(e?.message || e)}\n`
+          + 'help: check that herdr answers — herdr api snapshot');
       }
       const view = buildAgentBoard(payload, p.full);
       if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
       return sendText(res, 200, renderToonBoard(view));
     }
-    // Одно окно целиком: длинные тексты без обрезания. Тексты у окна короткие
-    // по одному и длинные скопом, поэтому в общем виде доски их нет.
+    // One window in full: long texts without clipping. Windows have short texts
+    // one by one and long texts in bulk, which is why the board view omits them.
     if (req.method === 'GET' && url.pathname.startsWith('/api/board/card/')) {
       const p = agentParams(url, false);
       if (p.error) return sendText(res, 400, p.error);
@@ -1500,49 +1650,71 @@ const server = http.createServer(async (req, res) => {
       catch { wanted = ''; }
       if (!wanted.trim()) {
         return sendText(res, 400,
-          'ошибка: имя карточки в адресе пустое\n'
-          + 'help: /api/board/card/<имя из клетки name раздела cards>');
+          'error: the card name in the path is empty\n'
+          + 'help: /api/board/card/<name from the name cell of the cards section>');
       }
       let payload;
       try {
         payload = await collect();
       } catch (e) {
         return sendText(res, 500,
-          `ошибка: доску собрать не удалось: ${String(e?.message || e)}\n`
-          + 'help: проверь, что herdr отвечает — herdr api snapshot');
+          `error: could not collect the board: ${String(e?.message || e)}\n`
+          + 'help: check that herdr answers — herdr api snapshot');
       }
       const found = buildAgentCard(payload, wanted);
       if (!found.found) {
-        const list = found.names.length ? found.names.join(', ') : '(доска пуста)';
+        const list = found.names.length ? found.names.join(', ') : '(the board is empty)';
         if (p.format === 'json') {
           return send(res, 404, JSON.stringify(
-            { error: `карточки «${wanted}» на доске нет`, cards: found.names }, null, 2));
+            { error: `there is no card "${wanted}" on the board`, cards: found.names }, null, 2));
         }
         return sendText(res, 404,
-          `ошибка: карточки «${wanted}» на доске нет\n`
-          + `help: сейчас на доске: ${list}`);
+          `error: there is no card "${wanted}" on the board\n`
+          + `help: on the board right now: ${list}`);
       }
       if (p.format === 'json') return send(res, 200, JSON.stringify(found.card, null, 2));
       return sendText(res, 200, renderToonCard(found.card));
     }
 
-    // Единственное действие доски: перевести herdr на выбранную вкладку.
-    // Ничего в чужие окна не пишется и не запускается.
+    // Choosing the project the board shows: onboarding on first run, and the
+    // same screen behind the gear afterwards.
+    if (req.method === 'POST' && url.pathname === '/project/select') {
+      const body = await readBody(req);
+      const all = body.all;
+      if (all !== undefined && typeof all !== 'boolean') {
+        return send(res, 400, '{"error":"all must be true or false"}');
+      }
+      if (all === true) {
+        // "All windows" wins over any project, and the legacy substring filter
+        // has to be cleared, otherwise it would keep filtering.
+        await saveSelection({ allWindows: true, project: '', match: '' });
+        return send(res, 200, JSON.stringify({ ok: true, project: 'All windows' }));
+      }
+      const project = String(body.project ?? '').trim();
+      if (!project || !PROJECT_RX.test(project)) {
+        return send(res, 400, '{"error":"a project name is required"}');
+      }
+      await saveSelection({ allWindows: false, project, match: '' });
+      return send(res, 200, JSON.stringify({ ok: true, project }));
+    }
+
+    // The board's only action on herdr: switch to the chosen tab. Nothing is
+    // written into or started in other windows.
     if (req.method === 'POST' && url.pathname === '/focus') {
       const { tab } = await readBody(req);
-      if (!TAB_RX.test(String(tab))) return send(res, 400, '{"error":"плохой id вкладки"}');
+      if (!TAB_RX.test(String(tab))) return send(res, 400, '{"error":"bad tab id"}');
       await herdr(['tab', 'focus', String(tab)]);
       return send(res, 200, '{"ok":true}');
     }
 
-    // Крестик на автокарточке: окно уходит с доски до тех пор, пока его не
-    // вернут из списка «скрытые». Ничего в самом окне не меняется.
+    // The × on an automatic card: the window leaves the board until it is
+    // restored from the settings screen. Nothing changes in the window itself.
     if (req.method === 'POST' && url.pathname === '/card/hide') {
       const { tab, cwd, name } = await readBody(req);
       const id = String(tab ?? '');
-      if (!TAB_RX.test(id)) return send(res, 400, '{"error":"плохой id вкладки"}');
-      // Прячем карточку, а не вкладку целиком: у вкладки может быть вторая
-      // панель в другой рабочей папке — это отдельная карточка.
+      if (!TAB_RX.test(id)) return send(res, 400, '{"error":"bad tab id"}');
+      // A card is hidden, not the whole tab: a tab may have a second pane in
+      // another working directory — that is a separate card.
       const dir = String(cwd ?? '').slice(0, 400);
       const key = cardKey(id, dir);
       const hand = await commitCards(h => {
@@ -1556,7 +1728,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify({ ok: true, hidden: hand.hidden }));
     }
 
-    // Вернуть спрятанное окно на доску.
+    // Bring a hidden window back to the board.
     if (req.method === 'POST' && url.pathname === '/card/unhide') {
       const { tab, cwd } = await readBody(req);
       const id = String(tab ?? '');
@@ -1569,11 +1741,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify({ ok: true, hidden: hand.hidden }));
     }
 
-    // Карточка, вписанная руками: заголовок обязателен, текст и колонка — нет.
+    // A card typed by hand: the title is required, the text and the column are not.
     if (req.method === 'POST' && url.pathname === '/card/add') {
       const { title, text, column } = await readBody(req);
       const t = String(title ?? '').trim().slice(0, 200);
-      if (!t) return send(res, 400, '{"error":"нужен заголовок"}');
+      if (!t) return send(res, 400, '{"error":"a title is required"}');
       const col = COLUMNS.some(c => c.key === column) ? column : 'idle';
       const item = {
         id: newManualId(),
@@ -1586,7 +1758,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify({ ok: true, card: item }));
     }
 
-    // Крестик на ручной карточке: удаляем насовсем, возвращать нечего.
+    // The × on a hand-typed card: deleted for good, there is nothing to restore.
     if (req.method === 'POST' && url.pathname === '/card/remove') {
       const { id } = await readBody(req);
       const key = String(id ?? '');
@@ -1597,7 +1769,7 @@ const server = http.createServer(async (req, res) => {
       });
       return send(res, 200, JSON.stringify({ ok: true, manual: hand.manual.length }));
     }
-    send(res, 404, '{"error":"нет такого пути"}');
+    send(res, 404, '{"error":"no such path"}');
   } catch (e) {
     if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
@@ -1608,14 +1780,14 @@ await mkdir(STATE_DIR, { recursive: true });
 await cfgSource.tick();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.log(`Доска уже запущена: http://127.0.0.1:${PORT}`);
+    console.log(`Watchtower is already running: http://127.0.0.1:${PORT}`);
     process.exit(0);
   }
   throw e;
 });
 server.listen(PORT, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${PORT}`;
-  console.log(`autopase board: ${url}`);
+  console.log(`Watchtower: ${url}`);
   if (process.argv.includes('--open')) {
     execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});
   }

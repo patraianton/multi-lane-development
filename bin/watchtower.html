@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>autopase — всё в одном месте</title>
+<title>Watchtower</title>
 <link rel="icon" href="data:,">
 <style>
   :root {
@@ -39,9 +39,9 @@
     overflow: hidden;
   }
 
-  /* ---- шапка ---- */
+  /* ---- header: title, counters, "+", gear. Nothing else. ---- */
   header {
-    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; min-width: 0;
     padding: 8px 12px;
     border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, #121c28, #0c141d);
@@ -49,11 +49,11 @@
   header h1 {
     margin: 0; font-size: 15px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
   }
+  header h1 .proj { color: var(--focus); font-weight: 600; letter-spacing: .04em; text-transform: none; }
   header .num { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
   header .num b { color: var(--ink); }
-  .srcs { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-left: auto; }
+  header .spacer { margin-left: auto; }
 
-  /* ---- кнопки шапки: «+» и «скрытые: N» ---- */
   .hbtn {
     font-family: var(--ui); font-size: 11px; line-height: 1.5;
     padding: 1px 8px; border: 1px solid var(--line); border-radius: 9px;
@@ -62,8 +62,9 @@
   .hbtn:hover { border-color: var(--line-hot); color: var(--ink); }
   .hbtn.on { border-color: var(--focus); color: var(--focus); }
   .hbtn.plus { font-size: 13px; font-weight: 700; padding: 0 8px; }
+  .hbtn.gear { font-size: 12px; padding: 0 7px; }
 
-  /* ---- полоса «вписать карточку» и список скрытых ---- */
+  /* ---- "add a card" bar ---- */
   .handbar {
     display: none; gap: 10px 18px; flex-wrap: wrap; align-items: flex-start;
     padding: 8px 12px; border-bottom: 1px solid var(--line); background: #0c141d;
@@ -79,6 +80,34 @@
   .handbar input.t { width: 240px; }
   .handbar input.txt { width: 320px; }
   .handbar .note { font-size: 11px; color: var(--ink-dim); }
+
+  /* ---- settings / onboarding ---- */
+  .sheet {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: rgba(4, 8, 12, .82); padding: 6vh 4vw; overflow: auto;
+  }
+  .sheet.open { display: block; }
+  .sheet .box {
+    max-width: 720px; margin: 0 auto; padding: 18px 20px 20px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  }
+  .sheet h2 { margin: 0 0 4px; font-size: 16px; }
+  .sheet p { margin: 0 0 14px; color: var(--ink-mid); font-size: 12px; line-height: 1.45; }
+  .sheet h3 {
+    margin: 18px 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-mid); border-bottom: 1px solid var(--line); padding-bottom: 4px;
+  }
+  .sheet .close { position: absolute; top: 12px; right: 16px; }
+  .plist { display: grid; gap: 6px; }
+  .plist button {
+    display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+    font-family: var(--ui); font-size: 13px; padding: 6px 10px;
+    border: 1px solid var(--line); border-radius: 5px;
+    background: var(--panel-low); color: var(--ink); cursor: pointer;
+  }
+  .plist button:hover { border-color: var(--focus); background: var(--panel-hi); }
+  .plist button.cur { border-color: var(--focus); color: var(--focus); }
+  .plist button .meta { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
   .hidden-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .hidden-list .item {
     display: inline-flex; align-items: baseline; gap: 6px;
@@ -91,18 +120,14 @@
     background: transparent; color: var(--working); cursor: pointer;
   }
   .hidden-list .item button:hover { border-color: #1f6a52; }
-  .src {
-    font-family: var(--mono); font-size: 10px; padding: 1px 6px;
-    border: 1px solid var(--line); border-radius: 9px; color: var(--ink-dim);
-  }
-  .src.ok { color: var(--working); border-color: #1f6a52; }
-  .src.bad { color: var(--blocked); border-color: #6a2224; }
+  .note { font-size: 11px; color: var(--ink-dim); }
 
-  /* ---- полоса полос ---- */
+  /* ---- lane strip ---- */
   .lanes-strip {
     display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; min-width: 0;
     padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel-low);
   }
+  .lanes-strip:empty { display: none; }
   .host {
     flex: 1 1 260px; min-width: 0; max-width: 100%;
     border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px;
@@ -118,7 +143,7 @@
   .host .lane .who { color: var(--violet); }
   .host .extra { font-size: 10px; color: var(--ink-dim); font-family: var(--mono); }
 
-  /* ---- колонки ---- */
+  /* ---- columns ---- */
   .board { display: grid; gap: 8px; padding: 8px 12px 16px; overflow: auto; align-items: start;
            grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .col { min-width: 0; overflow-wrap: anywhere; }
@@ -129,7 +154,7 @@
   .col > h2 span { color: var(--ink-dim); font-family: var(--mono); }
   .col.ask > h2 { color: var(--blocked); border-color: #6a2224; }
 
-  /* ---- карточка ---- */
+  /* ---- card ---- */
   .card {
     border: 1px solid var(--line); border-left: 3px solid var(--unknown); border-radius: 4px;
     background: var(--panel); margin-bottom: 8px; padding: 7px 9px; cursor: pointer;
@@ -145,8 +170,8 @@
   .card.manual { border-left-color: var(--violet); border-style: dashed; cursor: default; }
 
   .card .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-  /* Крестик: всегда справа, отдельной кнопкой — обычный клик по карточке его
-     не задевает, а он не задевает клик по карточке (всплытие остановлено). */
+  /* The ×: always on the right, its own button — a normal click on the card does
+     not hit it, and it does not trigger the card click (bubbling is stopped). */
   .card .x {
     margin-left: auto; font-family: var(--ui); font-size: 12px; line-height: 1;
     padding: 1px 5px; border: 1px solid transparent; border-radius: 3px;
@@ -164,7 +189,6 @@
 
   .card .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
   .card .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
-  .card .k { color: var(--ink-dim); }
   .card .recap {
     margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
     background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
@@ -188,103 +212,147 @@
   .empty { color: var(--ink-dim); font-size: 11px; padding: 4px 6px; }
   .err { margin: 6px 12px; padding: 6px 9px; border: 1px solid #6a2224; background: #1d0f11; color: #ffb3b4;
          font-family: var(--mono); font-size: 11px; }
+
+  /* Onboarding replaces the board itself, so the daily controls are out of the
+     way until a project is picked. */
+  body.onboarding .num,
+  body.onboarding .hbtn,
+  body.onboarding .handbar,
+  body.onboarding .lanes-strip,
+  body.onboarding .board { display: none; }
 </style>
 </head>
 <body>
 <header>
-  <h1>autopase — всё в одном месте</h1>
-  <button class="hbtn plus" id="add-toggle" title="вписать карточку руками">+</button>
-  <button class="hbtn" id="hidden-toggle" title="скрытые крестиком окна">скрытые: 0</button>
-  <div class="num" id="counts">загрузка…</div>
-  <div class="srcs" id="srcs"></div>
+  <h1>Watchtower <span class="proj" id="project"></span></h1>
+  <div class="num" id="counts">loading…</div>
+  <span class="spacer"></span>
+  <button class="hbtn plus" id="add-toggle" title="add a card by hand">+</button>
+  <button class="hbtn gear" id="settings-toggle" title="settings: project and hidden cards">⚙</button>
 </header>
-<!-- Полоса правок руками. Живёт вне перерисовки доски: доска обновляется раз в
-     три секунды, и набранный текст не должен пропадать под руками. -->
+<!-- The "add a card" bar lives outside the board redraw: the board refreshes
+     every three seconds and typed text must not disappear under your hands. -->
 <div class="handbar" id="handbar">
   <form id="add-form" autocomplete="off">
-    <input class="t" id="add-title" placeholder="заголовок (обязателен)" maxlength="200">
-    <input class="txt" id="add-text" placeholder="текст (необязателен)" maxlength="2000">
+    <input class="t" id="add-title" placeholder="title (required)" maxlength="200">
+    <input class="txt" id="add-text" placeholder="text (optional)" maxlength="2000">
     <select id="add-column"></select>
-    <button class="hbtn" type="submit">добавить</button>
+    <button class="hbtn" type="submit">add</button>
     <span class="note" id="add-note"></span>
   </form>
-  <div class="hidden-list" id="hidden-list"></div>
 </div>
 <div class="lanes-strip" id="strip"></div>
 <div class="board" id="board"></div>
 
+<!-- First run: pick the project this board watches. -->
+<div class="sheet" id="onboarding">
+  <div class="box">
+    <h2>Pick a project to watch</h2>
+    <p>Watchtower groups your herdr windows by project — the worktree root
+      (<code>~/.herdr/worktrees/&lt;project&gt;</code>) or the repository the window sits in.
+      Pick one and the board shows every window and worktree of that project.
+      You can change it later behind the gear.</p>
+    <div class="plist" id="onboarding-list"></div>
+    <p class="note" id="onboarding-note"></p>
+  </div>
+</div>
+
+<!-- The gear: change the project and restore hidden cards. -->
+<div class="sheet" id="settings">
+  <div class="box" style="position: relative">
+    <button class="hbtn close" id="settings-close">close</button>
+    <h2>Settings</h2>
+    <h3>Project</h3>
+    <div class="plist" id="settings-list"></div>
+    <p class="note" id="settings-note"></p>
+    <h3>Hidden cards</h3>
+    <div class="hidden-list" id="hidden-list"></div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 let pageVersion = null;
+let lastData = null;
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-// «сколько времени в этом состоянии» — человеческими словами
-function since(iso) {
+// How long ago something happened, in plain words: "just now", "5m ago".
+function ago(iso) {
+  const d = dur(iso);
+  return d ? (d === 'just now' ? d : d + ' ago') : '';
+}
+
+// A bare duration: "5m", "3h 20m", "2d 4h".
+function dur(iso) {
   if (!iso) return '';
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms) || ms < 0) return '';
   const m = Math.floor(ms / 60000);
-  if (m < 1) return 'только что';
-  if (m < 60) return m + ' мин';
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm';
   const h = Math.floor(m / 60);
-  if (h < 24) return h + ' ч ' + (m % 60) + ' мин';
-  return Math.floor(h / 24) + ' сут ' + (h % 24) + ' ч';
+  if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
 
-const STATE_RU = { working: 'работает', idle: 'ждёт', blocked: 'заблокировано', done: 'закончило', unknown: 'непонятно' };
+const STATE_TEXT = {
+  working: 'working', idle: 'idle', blocked: 'blocked', done: 'done', unknown: 'unknown',
+};
 
 function laneChip(l) {
   const br = l.branch ? ' · ' + esc(l.branch) : '';
-  return '<span class="chip lane">полоса ' + esc(l.host) + ' ' + esc(l.lane) + br + '</span>';
+  return '<span class="chip lane">lane ' + esc(l.host) + ' ' + esc(l.lane) + br + '</span>';
 }
 
 function prChip(p) {
   return '<span class="chip ' + esc(p.ci.color) + '">'
     + '<a href="' + esc(p.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR #' + p.number + '</a>'
-    + ' · ' + esc(p.ci.text) + (p.draft ? ' · черновик' : '') + ' · ' + esc(p.via) + '</span>';
+    + ' · ' + esc(p.ci.text) + (p.draft ? ' · draft' : '') + ' · ' + esc(p.via) + '</span>';
 }
 
 function card(c, focusedTab) {
   const bits = [];
+  const held = dur(c.since);
   bits.push('<div class="top">'
     + '<span class="nm">' + esc(c.name) + '</span>'
     + '<span class="place">' + esc(c.place) + '</span>'
     + (c.manual
-      ? '<span class="by-hand">вручную' + (c.since ? ' · ' + esc(since(c.since)) : '') + '</span>'
-      : '<span class="state">' + esc(STATE_RU[c.status] ?? c.status) + ' · ' + esc(since(c.since)) + '</span>')
-    + (c.focused ? '<span class="place" style="color:var(--focus)">вы здесь</span>' : '')
-    + '<button class="x" title="' + (c.manual ? 'удалить карточку' : 'убрать окно с доски (вернуть можно в шапке)')
+      ? '<span class="by-hand">by hand' + (c.since ? ' · ' + esc(ago(c.since)) : '') + '</span>'
+      : '<span class="state">' + esc(STATE_TEXT[c.status] ?? c.status)
+        + (held ? ' · for ' + esc(held) : '') + '</span>')
+    + (c.focused ? '<span class="place" style="color:var(--focus)">you are here</span>' : '')
+    + '<button class="x" title="' + (c.manual ? 'delete this card' : 'take this window off the board (restore it behind the gear)')
     + '">×</button>'
     + '</div>');
 
   if (c.title && c.title !== c.name) bits.push('<div class="row">' + esc(c.title) + '</div>');
 
-  // модель, учётка, ветка
+  // model, account, branch
   const f = c.footer ?? {};
   const line1 = [];
   if (f.model) line1.push(esc(f.model));
   if (f.account) line1.push(esc(f.account));
-  if (f.effort) line1.push('усилие ' + esc(f.effort));
-  if (f.contextPct != null) line1.push('контекст ' + f.contextPct + '%');
+  if (f.effort) line1.push('effort ' + esc(f.effort));
+  if (f.contextPct != null) line1.push('context ' + f.contextPct + '%');
   if (c.agent && !f.model) line1.push(esc(c.agent));
   if (line1.length) bits.push('<div class="row mono">' + line1.join(' · ') + '</div>');
 
   const line2 = [];
-  if (c.branch) line2.push('ветка ' + esc(c.branch));
-  else if (c.detached) line2.push('голова отсоединена (' + esc(c.detached) + ')');
-  if (c.isWorktree) line2.push('копия ' + esc(c.repoName ?? ''));
-  if (c.folder && c.folder !== String(c.name).toLowerCase()) line2.push('папка ' + esc(c.folder));
-  if (c.window && c.window !== c.name) line2.push('окно ' + esc(c.window));
+  if (c.branch) line2.push('branch ' + esc(c.branch));
+  else if (c.detached) line2.push('detached HEAD (' + esc(c.detached) + ')');
+  if (c.isWorktree) line2.push('worktree of ' + esc(c.repoName ?? ''));
+  if (c.folder && c.folder !== String(c.name).toLowerCase()) line2.push('folder ' + esc(c.folder));
+  if (c.window && c.window !== c.name) line2.push('window ' + esc(c.window));
   if (line2.length) bits.push('<div class="row mono">' + line2.join(' · ') + '</div>');
 
   if (c.explain && (c.explain.ruleName || c.explain.rule)) {
     const e = c.explain;
-    bits.push('<div class="row mono" title="' + esc(e.ruleWhere ?? '') + '">правило: '
+    bits.push('<div class="row mono" title="' + esc(e.ruleWhere ?? '') + '">rule: '
       + esc(e.ruleName ?? e.rule)
-      + (e.evidence ? ' · «' + esc(e.evidence) + '»' : '') + '</div>');
+      + (e.evidence ? ' · "' + esc(e.evidence) + '"' : '') + '</div>');
   }
 
   if (c.askReasons && c.askReasons.length) {
@@ -294,16 +362,16 @@ function card(c, focusedTab) {
   const chips = [];
   for (const l of c.lanes) chips.push(laneChip(l));
   if (!c.lanes.length && c.laneSlots.length) {
-    chips.push('<span class="chip none">полоса свободна (' + esc(c.laneSlots.join(', ')) + ')</span>');
+    chips.push('<span class="chip none">lane free (' + esc(c.laneSlots.join(', ')) + ')</span>');
   }
   for (const p of c.prs) chips.push(prChip(p));
   if (c.umbrella) {
     const u = c.umbrella;
     const link = u.url
-      ? '<a href="' + esc(u.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">зонтик #' + u.number + '</a>'
-      : 'зонтик #' + u.number;
+      ? '<a href="' + esc(u.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">umbrella #' + u.number + '</a>'
+      : 'umbrella #' + u.number;
     const askBit = u.ask
-      ? ' · ' + esc(u.ask.word) + (u.ask.answered ? ' (закрыт)' : ' ' + esc(since(u.ask.at)) + ' без ответа')
+      ? ' · ' + esc(u.ask.word) + (u.ask.answered ? ' (closed)' : ' · unanswered for ' + esc(dur(u.ask.at)))
       : '';
     chips.push('<span class="chip umb">' + link + askBit + '</span>');
   }
@@ -311,111 +379,137 @@ function card(c, focusedTab) {
 
   if (c.recap) {
     bits.push('<div class="recap">' + esc(c.recap) + '</div>');
-    bits.push('<div class="row mono">последние слова: ' + esc(c.recapFrom ?? '') + '</div>');
+    bits.push('<div class="row mono">last words: ' + esc(c.recapFrom ?? '') + '</div>');
   }
 
   return '<div class="card s-' + esc(c.status) + (c.manual ? ' manual' : '')
     + (c.tab && c.tab === focusedTab ? ' here' : '') + '"'
     + (c.tab ? ' data-tab="' + esc(c.tab) + '"' : '')
-    // Рабочая папка нужна крестику: карточка — это вкладка ПЛЮС папка, у одной
-    // вкладки может быть вторая панель в другой папке.
+    // The working directory is what the × needs: a card is a tab PLUS a folder,
+    // one tab can have a second pane in another folder.
     + (c.tab ? ' data-cwd="' + esc(c.cwd ?? '') + '"' : '')
     + (c.manual ? ' data-manual="' + esc(c.id) + '"' : '')
     + ' data-name="' + esc(c.name) + '" title="' + esc(c.cwd) + '">' + bits.join('') + '</div>';
 }
 
 function hostBox(h, cards, laneOwners) {
-  // Хозяев полос считает сервер — по всем окнам, включая спрятанные крестиком.
-  // Карточки остаются запасным путём (старый ответ сервера без laneOwners).
+  // Lane owners are counted by the server across every window, hidden ones
+  // included. Cards stay as a fallback (an older server answer had no laneOwners).
   const owner = {};
   for (const c of cards) for (const l of c.lanes) owner[l.host + '|' + l.lane] = c.name;
   Object.assign(owner, laneOwners ?? {});
   const rows = (h.lanes ?? []).map(l => {
     const who = owner[h.host + '|' + l.lane];
     return '<div class="lane' + (l.busy ? ' busy' : '') + '"><b>' + esc(l.lane) + '</b> '
-      + (l.busy ? 'занята' : 'свободна')
+      + (l.busy ? 'busy' : 'free')
       + (l.branch ? ' · ' + esc(l.branch) : '')
-      + (who ? ' · <span class="who">' + esc(who) + '</span>' : (l.busy ? ' · <span class="who">ничья</span>' : ''))
+      + (who ? ' · <span class="who">' + esc(who) + '</span>' : (l.busy ? ' · <span class="who">unclaimed</span>' : ''))
       + '</div>';
   }).join('');
   const extras = (h.extras ?? []).map(e => '<div class="extra">' + esc(e) + '</div>').join('');
   return '<div class="host' + (h.ok ? '' : ' bad') + '">'
     + '<div class="hname">' + esc(h.host) + ' <span style="color:var(--ink-dim)">' + esc(h.target) + '</span></div>'
-    + (h.ok ? (rows || '<div class="extra">полос не видно</div>') : '<div class="extra">' + esc(h.error ?? 'нет связи') + '</div>')
+    + (h.ok ? (rows || '<div class="extra">no lanes visible</div>') : '<div class="extra">' + esc(h.error ?? 'no connection') + '</div>')
     + extras + '</div>';
+}
+
+// Sources that failed are shown next to the lanes, not in the header: they are
+// not a daily number, but an empty cell must never pass for a fact.
+function problemBox(sources) {
+  const bad = (sources ?? []).filter(s => !s.ok);
+  if (!bad.length) return '';
+  return '<div class="host bad"><div class="hname">sources not answering</div>'
+    + bad.map(s => '<div class="extra">' + esc(s.name) + ': ' + esc(s.error ?? 'no answer') + '</div>').join('')
+    + '</div>';
 }
 
 function render(d) {
   if (pageVersion === null) pageVersion = d.pageVersion;
   else if (d.pageVersion && d.pageVersion !== pageVersion) { location.reload(); return; }
+  lastData = d;
+
+  document.body.classList.toggle('onboarding', Boolean(d.needsProject));
+  $('project').textContent = d.project ?? '';
+  fillColumns(d.columns);
+
+  if (d.needsProject) {
+    $('onboarding').classList.add('open');
+    $('settings').classList.remove('open');
+    renderProjects($('onboarding-list'), d.projects ?? [], null);
+    return;
+  }
+  $('onboarding').classList.remove('open');
 
   const auto = d.cards.filter(c => !c.manual);
   const hand = d.cards.filter(c => c.manual);
-  // «Окон» и «ждут слова» считаем по одному и тому же — по окнам. Карточки,
-  // вписанные руками, окнами не являются и в этот счёт не идут; если такая
-  // карточка стоит в колонке «Нужен CTO», говорим об этом отдельно.
+  // "windows" and "waiting for you" are counted over the same thing — windows.
+  // Cards typed by hand are not windows and stay out of that count; if such a
+  // card sits in the "needs you" column, it is mentioned separately.
   const ask = auto.filter(c => c.column === 'ask').length;
   const askByHand = hand.filter(c => c.column === 'ask').length;
   const laneCount = d.cards.reduce((n, c) => n + c.lanes.length, 0);
-  $('counts').innerHTML = '<b>' + auto.length + '</b> окон autopase · <b>' + ask + '</b> ждут слова'
-    + (askByHand ? ' (и ' + askByHand + ' вручную)' : '') + ' · <b>'
-    + laneCount + '</b> полос пишут · <b>' + d.prsOpen + '</b> открытых PR · '
-    + (hand.length ? '<b>' + hand.length + '</b> карточек вручную · ' : '')
-    + esc(new Date(d.generatedAt).toLocaleTimeString('ru-RU'))
-    + (d.hidden.length ? ' · скрыто: ' + esc(d.hidden.join(', ')) : '');
+  $('counts').innerHTML = '<b>' + auto.length + '</b> windows · <b>' + ask + '</b> need you'
+    + (askByHand ? ' (+' + askByHand + ' by hand)' : '') + ' · <b>'
+    + laneCount + '</b> lanes building · <b>' + d.prsOpen + '</b> open PRs'
+    + (hand.length ? ' · <b>' + hand.length + '</b> cards by hand' : '');
 
-  fillColumns(d.columns);
-  renderHidden(d.handHidden ?? []);
-
-  $('srcs').innerHTML = d.sources.map(s =>
-    '<span class="src ' + (s.ok ? 'ok' : 'bad') + '" title="' + esc(s.error ?? '') + '">'
-    + esc(s.name) + (s.ok ? '' : ' ✗') + '</span>').join('');
+  if ($('settings').classList.contains('open')) renderSettings(d);
 
   $('strip').innerHTML = (d.hosts ?? []).map(h => hostBox(h, d.cards, d.laneOwners)).join('')
-    || '<div class="extra">полосы ещё не опрошены</div>';
+    + problemBox(d.sources);
 
   $('board').innerHTML = d.columns.map(col => {
     const list = d.cards.filter(c => c.column === col.key);
     return '<div class="col ' + esc(col.key) + '"><h2>' + esc(col.title) + ' <span>' + list.length + '</span></h2>'
-      + (list.length ? list.map(c => card(c, d.focusedTab)).join('') : '<div class="empty">пусто</div>')
+      + (list.length ? list.map(c => card(c, d.focusedTab)).join('') : '<div class="empty">empty</div>')
       + '</div>';
   }).join('');
 
   for (const el of document.querySelectorAll('.card')) {
-    // По автокарточке кликают, чтобы herdr перешёл на это окно. У ручной
-    // карточки окна нет — по ней клик ничего не делает.
+    // Clicking an automatic card makes herdr switch to that window. A card typed
+    // by hand has no window — clicking it does nothing.
     if (el.dataset.tab) {
       el.onclick = () => post('/focus', { tab: el.dataset.tab });
     }
     const x = el.querySelector('.x');
     if (!x) continue;
     x.onclick = async (ev) => {
-      // Крестик — не клик по карточке: всплытие останавливаем, иначе herdr
-      // заодно перескочил бы на окно, которое только что убрали.
+      // The × is not a click on the card: stop bubbling, otherwise herdr would
+      // also jump to the window that was just taken off the board.
       ev.stopPropagation();
       ev.preventDefault();
       const r = el.dataset.manual
         ? await post('/card/remove', { id: el.dataset.manual })
         : await post('/card/hide', { tab: el.dataset.tab, cwd: el.dataset.cwd ?? '', name: el.dataset.name });
-      // Не убираем карточку с глаз, если доска не смогла сохранить правку:
-      // иначе она вернётся при следующем обновлении и это выглядело бы сбоем.
-      if (r && r.error) { alert('не вышло: ' + r.error); return; }
+      // Do not take the card off screen if the board could not save the edit:
+      // it would come back on the next refresh and look like a failure.
+      if (r && r.error) { showError('could not hide the card: ' + r.error); return; }
       el.remove();
       poll();
     };
   }
 }
 
-// --------------------------------- правки руками: «+» и список скрытых
+// --------------------------------- hand edits, project choice
 
 function post(path, body) {
   return fetch(path, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(r => r.json()).catch(() => ({ error: 'сервер не ответил' }));
+  }).then(r => r.json()).catch(() => ({ error: 'the board did not answer' }));
 }
 
-// Колонки в выборе заполняем один раз: перерисовка не должна сбрасывать выбор.
+function showError(text) {
+  let div = document.querySelector('.err');
+  if (!div) {
+    div = document.createElement('div');
+    div.className = 'err';
+    document.body.insertBefore(div, $('board'));
+  }
+  div.textContent = text;
+}
+
+// The column choices are filled once: a redraw must not reset the selection.
 function fillColumns(columns) {
   const sel = $('add-column');
   if (sel.options.length) return;
@@ -424,13 +518,38 @@ function fillColumns(columns) {
   sel.value = 'idle';
 }
 
+// The project list, shared by onboarding and settings.
+function renderProjects(box, projects, current) {
+  const rows = (projects ?? []).map(p =>
+    '<button data-project="' + esc(p.project) + '"' + (p.project === current ? ' class="cur"' : '') + '>'
+    + '<span>' + esc(p.project) + '</span>'
+    + '<span class="meta">' + p.windows + ' window' + (p.windows === 1 ? '' : 's')
+    + (p.agents ? ' · ' + p.agents + ' with an agent' : '') + '</span></button>');
+  rows.push('<button data-all="1"' + (current === 'All windows' ? ' class="cur"' : '') + '>'
+    + '<span>All windows</span><span class="meta">no project filter</span></button>');
+  box.innerHTML = rows.join('');
+  for (const b of box.querySelectorAll('button')) {
+    b.onclick = async () => {
+      const note = box === $('onboarding-list') ? $('onboarding-note') : $('settings-note');
+      note.textContent = 'saving…';
+      const r = b.dataset.all
+        ? await post('/project/select', { all: true })
+        : await post('/project/select', { project: b.dataset.project });
+      if (r && r.error) { note.textContent = r.error; return; }
+      note.textContent = 'watching: ' + (r.project ?? '');
+      $('settings').classList.remove('open');
+      $('settings-toggle').classList.remove('on');
+      poll();
+    };
+  }
+}
+
 function renderHidden(list) {
-  $('hidden-toggle').textContent = 'скрытые: ' + list.length;
   $('hidden-list').innerHTML = list.length
     ? list.map(h => '<span class="item">' + esc(h.name || h.tab)
         + ' <span class="note">' + esc(h.tab) + '</span>'
-        + '<button data-unhide="' + esc(h.tab) + '" data-cwd="' + esc(h.cwd ?? '') + '">вернуть</button></span>').join('')
-    : '<span class="note">ничего не скрыто</span>';
+        + '<button data-unhide="' + esc(h.tab) + '" data-cwd="' + esc(h.cwd ?? '') + '">restore</button></span>').join('')
+    : '<span class="note">nothing is hidden</span>';
   for (const b of $('hidden-list').querySelectorAll('button')) {
     b.onclick = async () => {
       await post('/card/unhide', { tab: b.dataset.unhide, cwd: b.dataset.cwd ?? '' });
@@ -439,21 +558,31 @@ function renderHidden(list) {
   }
 }
 
-// Обе кнопки шапки открывают одну и ту же полосу: там и форма, и список
-// скрытых. «+» ещё и ставит курсор в заголовок.
-function toggleBar(focusTitle) {
+function renderSettings(d) {
+  renderProjects($('settings-list'), d.projects ?? [], d.project ?? null);
+  renderHidden(d.handHidden ?? []);
+}
+
+$('add-toggle').onclick = () => {
   const open = $('handbar').classList.toggle('open');
   $('add-toggle').classList.toggle('on', open);
-  $('hidden-toggle').classList.toggle('on', open);
-  if (open && focusTitle) $('add-title').focus();
-}
-$('add-toggle').onclick = () => toggleBar(true);
-$('hidden-toggle').onclick = () => toggleBar(false);
+  if (open) $('add-title').focus();
+};
+
+$('settings-toggle').onclick = () => {
+  const open = $('settings').classList.toggle('open');
+  $('settings-toggle').classList.toggle('on', open);
+  if (open && lastData) renderSettings(lastData);
+};
+$('settings-close').onclick = () => {
+  $('settings').classList.remove('open');
+  $('settings-toggle').classList.remove('on');
+};
 
 $('add-form').onsubmit = async (ev) => {
   ev.preventDefault();
   const title = $('add-title').value.trim();
-  if (!title) { $('add-note').textContent = 'нужен заголовок'; $('add-title').focus(); return; }
+  if (!title) { $('add-note').textContent = 'a title is required'; $('add-title').focus(); return; }
   $('add-note').textContent = '';
   const r = await post('/card/add', {
     title, text: $('add-text').value.trim(), column: $('add-column').value,
@@ -461,7 +590,7 @@ $('add-form').onsubmit = async (ev) => {
   if (r && r.error) { $('add-note').textContent = r.error; return; }
   $('add-title').value = '';
   $('add-text').value = '';
-  $('add-note').textContent = 'добавлено';
+  $('add-note').textContent = 'added';
   setTimeout(() => { $('add-note').textContent = ''; }, 2000);
   poll();
 };
@@ -469,8 +598,8 @@ $('add-form').onsubmit = async (ev) => {
 let failures = 0;
 let pollTimer = null;
 async function poll() {
-  // poll() зовут и по таймеру, и сразу после правки руками. Прошлый таймер
-  // снимаем, иначе опросы размножались бы с каждой правкой.
+  // poll() is called both on a timer and right after a hand edit. The previous
+  // timer is cleared, otherwise polls would multiply with every edit.
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   try {
     const r = await fetch('/data', { cache: 'no-store' });
@@ -482,12 +611,7 @@ async function poll() {
     render(d);
   } catch (e) {
     failures++;
-    if (failures >= 2 && !document.querySelector('.err')) {
-      const div = document.createElement('div');
-      div.className = 'err';
-      div.textContent = 'доска не получила данные: ' + (e && e.message ? e.message : e);
-      document.body.insertBefore(div, $('board'));
-    }
+    if (failures >= 2) showError('the board received no data: ' + (e && e.message ? e.message : e));
   } finally {
     pollTimer = setTimeout(poll, 3000);
   }

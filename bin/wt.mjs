@@ -1,0 +1,167 @@
+// wt — Watchtower on the command line.
+//
+// A thin wrapper over GET /api/board of the running Watchtower server: it has no
+// logic of its own, the whole answer is composed by the server (bin/watchtower.mjs).
+// It exists so a watchdog agent can read the board with one command, without a
+// browser and without screenshots.
+//
+// Run: node bin\wt.mjs [--json] [--full] [--card <name>]   (or bin\wt.cmd)
+// The port comes from WATCHTOWER_PORT (AUTOPASE_BOARD_PORT is still read as a
+// fallback), 4878 by default — the same one the server listens on.
+
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const VERSION = '1.0';
+const PORT = Number(process.env.WATCHTOWER_PORT || process.env.AUTOPASE_BOARD_PORT || 4878);
+const BASE = `http://127.0.0.1:${PORT}`;
+const SELF = fileURLToPath(import.meta.url);
+const HOME = process.env.USERPROFILE || process.env.HOME || '';
+const DESCRIPTION = 'Watchtower: herdr windows, build lanes, PRs and who is waiting for you';
+
+// Our own path with the home folder folded into "~": the agent only needs to see
+// which file it ran, the full home path is noise.
+function selfPath() {
+  const p = path.join(path.dirname(SELF), 'wt.cmd');
+  if (HOME && p.toLowerCase().startsWith(HOME.toLowerCase())) return '~' + p.slice(HOME.length);
+  return p;
+}
+
+const CMD = 'bin\\wt.cmd';
+
+const HELP = `bin: ${selfPath()}
+description: ${DESCRIPTION}
+
+With no flags it prints the live board as short text (TOON-flavoured).
+
+Flags:
+  --json          the same shape as plain JSON
+  --full          long texts in full (no clipping)
+  --card <name>   one card in full: its last words, why it waits, the question
+                  from its umbrella issue. The name is the name cell of cards
+  --help          this help
+  --version       version number
+
+What is in the answer:
+  summary     counters: windows, waiting for you, lanes building, open PRs, manual, hidden
+  cards       one card per line, fields:
+                column  board column: ask — needs you, running — working,
+                        waiting — the window is silent but its lane is building,
+                        idle — idle, off — window with no agent
+                name    window name (or the title of a card typed by hand)
+                state   agent state: working, idle, blocked, done, unknown, manual
+                ask     does this card wait for a human: yes / no
+                pr      newest open PR of the window and its CI colour, "+N" — how many more
+                lanes   busy lanes of the window, "host/lane-N"
+  asks        why a card waits; the question cell references an umbrella issue
+  questions   questions from umbrella issues, once per umbrella (asks points here)
+  words       the start of each window's last words and where they came from; in full —
+              ${CMD} --card <name> or --full
+  problems    board sources that did not answer (ssh, gh). Empty means everything is alive
+
+Examples:
+  ${CMD}
+  ${CMD} --full
+  ${CMD} --json
+  ${CMD} --card my-window
+`;
+
+const KNOWN = new Set(['--json', '--full', '--card', '--help', '-h', '--version', '-v', '-V']);
+
+const args = process.argv.slice(2);
+// Whether --json was asked for must be known before the first error: an agent
+// that asked for JSON must get JSON in trouble too, otherwise it trips over the
+// parsing instead of reading what happened.
+const wantJson = args.includes('--json');
+
+function die(text, code) {
+  const out = wantJson ? asJson(text) : text;
+  process.stdout.write(out.endsWith('\n') ? out : out + '\n');
+  process.exit(code);
+}
+
+// Our messages have one shape: an "error: …" line and a "help: …" line. In JSON
+// they become two fields — as easy for a machine to read as the lines are for a
+// human.
+function asJson(text) {
+  const lines = String(text).split('\n');
+  const err = lines.find(l => l.startsWith('error:')) ?? lines[0] ?? '';
+  const help = lines.find(l => l.startsWith('help:')) ?? '';
+  return JSON.stringify({
+    error: err.replace(/^error:\s*/, ''),
+    help: help.replace(/^help:\s*/, '') || undefined,
+  }, null, 2);
+}
+
+let wantCard = null;
+for (let i = 0; i < args.length; i += 1) {
+  const a = args[i];
+  if (!KNOWN.has(a)) {
+    die(`error: unknown flag ${a}\n`
+      + `help: ${CMD} takes only --json, --full, --card <name>, --help, --version`, 2);
+  }
+  if (a === '--card') {
+    wantCard = args[i + 1] ?? '';
+    i += 1;
+    if (!wantCard || wantCard.startsWith('--')) {
+      die('error: --card was given without a card name\n'
+        + `help: ${CMD} --card <name from the name cell of the cards section>`, 2);
+    }
+  }
+}
+if (args.includes('--help') || args.includes('-h')) die(HELP, 0);
+if (args.includes('--version') || args.includes('-v') || args.includes('-V')) die(VERSION, 0);
+
+const wantFull = args.includes('--full');
+if (wantCard && wantFull) {
+  die('error: --full is not needed together with --card\n'
+    + 'help: one card is printed in full anyway, without clipping', 2);
+}
+
+const format = `format=${wantJson ? 'json' : 'toon'}`;
+const url = wantCard
+  ? `${BASE}/api/board/card/${encodeURIComponent(wantCard)}?${format}`
+  : `${BASE}/api/board?${format}${wantFull ? '&full=1' : ''}`;
+
+let res;
+try {
+  res = await fetch(url, { signal: AbortSignal.timeout(180000) });
+} catch (e) {
+  // Not running, still starting up, or collecting the board for over three
+  // minutes — three different troubles, and they are cured differently.
+  const kind = String(e?.name || '');
+  if (kind === 'TimeoutError' || kind === 'AbortError') {
+    die(`error: Watchtower on ${BASE} did not answer within 3 minutes\n`
+      + 'help: look at the window running bin\\watchtower.cmd — a source may have hung', 1);
+  }
+  die(`error: Watchtower is not running (${BASE} does not answer)\n`
+    + 'help: start bin\\watchtower.cmd and repeat the command', 1);
+}
+
+const body = await res.text();
+if (!res.ok) {
+  // A 404 on our endpoint means the port holds a board started before
+  // /api/board existed (or another program entirely). Its body must not be
+  // relayed: the agent would get someone else's JSON instead of the action it
+  // has to take.
+  if (res.status === 404 && !wantCard) {
+    die(`error: the board on ${BASE} is an older build — it has no /api/board endpoint\n`
+      + 'help: close its window and start bin\\watchtower.cmd again', 1);
+  }
+  const type = String(res.headers.get('content-type') || '');
+  // Watchtower reports its own trouble as plain text starting with "error:" —
+  // that is printed as is. Anything else (JSON, HTML, another program's page) is
+  // not passed through: the agent needs an action, not a raw dependency body.
+  if (type.startsWith('text/plain') && body.trim().startsWith('error:')) {
+    die(body.trim(), 1);
+  }
+  die(`error: the board on ${BASE} answered with status ${res.status} and a body that is not a board\n`
+    + 'help: check that bin\\watchtower.cmd is what listens on that port, and restart it', 1);
+}
+
+// Who we are and what this is — before the live data: an agent seeing an answer
+// without the question must understand what this output is. With --json there is
+// no header: there the answer must parse as JSON as a whole, and two extra lines
+// would break it.
+if (!wantJson) process.stdout.write(`bin: ${selfPath()}\ndescription: ${DESCRIPTION}\n`);
+process.stdout.write(body.endsWith('\n') ? body : body + '\n');

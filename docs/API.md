@@ -1,182 +1,187 @@
-# Доска «Autopase в одном месте» для агента
+# Watchtower for agents
 
-Как прочитать доску без браузера и без снимков экрана — одной командой или одним
-запросом. Состав ответа закреплён: страница доски живёт на `/data` и её поля
-меняются вместе с вёрсткой, агент читает `/api/board`, и правка страницы его не ломает.
+How to read the board without a browser and without screenshots — one command or
+one request. The shape of the answer is pinned: the page lives on `/data` and its
+fields change together with the layout, while an agent reads `/api/board`, so
+editing the page never breaks it.
 
-## Одной командой
-
-```
-bin\autopase-board-read.cmd                 живая доска коротким текстом
-bin\autopase-board-read.cmd --full          длинные тексты целиком, без обрезания
-bin\autopase-board-read.cmd --json          тот же состав аккуратным JSON
-bin\autopase-board-read.cmd --card <имя>    одно окно целиком
-bin\autopase-board-read.cmd --help          справка по полям
-```
-
-(`bin\board.cmd` — это запуск другой, общей доски sheepdog на порту 4877; она к
-этой команде отношения не имеет.)
-
-Команда ничего не считает сама — спрашивает живой сервер доски. Сервер должен быть
-запущен (`bin\autopase-board.cmd`). Если он не отвечает, команда так и пишет и
-завершается кодом 1. Если на порту сидит доска, поднятая со старой сборки (без
-ручки `/api/board`), команда пишет об этом и просит перезапустить сервер — чужого
-тела ответа наружу не отдаёт. Непонятный флаг — код 2 и список разрешённых. С
-`--json` ошибка тоже приходит JSON-ом (`{"error": …, "help": …}`), чтобы разбор
-ответа не падал. Порт берётся из переменной `AUTOPASE_BOARD_PORT`, по умолчанию 4878.
-
-## Ручкой
+## One command
 
 ```
-GET http://127.0.0.1:4878/api/board            коротким текстом (по мотивам TOON)
+bin\wt.cmd                 the live board as short text
+bin\wt.cmd --full          long texts in full, no clipping
+bin\wt.cmd --json          the same shape as plain JSON
+bin\wt.cmd --card <name>   one window in full
+bin\wt.cmd --help          help for every field
+```
+
+The command computes nothing itself — it asks the running server. The server has
+to be up (`bin\watchtower.cmd`). If it does not answer, the command says so and
+exits with code 1. If the port holds a board from an older build (without the
+`/api/board` endpoint), the command says that and asks for a restart — it never
+relays a foreign response body. An unknown flag exits with code 2 and lists the
+allowed ones. With `--json` errors arrive as JSON too (`{"error": …, "help": …}`),
+so parsing never breaks. The port comes from `WATCHTOWER_PORT` (the older
+`AUTOPASE_BOARD_PORT` is still read as a fallback), 4878 by default.
+
+## One request
+
+```
+GET http://127.0.0.1:4878/api/board            short text (TOON-flavoured)
 GET http://127.0.0.1:4878/api/board?format=json
 GET http://127.0.0.1:4878/api/board?full=1
-GET http://127.0.0.1:4878/api/board/card/<имя> одна карточка целиком
+GET http://127.0.0.1:4878/api/board/card/<name> one card in full
 ```
 
-Параметры:
+Parameters:
 
-| параметр | значения | по умолчанию | что делает |
+| parameter | values | default | what it does |
 | --- | --- | --- | --- |
-| `format` | `toon`, `json` | `toon` | вид ответа: короткий текст или JSON |
-| `full` | `1`, `0` | `0` | `1` — длинные тексты целиком, без обрезания (только у `/api/board`) |
+| `format` | `toon`, `json` | `toon` | shape of the answer: short text or JSON |
+| `full` | `1`, `0` | `0` | `1` — long texts in full, no clipping (`/api/board` only) |
 
-Любой другой параметр или значение — ответ 400 и короткая ошибка по-русски с
-подсказкой. Пустое значение (`?format=`, `?full=`) — тоже 400: значение называют
-словом. Один и тот же параметр дважды (`?format=toon&format=json`) — 400: доска не
-угадывает, какой из них нужен, и молча терять второй не станет. Доска не собралась
-(например, не отвечает herdr) — 500 и та же короткая ошибка. Ошибка приходит обычным
-текстом, её читают так же, как данные.
+Any other parameter or value answers 400 with a short error and a hint. An empty
+value (`?format=`, `?full=`) is 400 as well: a value is spelled out. The same
+parameter twice (`?format=toon&format=json`) is 400 too — the board does not guess
+which one you meant and will not silently drop the second. If the board could not
+be collected (herdr not answering, say) it is 500 with the same short error.
+Errors arrive as plain text and are read the same way as data.
 
-Сбор идёт тем же путём, что и у страницы: медленные источники (ssh на полосы, `gh`)
-внутри доски ходят наружу по своим таймерам и отдают уже готовое, так что лишнего
-похода наружу запрос не делает.
+Collection goes the same path as for the page: the slow sources (ssh to the lane
+hosts, `gh`) refresh on their own timers inside the board and hand over what is
+ready, so a request makes no extra call outward.
 
-## Что в ответе
+## What is in the answer
 
-Сначала четыре строки о самой доске:
+Four lines about the board itself first:
 
-- `board` — адрес доски;
-- `generated` — когда собран этот снимок;
-- `repo` — репозиторий, по которому считаются PR;
-- `summary` — счётчики: **окон** (карточек-окон), **ждут слова** (сколько карточек ждут CTO
-  или владельца), **полос пишут** (сколько полос заняты), **PR открытых**, **ручных**
-  (карточки, вписанные на доске руками), **скрытых** (окна, убранные с доски крестиком).
+- `board` — the board's address;
+- `generated` — when this snapshot was collected;
+- `repo` — the repository PRs are counted from;
+- `summary` — counters: **windows** (window cards), **waiting for you** (how many
+  cards wait for a human), **lanes building** (how many lanes are busy),
+  **open PRs**, **manual** (cards typed on the board by hand), **hidden** (windows
+  taken off the board with the ×).
 
-Дальше пять разделов. Пустой раздел пишется явным нулём со словами («cards: 0 —
-карточек на доске нет»), а не пустотой.
+Then five sections. An empty section is written as an explicit zero in words
+(`cards: 0 — no cards on the board`), never as emptiness.
 
-### cards — по карточке на строку
+### cards — one card per line
 
-| поле | что значит |
+| field | meaning |
 | --- | --- |
-| `column` | колонка доски: `ask` — нужен CTO или владелец; `running` — в работе; `waiting` — окно молчит, но его полоса пишет; `idle` — простаивает; `off` — окно без агента |
-| `name` | имя окна (или заголовок карточки, вписанной руками). Это же имя берут `/api/board/card/<имя>` и `--card` |
-| `state` | состояние агента: `working`, `idle`, `blocked`, `done`, `unknown`; у ручной карточки — `вручную` |
-| `ask` | ждёт ли карточка слова CTO или владельца: `да` / `нет` |
-| `pr` | самый свежий открытый PR окна и цвет его CI (`зелёный`, `красный`, `идёт`, `без-проверок`); `+N` — сколько у окна ещё PR; `-` — своих PR нет |
-| `lanes` | занятые полосы окна в виде `хост/lane-N` через пробел; `-` — полос нет |
+| `column` | board column: `ask` — needs you; `running` — working; `waiting` — the window is silent but its lane is building; `idle` — idle; `off` — window with no agent |
+| `name` | window name (or the title of a card typed by hand). The same name is taken by `/api/board/card/<name>` and `--card` |
+| `state` | agent state: `working`, `idle`, `blocked`, `done`, `unknown`; a hand-typed card is `manual` |
+| `ask` | does this card wait for a human: `yes` / `no` |
+| `pr` | newest open PR of the window and its CI colour (`green`, `red`, `running`, `no-checks`); `+N` — how many more the window has; `-` — none of its own |
+| `lanes` | busy lanes of the window as `host/lane-N`, space separated; `-` — none |
 
-### asks — кто ждёт слова и почему
+### asks — who is waiting and why
 
-`name` — карточка; `why` — причины (окно `blocked`, слова «ВОПРОС CTO» в последних
-словах, вопрос без ответа в зонтичном issue, а у карточки, вписанной руками, —
-сама колонка «ждёт слова»); `question` — ссылка на зонтик вида `#1299`, сам текст
-лежит в разделе `questions`. У карточки без зонтика — `-`.
+`name` — the card; `why` — the reasons (window `blocked`, an ask marker in the
+last words, an unanswered question in an umbrella issue, or — for a hand-typed
+card — the column itself); `question` — a reference to an umbrella such as
+`#1299`, the text sits in the `questions` section. A card with no umbrella has `-`.
 
-Ручная карточка, положенная владельцем в колонку `ask`, попадает сюда наравне с
-окнами и считается в `ждут слова`.
+A hand-typed card the owner put into the `ask` column lands here next to the
+windows and counts in **waiting for you**.
 
-### questions — вопросы из зонтичных issue
+### questions — questions from umbrella issues
 
-`umbrella` — номер зонтика (`#1299`); `text` — сам вопрос. Каждый вопрос печатается
-один раз, сколько бы окон программы на него ни ссылалось.
+`umbrella` — the umbrella number (`#1299`); `text` — the question itself. Each
+question is printed once, however many windows of the program point at it.
 
-### words — начало последних слов каждого окна
+### words — the start of each window's last words
 
-`name` — окно; `from` — откуда взяты слова (`журнал сессии`, `журнал прошлой сессии окна`,
-`экран окна`, `вписано руками`); `text` — первые 80 знаков с пометкой, сколько всего.
-Целиком — `/api/board/card/<имя>` (одно окно) или `?full=1` (вся доска).
+`name` — the window; `from` — where the words came from (`session log`,
+`previous session log`, `window screen`, `typed by hand`); `text` — the first 80
+characters with a note of the total. In full — `/api/board/card/<name>` (one
+window) or `?full=1` (the whole board).
 
-### problems — источники доски, которые не ответили
+### problems — board sources that did not answer
 
-`source` — что не ответило (`lanes`, `pull-requests`, `umbrella`, `полоса mac` и т. п.);
-`error` — короткая причина. Раздел пуст — значит все источники живы. Это важно читать:
-пустая клетка `lanes` при упавшем ssh означает «доска не знает», а не «полос нет».
+`source` — what failed (`lanes`, `pull-requests`, `umbrella`, `lane host mac`,
+and so on); `error` — the short reason. An empty section means every source is
+alive. This is worth reading: an empty `lanes` cell with ssh down means "the board
+does not know", not "there are no lanes". Before a project is chosen, `problems`
+carries one row, `project: no project chosen yet` — open the board and pick one.
 
-## Обрезание длинных текстов
+## Clipping of long texts
 
-В обходе доски длинные тексты обрезаются и подписываются размером
-(`… (обрезано, всего 412 зн.)`) — видно, сколько не дочитано:
+On a board sweep long texts are clipped and marked with their size
+(`… (clipped, 412 chars total)`), so it is visible how much was not read:
 
-- `text` в `words` — 80 знаков (это самый объёмный кусок ответа и при этом справочный);
-- `why` в `asks` и `text` в `questions` — 200 знаков.
+- `text` in `words` — 80 characters (the bulkiest part of the answer, and the most
+  reference-like);
+- `why` in `asks` and `text` in `questions` — 200 characters.
 
-`--full` / `?full=1` снимает обрезание со всей доски, `--card <имя>` /
-`/api/board/card/<имя>` — с одного окна. Само окно доска запоминает первые 400 знаков
-последних слов и первые 300 знаков вопроса из зонтика, поэтому больше этого не покажет
-никакой запрос.
+`--full` / `?full=1` lifts the clipping for the whole board, `--card <name>` /
+`/api/board/card/<name>` for one window. The board itself remembers the first 400
+characters of the last words and the first 300 characters of an umbrella question,
+so no request will ever show more than that.
 
-## Одна карточка целиком
-
-```
-bin\autopase-board-read.cmd --card cards-salon-001
-GET http://127.0.0.1:4878/api/board/card/cards-salon-001
-```
-
-Отдаёт простыми строчками `поле: значение`: `card`, `column`, `state`, `ask`, `why`,
-`umbrella`, `question`, `pr`, `lanes`, `words-from`, `words` — всё без обрезания.
-`?format=json` — то же JSON-ом. Имя написано не так, как в клетке `name`, — 404 и
-список имён, которые сейчас на доске. Параметр `full` этой ручке не нужен и
-отвергается 400: она и так печатает целиком.
-
-## Пример вывода
+## One card in full
 
 ```
-bin: ~\projects\_conveyor\autopase.lv\sheepdog-autopase\work\bin\autopase-board-read.cmd
-description: доска «Autopase в одном месте»: окна herdr, полосы, PR и кто ждёт слова
+bin\wt.cmd --card my-window
+GET http://127.0.0.1:4878/api/board/card/my-window
+```
+
+It answers with plain `field: value` lines: `card`, `column`, `state`, `ask`,
+`why`, `umbrella`, `question`, `pr`, `lanes`, `words-from`, `words` — all without
+clipping. `?format=json` gives the same as JSON. A name spelled differently from
+the `name` cell gets 404 and the list of names currently on the board. The `full`
+parameter is not needed here and is rejected with 400: this view prints in full
+anyway.
+
+## Sample output
+
+```
+bin: ~\projects\watchtower\bin\wt.cmd
+description: Watchtower: herdr windows, build lanes, PRs and who is waiting for you
 board: http://127.0.0.1:4878
 generated: 2026-08-26T12:51:41.610Z
-repo: Baltic-OrangesLV/vincheck-latvia
-summary: окон 10, ждут слова 3, полос пишут 3, PR открытых 7, ручных 0, скрытых 8
-cards[10]{column,name,state,ask,pr,lanes}:
-  running,grok,working,нет,-,-
-  running,coolify-migration-resume,working,нет,#1319 идёт,-
-  ask,cards-popular-001,done,да,-,-
-  ask,cards-salon-001,working,да,#1304 зелёный,mac/lane-a
-  waiting,cabinet-slow-001,done,нет,#1318 идёт +1,hetzner/lane-1 hetzner/lane-2
+repo: acme/web
+summary: windows 10, waiting for you 3, lanes building 3, open PRs 7, manual 0, hidden 8
+cards[5]{column,name,state,ask,pr,lanes}:
+  running,grok,working,no,-,-
+  running,coolify-migration,working,no,#1319 running,-
+  ask,cards-popular,done,yes,-,-
+  ask,cards-salon,working,yes,#1304 green,mac/lane-a
+  waiting,cabinet-slow,done,no,#1318 running +1,builder/lane-1 builder/lane-2
 asks[3]{name,why,question}:
-  cards-popular-001,в зонтике #1299 «ВОПРОС CTO» без ответа,#1299
-  cards-salon-001,в зонтике #1299 «ВОПРОС CTO» без ответа,#1299
-  cabinet-messaging-001,в зонтике #1312 «ВОПРОС CTO» без ответа,#1312
-questions[2]{umbrella,text}:
-  #1299,"**A1a ВЛИТО** — PR #1310 → `63463b5b`. Вердикт `R1 — GO` двумя линзами Opus… (обрезано, всего 300 зн.)"
-  #1312,"**ACM-00 сделана, PR #1317 открыт, `pr-ci` идёт.** Ветка `feat/acm-00`… (обрезано, всего 299 зн.)"
-words[10]{name,from,text}:
-  grok,экран окна,\ Waiting… [stop]
-  cards-salon-001,журнал сессии,"Приёмка круга 2 по B2: **блокирующих ноль, `R1 — GO`… (обрезано, всего 400 зн.)"
+  cards-popular,umbrella #1299 has a question with no answer,#1299
+  cards-salon,umbrella #1299 has a question with no answer,#1299
+  cabinet-messaging,window is blocked — waiting for an answer,-
+questions[1]{umbrella,text}:
+  #1299,"Which of the two layouts should ship first? … (clipped, 300 chars total)"
+words[2]{name,from,text}:
+  grok,window screen,\ Waiting… [stop]
+  cards-salon,session log,"Round 2 review on B2: no blockers… (clipped, 400 chars total)"
 problems[1]{source,error}:
-  полоса lanes-01,ssh не ответил
+  lane host builder,ssh did not answer
 help[4]:
-  в words только начало последних слов; всё окно целиком — /api/board/card/<имя>, вся доска целиком — ?full=1
-  в asks клетка question — ссылка на зонтик, сам текст в разделе questions
-  ?format=json — тот же состав аккуратным JSON
-  колонки: ask — нужен CTO/владелец, running — в работе, waiting — молчит, полоса пишет, idle — простаивает, off — без агента
+  words holds only the start of the last words; one window in full — /api/board/card/<name>, the whole board in full — ?full=1
+  in asks the question cell is a reference to an umbrella; the text is in the questions section
+  ?format=json — the same shape as plain JSON
+  columns: ask — needs you, running — working, waiting — window is silent, its lane is building, idle — idle, off — no agent
 ```
 
-## Строчка для CLAUDE.md агента-сторожа
+## A paragraph for a watchdog agent's instructions
 
 ```markdown
-## Как посмотреть доску «Autopase в одном месте»
+## How to look at Watchtower
 
-Доска читается одной командой, без браузера и снимков экрана:
-`C:\Users\panto\projects\_conveyor\autopase.lv\sheepdog-autopase\work\bin\autopase-board-read.cmd`
-(`--card <имя>` — одно окно целиком, `--full` — вся доска целиком, `--json` — JSON,
-`--help` — расшифровка полей).
-Смотреть в первую очередь: строку `summary` и раздел `asks` — там карточки, которые ждут
-слова CTO или владельца (включая вписанные руками); сам вопрос — в разделе `questions`
-по ссылке `#номер`. Непустой раздел `problems` означает, что часть доски слепа
-(не ответил ssh или gh), и её пустым клеткам верить нельзя. Если команда ответила
-«доска не запущена» — поднять её: `bin\autopase-board.cmd`; если «запущена со старой
-сборки» — закрыть её окно и запустить заново тем же `bin\autopase-board.cmd`.
+The board is read with one command, no browser and no screenshots:
+`<path to the repo>\bin\wt.cmd`
+(`--card <name>` — one window in full, `--full` — the whole board in full,
+`--json` — JSON, `--help` — what the fields mean).
+Read first: the `summary` line and the `asks` section — those are the cards
+waiting for a human (hand-typed ones included); the question itself is in
+`questions` under the `#number` reference. A non-empty `problems` section means
+part of the board is blind (ssh or gh did not answer) and its empty cells cannot
+be trusted. If the command says the board is not running, start it with
+`bin\watchtower.cmd`; if it says the build is older, close that window and start
+the same `bin\watchtower.cmd` again.
 ```
