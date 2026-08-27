@@ -26,7 +26,7 @@ import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
 } from './serve.mjs';
-import { configurePipeline, handlePipeline, setPipelineBoard, pipelineStaleProblems } from './pipeline.mjs';
+import { configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems } from './pipeline.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
 import {
   configureTelegram,
@@ -519,7 +519,7 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
-    '--json', 'number,title,headRefName,isDraft,url,updatedAt,statusCheckRollup,author'], 90000);
+    '--json', 'number,title,headRefName,isDraft,url,createdAt,updatedAt,statusCheckRollup,author'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
   const list = JSON.parse(out);
   return list.map(p => ({
@@ -528,10 +528,56 @@ const prSource = makeSource('pull-requests', 60000, async () => {
     branch: p.headRefName,
     draft: p.isDraft,
     url: p.url,
+    createdAt: p.createdAt,
     updatedAt: p.updatedAt,
     author: p.author?.login ?? null,
     ci: ciColor(p.statusCheckRollup),
   }));
+});
+
+// Merged PRs: the only observable proof that a window actually delivered
+// something. Read-only, same repo, refreshed on its own timer.
+const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
+  const repo = streamsSource.value?.repo ?? config.repo;
+  if (!repo) return [];
+  const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
+    '--json', 'number,title,headRefName,url,createdAt,mergedAt'], 90000);
+  if (out === null) throw new Error('gh pr list --state merged did not answer');
+  return JSON.parse(out).map(p => ({
+    number: p.number,
+    title: p.title,
+    branch: p.headRefName,
+    url: p.url,
+    createdAt: p.createdAt,
+    mergedAt: p.mergedAt,
+  }));
+});
+
+// Open unit tickets: the sprint scope of a stream is the set of open issues
+// that reference its umbrella by number ("#1300") in the title or body. The
+// umbrella body itself is NOT read as a scope — it freezes on the day it is
+// written; a live ticket has an observable open/closed state instead. Issues
+// labelled `umbrella` are umbrellas, not units; issues labelled `wave-next`
+// are deliberately parked for a later wave and do not hold a card back.
+const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
+  const repo = streamsSource.value?.repo ?? config.repo;
+  const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
+  if (!repo) return byUmbrella;
+  const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '200',
+    '--json', 'number,title,body,url,labels,createdAt'], 90000);
+  if (out === null) throw new Error('gh issue list (units) did not answer');
+  for (const it of JSON.parse(out)) {
+    const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
+    if (labels.includes('umbrella') || labels.includes('wave-next')) continue;
+    const refs = new Set();
+    for (const m of `${it.title}\n${it.body ?? ''}`.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
+    for (const n of refs) {
+      if (n === it.number) continue;
+      if (!byUmbrella.has(n)) byUmbrella.set(n, []);
+      byUmbrella.get(n).push({ number: it.number, title: it.title, url: it.url, createdAt: it.createdAt });
+    }
+  }
+  return byUmbrella;
 });
 
 // Umbrella issues: the list plus recent comments, so a question for a human can
@@ -1285,6 +1331,8 @@ async function collect() {
   const streams = streamsSource.value;
   const programs = programsSource.value ?? new Map();
   const prs = prSource.value ?? [];
+  const mergedPrs = mergedPrSource.value ?? [];
+  const unitIssues = unitIssuesSource.value ?? new Map();
   const umbrellas = umbrellaSource.value ?? new Map();
   const laneHosts = lanesSource.value ?? [];
   const allLanes = laneHosts.flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok })));
@@ -1331,15 +1379,30 @@ async function collect() {
     // match the window branch.
     const mentioned = new Set(screen?.prs ?? []);
     for (const m of String(recap ?? '').matchAll(/#(\d{3,5})/g)) mentioned.add(Number(m[1]));
+    const strongVia = (pr) => {
+      if (branch && pr.branch === branch) return 'window branch';
+      if (matchesStream(stream, pr.branch)) return 'branch prefix';
+      if (lanes.some(l => l.branch === pr.branch)) return 'lane branch';
+      return null;
+    };
     const cardPrs = [];
     for (const pr of prs) {
-      let via = null;
-      if (branch && pr.branch === branch) via = 'window branch';
-      else if (matchesStream(stream, pr.branch)) via = 'branch prefix';
-      else if (lanes.some(l => l.branch === pr.branch)) via = 'lane branch';
+      const via = strongVia(pr);
       if (via) cardPrs.push({ ...pr, via });
     }
     cardPrs.sort((a, b) => b.number - a.number);
+    // Merged PRs of this window: the same strong bindings, plus the numbers the
+    // window named itself (weak — good enough as evidence of delivered work,
+    // never used alone to move a card forward).
+    const cardMerged = [];
+    for (const pr of mergedPrs) {
+      const via = strongVia(pr);
+      if (via) cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via, strong: true });
+      else if (mentioned.has(pr.number)) {
+        cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via: 'named by the window', strong: false });
+      }
+    }
+    cardMerged.sort((a, b) => b.number - a.number);
 
     // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
     // else from the stream's state file, else from a number the window named.
@@ -1426,6 +1489,12 @@ async function collect() {
       askReasons,
       column,
       tabCount,
+      _shadow: {
+        merged: cardMerged,
+        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []) : [],
+        unitsPromised: stream?.units === 'issues',
+        hasPrefixes: (stream?.branch_prefix ?? []).length > 0,
+      },
     });
   }
 
@@ -1442,6 +1511,36 @@ async function collect() {
     c.prs.sort((a, b) => b.number - a.number);
     delete c.mentioned;
   }
+
+  // Facts for the pipeline's shadow verdicts (step 1: the board only says what
+  // it WOULD do — no transition is written anywhere). A source that is dead or
+  // older than ten minutes makes every verdict "facts incomplete": unknown is
+  // never read as empty.
+  const FRESH_MS = 10 * 60 * 1000;
+  const staleSources = [streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+    .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
+    .map(s => s.name);
+  const shadowFacts = new Map();
+  for (const c of cards) {
+    if (c.manual) continue;
+    shadowFacts.set(c.name, {
+      openPrs: c.prs.map(pr => ({
+        number: pr.number,
+        ci: pr.ci?.color ?? 'none',
+        strong: pr.via !== 'named by the window',
+        createdAt: pr.createdAt ?? null,
+      })),
+      merged: c._shadow.merged,
+      openUnitIssues: c._shadow.openUnitIssues.map(i => ({ number: i.number, createdAt: i.createdAt })),
+      unitsPromised: c._shadow.unitsPromised,
+      hasPrefixes: c._shadow.hasPrefixes,
+      umbrella: c.umbrella?.number ?? null,
+      laneBusy: c.lanes.length > 0,
+      working: c.status === 'working',
+    });
+    delete c._shadow;
+  }
+  setShadowFacts({ facts: shadowFacts, staleSources, at: now });
 
   // Cards added by hand. They are bound to no window, no lane and no PR — only a
   // title, a text and a column — so they are appended last, after PRs have been
@@ -1500,7 +1599,8 @@ async function collect() {
     if (l.busy && !laneOwners[`${l.host}|${l.lane}`]) l.orphan = true;
   }
 
-  const sources = [cfgSource, streamsSource, programsSource, lanesSource, prSource, umbrellaSource]
+  const sources = [cfgSource, streamsSource, programsSource, lanesSource, prSource, mergedPrSource,
+    unitIssuesSource, umbrellaSource]
     .map(s => ({ name: s.name, ok: s.ok, error: s.error, ageMs: s.at ? Date.now() - s.at : null, tookMs: s.tookMs }));
   const probeRow = probeSourceRow(stale);
   if (probeRow) sources.push(probeRow);

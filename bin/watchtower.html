@@ -276,6 +276,8 @@
   .pcard .clk.stopped { color: var(--ink-dim); }
   .pcard .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
   .pcard .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
+  .pcard .row.shadow { font-size: 11px; color: var(--ink-dim); font-style: italic; }
+  .pcard .row.shadow.differs { color: var(--done); }
   .pcard .spec {
     margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
     background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
@@ -939,6 +941,18 @@ function pcard(c) {
   }
   const statusHtml = statusLine(c);
   if (statusHtml) bits.push(statusHtml);
+
+  // Shadow verdict: what the board WOULD set from observable facts. Written
+  // nowhere — this line is the whole output while the rule is on probation.
+  if (c.shadow) {
+    const s = c.shadow;
+    const head = s.would
+      ? (s.same ? 'auto agrees' : 'auto would set: ' + (STAGE_TITLE[s.would] ?? s.would))
+      : 'auto holds';
+    bits.push('<div class="row shadow' + (s.would && !s.same ? ' differs' : '') + '"'
+      + ' title="shadow mode: the board writes no transition yet">'
+      + esc(head + ' — ' + (s.reasons ?? []).join('; ')) + '</div>');
+  }
 
   const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
     .map(k => k + ' ' + (LINK_FIELDS.includes(k) ? c.links[k] : c[k]));
