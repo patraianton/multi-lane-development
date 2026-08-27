@@ -196,6 +196,7 @@ function normCard(raw) {
     lane: str(src.lane, LIMIT.slotish).trim(),
     subscription: str(src.subscription, LIMIT.slotish).trim(),
     slot: str(src.slot, LIMIT.slotish).trim(),
+    window: str(src.window, LIMIT.slotish).trim(),
     status: {
       text: str(src.status?.text, LIMIT.status).trim(),
       verdict,
@@ -550,6 +551,7 @@ async function createCard(body) {
     lane: '',
     subscription: '',
     slot: '',
+    window: '',
     status: { text: '', verdict: '', at: null },
     comments: [],
   };
@@ -660,7 +662,7 @@ async function updateCard(body) {
         if (body.links[key] !== undefined) card.links[key] = str(body.links[key], LIMIT.link).trim();
       }
     }
-    for (const key of ['lane', 'subscription', 'slot']) {
+    for (const key of ['lane', 'subscription', 'slot', 'window']) {
       if (body[key] !== undefined) card[key] = str(body[key], LIMIT.slotish).trim();
     }
     if (spec !== undefined) card.spec = str(spec, LIMIT.spec);
@@ -787,6 +789,7 @@ function agentRow(card, now, meta) {
       : null,
     slot: card.slot || '',
     subscription: card.subscription || '',
+    window: card.window || '',
     consecutiveFails: card.consecutiveFails,
     statusStale: isStaleStatus(card, meta, now),
   };
@@ -887,6 +890,7 @@ async function buildAgentCard(card) {
     lane: card.lane || '-',
     subscription: card.subscription || '-',
     slot: card.slot || '-',
+    window: card.window || '-',
     links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
@@ -916,6 +920,7 @@ function renderToonCard(c) {
     `lane: ${c.lane}`,
     `subscription: ${c.subscription}`,
     `slot: ${c.slot}`,
+    `window: ${c.window}`,
     `links: ${c.links}`,
     `status: ${c.status}`,
     `spec: ${c.spec}`,

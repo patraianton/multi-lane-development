@@ -268,6 +268,8 @@
   .pcard.st-stuck { border-left-color: var(--blocked); }
   .pcard .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
   .pcard .nm { font-weight: 700; font-size: 13px; }
+  .pcard .nm[data-window] { cursor: pointer; }
+  .pcard .nm[data-window]:hover { color: var(--focus); text-decoration: underline; }
   /* The clock ticks in the browser: the board sends the stage history, the page
      counts. A card's clock must move without a request per second. */
   .pcard .clk { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--focus); }
@@ -791,7 +793,7 @@ const STAGE_TITLE = {
   accepted: 'Accepted', stuck: 'Stuck',
 };
 const ROAD = ['spec', 'grilled', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
-const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot'];
+const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
 
@@ -923,7 +925,11 @@ function pcard(c) {
   const open = openCards.has(c.id);
   const bits = [];
 
-  bits.push('<div class="top"><span class="nm">' + esc(c.title) + '</span>'
+  // A card that knows its herdr window gets a clickable title: the click asks
+  // herdr to switch to that window, same as a click on a windows-view card.
+  bits.push('<div class="top"><span class="nm"'
+    + (c.window ? ' data-window="' + esc(c.window) + '" title="open the ' + esc(c.window) + ' window in herdr"' : '')
+    + '>' + esc(c.title) + '</span>'
     + clockSpan('clk', cl.total, cl.totalFrom) + '</div>');
   bits.push('<div class="row mono">' + esc(STAGE_TITLE[c.stage] ?? c.stage)
     + ' · ' + esc(c.id) + '</div>');
@@ -1067,6 +1073,18 @@ function renderPipeline(d) {
 }
 
 function wirePipeline() {
+  // A title with a window behind it jumps into that herdr window. The window is
+  // found by name in the windows board's latest data; a window that is not
+  // there (closed, hidden, another project) is said out loud, not swallowed.
+  for (const el of document.querySelectorAll('#pipeline .nm[data-window]')) {
+    el.onclick = (ev) => {
+      ev.stopPropagation();
+      const name = el.dataset.window;
+      const win = ((lastData && lastData.cards) || []).find(c => !c.manual && c.name === name);
+      if (win && win.tab) post('/focus', { tab: win.tab });
+      else showError('window "' + name + '" is not on the windows board right now');
+    };
+  }
   for (const el of document.querySelectorAll('#pipeline .pcard')) {
     el.onclick = (ev) => {
       // A click on a control is that control's business, not a card toggle.
