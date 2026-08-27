@@ -1239,7 +1239,7 @@ async function collect() {
 
   // Background sources: just nudge them, do not wait for an answer.
   const first = [];
-  for (const s of [streamsSource, programsSource, lanesSource, prSource, umbrellaSource]) {
+  for (const s of [streamsSource, programsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]) {
     const p = s.tick();
     if (s.at === 0 && p) first.push(p);
   }
