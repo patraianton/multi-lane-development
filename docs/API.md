@@ -255,8 +255,8 @@ counters: **cards**, **stuck**, **waiting for acceptance**, **accepted**,
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
   (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (the watchdog's word: `moving`,
   `stalled`, `looping`, or `-`). JSON also carries `lane`, `links`, `status`
-  (`text`, `verdict`, `at`), `slot`, `subscription`, `consecutiveFails` and
-  `statusStale` so the Watchdog can score the card without a second request;
+  (`text`, `verdict`, `at`), `slot`, `subscription`, `window`, `consecutiveFails`
+  and `statusStale` so the Watchdog can score the card without a second request;
 - `stuck` — the cards waiting for a human, with how long they have been waiting;
 - `stale` — active cards (`development`, `local_check`, `ci_pr`) whose Status is
   missing or older than twice the Watchdog interval (default 15 min → 30 min).
@@ -272,8 +272,8 @@ GET http://127.0.0.1:4878/api/pipeline/card/<id>
 
 which answers with plain `field: value` lines (`card`, `title`, `stage`,
 `created`, `clock`, `clock-by-stage`, `fails`, `consecutive-fails`, `lane`,
-`subscription`, `slot`, `links`, `status`, `spec`) plus a `comments` table and a
-`history` table. An unknown id gets 404 and the ids currently in the pipeline.
+`subscription`, `slot`, `window`, `links`, `status`, `spec`) plus a `comments`
+table and a `history` table. An unknown id gets 404 and the ids currently in the pipeline.
 
 ### Changing a card
 
@@ -289,7 +289,7 @@ the reason in plain words; the store is left exactly as it was.
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
-| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one |
+| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window |
 
 The Watchdog does **not** use `update`. It writes Status on a path of its own:
 
