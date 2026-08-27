@@ -747,8 +747,74 @@ async function pageData() {
     usesSubscriptions: BOARD.subscriptions.length > 0,
     watchdogIntervalMin: meta.intervalMin,
     watchdogConfigured: meta.configured,
-    cards: st.cards,
+    cards: st.cards.map(c => (shadowMap.has(c.id) ? { ...c, shadow: shadowMap.get(c.id) } : c)),
   };
+}
+
+// ---------------------------------------------------------------- shadow
+//
+// Step 1 of "the board decides the stage itself": for every stream card (a card
+// with a window) the board computes what stage it WOULD set from observable
+// facts — open PRs, merged PRs, open unit tickets of the umbrella, lanes — and
+// writes it NOWHERE. The verdict is shown on the card and in the JSON, so the
+// rule can be checked against reality before any automatic transition exists.
+// Facts arrive from watchtower.mjs after every sweep of the windows board.
+//
+// Two hard rules, decided by the design review:
+//   - unknown is never read as empty: a dead or stale source voids every verdict;
+//   - a stream whose sprint scope is not machine-readable (no units:"issues"
+//     promise in stream-watch, no branch prefixes, no umbrella) can never reach
+//     acceptance — the card says what is missing instead.
+const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
+let shadowMap = new Map(); // card id -> { would, same, reasons, at }
+
+export function setShadowFacts({ facts, staleSources, at }) {
+  const cards = state?.cards ?? [];
+  const next = new Map();
+  for (const card of cards) {
+    if (!card.window || !AUTO_ELIGIBLE.has(card.stage)) continue;
+    next.set(card.id, shadowVerdict(card, facts.get(card.window), staleSources ?? [], at));
+  }
+  shadowMap = next;
+}
+
+function shadowVerdict(card, f, staleSources, at) {
+  const v = { would: null, same: false, reasons: [], at: at ?? null };
+  if (staleSources.length) {
+    v.reasons.push(`facts incomplete: ${staleSources.join(', ')}`);
+    return v;
+  }
+  if (!f) {
+    v.reasons.push('window is not on the windows board');
+    return v;
+  }
+  if (f.openPrs.length) {
+    v.would = 'ci_pr';
+    v.reasons.push(`open PRs: ${f.openPrs.map(p => '#' + p.number).join(' ')}`);
+    const red = f.openPrs.filter(p => p.ci === 'red').map(p => '#' + p.number);
+    if (red.length) v.reasons.push(`CI red on ${red.join(' ')}`);
+  } else if (f.laneBusy) {
+    v.would = 'development';
+    v.reasons.push('a lane of this window is busy');
+  } else if (f.working) {
+    v.would = 'development';
+    v.reasons.push('the agent is working and no PR is open');
+  } else if (!f.unitsPromised) {
+    v.reasons.push('sprint scope not visible: stream-watch has no units:"issues" promise');
+  } else if (!f.hasPrefixes) {
+    v.reasons.push('sprint scope not visible: stream-watch has no branch prefixes');
+  } else if (!f.umbrella) {
+    v.reasons.push('sprint scope not visible: no umbrella issue');
+  } else if (f.openUnitIssues.length) {
+    v.reasons.push(`scope not empty: open unit tickets ${f.openUnitIssues.map(i => '#' + i.number).join(' ')}`);
+  } else if (!f.merged.length) {
+    v.reasons.push('no merged PRs bound to this window — nothing to accept');
+  } else {
+    v.would = 'acceptance';
+    v.reasons.push(`scope empty, ${f.merged.length} merged PR(s), lanes free`);
+  }
+  v.same = v.would === card.stage;
+  return v;
 }
 
 // --------------------------------------------------------------- agent view
@@ -792,6 +858,7 @@ function agentRow(card, now, meta) {
     window: card.window || '',
     consecutiveFails: card.consecutiveFails,
     statusStale: isStaleStatus(card, meta, now),
+    shadow: shadowMap.get(card.id) ?? null,
   };
 }
 

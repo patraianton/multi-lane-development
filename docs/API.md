@@ -236,6 +236,23 @@ the card into `development` around the grill. Any stage passed successfully rese
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
 run of three.
 
+### Who sets the stage — the shadow verdict
+
+Stage transitions are made by people (and by agents through the endpoints
+below). Since 2026-08-27 the board also computes, for every stream card (a
+card with a `window`), what stage it WOULD set from observable facts alone —
+open PRs bound to the window, merged PRs, open unit tickets referencing the
+stream's umbrella, lane occupancy. This is **step 1 of
+[ADR-0006](./adr/0006-the-board-decides-the-stage-itself.md)**: the verdict is
+written nowhere — it is printed on the card (`auto would set … / auto agrees /
+auto holds`) and carried as `shadow: { would, same, reasons, at }` on
+`/pipeline/data` and in the `/api/pipeline` JSON rows. A dead or stale source
+voids the verdict (`facts incomplete`) — unknown is never read as empty. A
+stream without a machine-readable sprint scope (no `units: "issues"` promise
+in stream-watch, no branch prefixes, no umbrella) can never reach acceptance
+by facts, and the verdict says what is missing. Automatic transitions are a
+later step, enabled only after the shadow has been checked against reality.
+
 ### Clocks
 
 Every clock is computed from `stageHistory` — the list of `{stage, enteredAt,
