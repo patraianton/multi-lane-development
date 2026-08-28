@@ -220,7 +220,7 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
   "answerWords": ["CTO ANSWER", "OWNER SAYS"],
   "hosts": {
     "builder": { "target": "root@203.0.113.10", "key": "id_ed25519", "kind": "hzlane" },
-    "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/my-project" }
+    "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/my-project", "connectTimeoutSec": 30 }
   },
   "source": "local",
   "probeStaleSec": 60,
@@ -257,7 +257,7 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
 - `repo` — `owner/name` for `gh`. Empty means GitHub is skipped.
 - `streamWatch`, `specsDir` — optional; without them there are no lane bindings and no umbrella numbers.
 - `askWords` / `answerWords` — exact protocol markers your windows and issues use, in whatever language the team types. Until an answer marker appears after a question in the umbrella issue, the question counts as open.
-- `hosts` — where code is built. `kind: "hzlane"` asks `hzlane status` over ssh; `kind: "mac"` reads `<kitchen>/lane-*` folders and live `codex exec` processes.
+- `hosts` — where code is built. `kind: "hzlane"` asks `hzlane status` over ssh; `kind: "mac"` reads `<kitchen>/lane-*` folders and live `codex exec` processes. `connectTimeoutSec` (default 10) is ssh's handshake limit — raise it for a host behind a mesh VPN that drops the first packets.
 - `source` — `"local"` talks to herdr on this machine; `"probe"` uses the last posted snapshot. Lanes, PRs and CI still come from this host.
 - `subscriptions` — names the owner may assign (Telegram buttons and `POST /pipeline/assign-subscription`).
 - `telegram` — outbound pipeline notifications. Missing, or present without `botToken` and without `dryRun: true` → no sends, one log line at start-up. The poller reads a separate `state/telegram.json`.
