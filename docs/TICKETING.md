@@ -29,7 +29,11 @@ subscription answer stays valid from `grilled` and auto-advances the card to `ti
 the `links.ticket` gate is the machine-enforced floor, the checklist is the contract.
 
 Input: a `grilled` card — the grill outcome ([GRILL.md](./GRILL.md) §2) with the unit
-breakdown U0..Un, blockers folded into the spec, and default decisions. Output: the full
+breakdown U0..Un, blockers folded into the spec, and default decisions. The review
+artifact (GRILL.md §3) is published and answered **while the card sits in `grilled`**:
+the founders' answers are part of the grill outcome, and the card enters `ticketed`
+only after they are folded into the spec — tickets are written from a spec with no
+open questions left. Output: the full
 ticket set on GitHub, written under the CTO's own GitHub App identity
 ([ADR-0004](./adr/0004-grill-outcome-becomes-one-github-ticket.md)), linked from the card.
 A unit with no ticket does not exist for the board

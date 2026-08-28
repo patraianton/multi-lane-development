@@ -67,9 +67,12 @@ Two artifacts, produced together:
 2. **The review artifact** (§3) — the same content published as a Lavish page where the
    founders answer the questions by annotating.
 
-The card gets a flat comment naming both, and moves to `grilled` only after the open
-questions have either answers or explicit default decisions. From `grilled` the card moves
-to `ticketed`, where the CTO writes the GitHub tickets (one per work unit); the board
+The card gets a flat comment naming both and moves to `grilled` with the outcome folded
+in. Answering happens **at `grilled`**: the artifact link sits on the card (the board
+rings a bell while it awaits answers), the founders answer by annotating — every question
+a multiple choice whose first option is the default decision. Only after the answers are
+folded into the spec does the card move to `ticketed`, where the CTO writes the GitHub
+tickets (one per work unit); the board
 refuses `ticketed → development` until `links.ticket` is set.
 
 ## 3. Requirement: self-hosted Lavish on Cloudflare
