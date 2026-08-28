@@ -6,6 +6,13 @@ the record of when and why.
 
 ## 2026-08-28 — from the five-lens ticket panel and the owner
 
+0. **One sprint in development at a time (owner insight, 2026-08-28).** A single sprint's
+   independent tickets already saturate the lane and CI capacity. Parallelism lives INSIDE
+   a sprint. The next sprint travels the paper stages (spec -> grill -> answers -> tickets)
+   while the current one develops — paper burns no lanes; when the current sprint's tail
+   leaves lanes free, they pick up the next sprint's first independent tickets. Sprints
+   queue as cards, never as parallel developments.
+
 1. **Ticket-check panel is a standing stage step.** After the ticket set is written and
    before dispatch, one pass of a five-lens agent panel (critical path · ticket quality ·
    process overhead · board automation · launch risk) reviews the set. One pass, not a
