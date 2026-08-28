@@ -7,7 +7,7 @@
 // screenshots.
 //
 // Run: node bin\wt.mjs [pipeline | --pipeline | card <id>] [--json] [--full]
-//                       [--card <name>]   (or bin\wt.cmd)
+//                       [--spec] [--card <name>]   (or bin\wt.cmd)
 // The port comes from WATCHTOWER_PORT (AUTOPASE_BOARD_PORT is still read as a
 // fallback), 4878 by default — the same one the server listens on.
 
@@ -30,7 +30,7 @@ function selfPath() {
 }
 
 const CMD = 'bin\\wt.cmd';
-const TAKES = `${CMD} takes only pipeline, card <id>, --pipeline, --json, --full, --card <name>, --help, --version`;
+const TAKES = `${CMD} takes only pipeline, card <id>, --pipeline, --json, --full, --spec, --card <name>, --help, --version`;
 
 const HELP = `bin: ${selfPath()}
 description: ${DESCRIPTION}
@@ -42,6 +42,7 @@ pipeline card.
 Flags:
   --json          the same shape as plain JSON
   --full          long texts in full (no clipping)
+  --spec          with card <id> only: the spec text in the answer
   --pipeline      the delivery pipeline (same as the pipeline subcommand)
   --card <name>   one window in full: its last words, why it waits, the question
                   from its umbrella issue. The name is the name cell of cards
@@ -50,7 +51,9 @@ Flags:
 
 Subcommands:
   pipeline        the delivery pipeline as short text (TOON-flavoured)
-  card <id>       one pipeline card in full: spec, comments, history, clocks
+  card <id>       one pipeline card: summary, comments, history, clocks and the
+                  spec line count. The spec text itself — --spec, or open
+                  /pipeline/card/<id>/spec in a browser
 
 What is in the board answer:
   summary     counters: windows, waiting for you, lanes building, open PRs, manual, hidden
@@ -93,9 +96,10 @@ Examples:
   ${CMD} pipeline --json
   ${CMD} card <id>
   ${CMD} card <id> --json
+  ${CMD} card <id> --spec
 `;
 
-const KNOWN = new Set(['--json', '--full', '--card', '--pipeline', '--help', '-h', '--version', '-v', '-V']);
+const KNOWN = new Set(['--json', '--full', '--spec', '--card', '--pipeline', '--help', '-h', '--version', '-v', '-V']);
 
 const args = process.argv.slice(2);
 // Whether --json was asked for must be known before the first error: an agent
@@ -199,10 +203,15 @@ if (wantPipelineCard && wantFull) {
   die('error: --full is not needed together with card\n'
     + 'help: one card is printed in full anyway, without clipping', 2);
 }
+const wantSpec = args.includes('--spec');
+if (wantSpec && !wantPipelineCard) {
+  die('error: --spec only makes sense together with card <id>\n'
+    + `help: ${CMD} card <id> --spec adds the spec text to that card's answer`, 2);
+}
 
 const format = `format=${wantJson ? 'json' : 'toon'}`;
 const url = wantPipelineCard
-  ? `${BASE}/api/pipeline/card/${encodeURIComponent(wantPipelineCard)}?${format}`
+  ? `${BASE}/api/pipeline/card/${encodeURIComponent(wantPipelineCard)}?${format}${wantSpec ? '&spec=1' : ''}`
   : wantPipeline
     ? `${BASE}/api/pipeline?${format}${wantFull ? '&full=1' : ''}`
     : wantWindowCard

@@ -72,17 +72,22 @@ export function toonTable(name, rows, fields, emptyText) {
   ].join('\n');
 }
 
-// Parsing the parameters of the agent endpoints. The rules for format and full
-// are the same: the value must be spelled out. An empty value (?format= or
+// Parsing the parameters of the agent endpoints. The rules for format, full and
+// spec are the same: the value must be spelled out. An empty value (?format= or
 // ?full=) is a typo, not "on", and a repeated parameter
 // (?format=toon&format=json) is one too: silently taking the first and losing
 // the second means answering something other than what was asked.
-export function agentParams(url, allowFull) {
-  const allowed = allowFull ? ['format', 'full'] : ['format'];
+export function agentParams(url, allowFull, allowSpec = false) {
+  const allowed = ['format'];
+  if (allowFull) allowed.push('full');
+  if (allowSpec) allowed.push('spec');
+  const desc = ['format=toon|json'];
+  if (allowFull) desc.push('full=1');
+  if (allowSpec) desc.push('spec=1');
   for (const key of url.searchParams.keys()) {
     if (!allowed.includes(key)) {
       return { error: `error: unknown parameter "${key}"\n`
-        + `help: allowed are ${allowFull ? 'format=toon|json and full=1' : 'format=toon|json only'}` };
+        + `help: allowed are ${desc.length > 1 ? desc.join(' and ') : desc[0] + ' only'}` };
     }
     if (url.searchParams.getAll(key).length > 1) {
       return { error: `error: parameter "${key}" given more than once\n`
@@ -99,5 +104,14 @@ export function agentParams(url, allowFull) {
     return { error: `error: full has an unclear value "${fullRaw}"\n`
       + 'help: full=1 — texts in full, full=0 (or no parameter) — clipped' };
   }
-  return { format, full: fullRaw !== null && fullRaw !== '0' && fullRaw !== 'false' };
+  const specRaw = url.searchParams.get('spec');
+  if (specRaw !== null && !['0', '1', 'true', 'false'].includes(specRaw)) {
+    return { error: `error: spec has an unclear value "${specRaw}"\n`
+      + 'help: spec=1 — the spec text in the answer, spec=0 (or no parameter) — summary and the line count only' };
+  }
+  return {
+    format,
+    full: fullRaw !== null && fullRaw !== '0' && fullRaw !== 'false',
+    spec: specRaw !== null && specRaw !== '0' && specRaw !== 'false',
+  };
 }
