@@ -304,7 +304,8 @@ gets 404 and the ids currently in the pipeline.
 The spec text itself is **not** in the default answer — a real spec is hundreds
 of lines. Instead the answer carries:
 
-- `summary` — the card's short retelling (up to 200 characters), `-` when none
+- `summary` — the card's short retelling (up to 200 characters; a card stored
+  before the cap keeps its longer text until rewritten), `-` when none
   is written;
 - `spec-lines` — how many lines the spec is (`0` — the card has no spec);
 - a `help` line (`specHint` in JSON) saying where the text is: `?spec=1` on this

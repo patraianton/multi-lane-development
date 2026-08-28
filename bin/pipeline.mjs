@@ -91,6 +91,10 @@ const LIMIT = {
   title: 200,
   spec: 20000,
   summary: 200,      // the short retelling a card shows instead of its spec
+  // Reading from disk stays at the limit the summary was born with (1200): a
+  // card stored before the cap dropped to 200 must come back as written, not
+  // silently lose its tail to the next unrelated write. Only the API rejects.
+  summaryOnDisk: 1200,
   author: 100,
   comment: 4000,
   link: 400,
@@ -200,8 +204,9 @@ function normCard(raw) {
     id,
     title,
     spec: str(src.spec, LIMIT.spec),
-    // Cards written before the summary existed simply have an empty one.
-    summary: str(src.summary, LIMIT.summary).trim(),
+    // Cards written before the summary existed simply have an empty one; ones
+    // written before the 200 cap keep their longer text until rewritten.
+    summary: str(src.summary, LIMIT.summaryOnDisk).trim(),
     stage,
     createdAt,
     stageHistory,

@@ -4,6 +4,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { startBoard, postJson, getJson } from './helpers.mjs';
 
 const AT_LIMIT = 'a'.repeat(200);
@@ -61,6 +63,47 @@ test('POST /pipeline/card/create: the same cap guards the summary at birth', asy
 
     const ok = await postJson(board.base, '/pipeline/card/create',
       { title: 'at the limit at birth', spec: 'spec', summary: AT_LIMIT });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.card.summary, AT_LIMIT);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('a summary stored before the cap survives load and unrelated writes as written', async () => {
+  // Written when the limit was 1200 — legal at the time, over the cap now.
+  const legacy = 'c'.repeat(500);
+  const board = await startBoard({
+    port: 14984,
+    config: { source: 'probe' },
+    files: {
+      'pipeline-cards.json': { cards: [
+        { id: 'legacy-card', title: 'written before the cap', spec: 'old spec', summary: legacy },
+        { id: 'other-card', title: 'a neighbour', spec: 'other spec' },
+      ]},
+    },
+  });
+  try {
+    // Served as written, not clipped to 200.
+    const first = await getJson(board.base, '/pipeline/data');
+    assert.equal(first.status, 200);
+    const served = first.body.cards.find(c => c.id === 'legacy-card');
+    assert.equal(served.summary, legacy);
+
+    // An unrelated mutation persists the whole store — the legacy summary must
+    // ride through it untouched, on the wire and on disk.
+    const comment = await postJson(board.base, '/pipeline/card/comment',
+      { id: 'other-card', author: 'test', text: 'an unrelated write' });
+    assert.equal(comment.status, 200);
+    const onDisk = JSON.parse(await readFile(path.join(board.dir, 'pipeline-cards.json'), 'utf8'));
+    assert.equal(onDisk.cards.find(c => c.id === 'legacy-card').summary, legacy);
+
+    // The cap still guards new writes to that same card.
+    const over = await postJson(board.base, '/pipeline/card/summary',
+      { id: 'legacy-card', summary: OVER_LIMIT });
+    assert.equal(over.status, 400);
+    const ok = await postJson(board.base, '/pipeline/card/summary',
+      { id: 'legacy-card', summary: AT_LIMIT });
     assert.equal(ok.status, 200);
     assert.equal(ok.body.card.summary, AT_LIMIT);
   } finally {
