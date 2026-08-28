@@ -75,6 +75,27 @@ folded into the spec does the card move to `ticketed`, where the CTO writes the 
 tickets (one per work unit); the board
 refuses `ticketed → development` until `links.ticket` is set.
 
+## 2a. The owner zone — the single definition
+
+This is the one place the owner zone is defined; every other doc references it
+([TICKETING.md](./TICKETING.md) §2.8 for the no-default rule at ticketing time).
+
+**The owner decides, never the pipeline:** money; strategy; anything outgoing
+to external parties; the live bot and production environment variables /
+external access. These are the only legitimate `owner-question` findings, and
+they carry **no default decision** — a deadline produces a reminder, not an
+assumed answer.
+
+**Not an owner checkpoint:** production DB writes (owner decision 2026-08-25:
+"take the live database off me — back it up properly and restore"). They run
+under the backup regime documented in the product repo
+(`docs/ops/DB-BACKUP-RESTORE.md`): a verified restore net, a restore point
+taken right before every write, and the owner *informed* after a restore,
+never *asked* before a write.
+
+Every other reversible product question the pipeline decides itself, in favor
+of the end user.
+
 ## 3. Requirement: self-hosted Lavish on Cloudflare
 
 The grill questions must reach the partner, who does not sit at the owner's desktop —

@@ -151,7 +151,8 @@ time.
 Evidence: S9 waited 10.8 h for the Railway key — 82 % of that sprint's 19.3 h calendar
 was waiting (15.8 h), the key alone more than half of it; in S7, Block 0 stood 9 h
 waiting for the owner and the CTO ended up deciding anyway; owner-waiting cost 20 h
-across the week. Owner-zone questions (money, external access) have **no default**
+across the week. Owner-zone questions (defined once in [GRILL.md](./GRILL.md) §2a:
+money, strategy, outgoing to external parties, live external access) have **no default**
 (conveyor rule 1) — they must be answered before the card leaves `ticketed`, and they
 were already sent as one packet at grill time (rule 11: requested at posting, not at the
 wall).
