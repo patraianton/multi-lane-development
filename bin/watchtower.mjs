@@ -348,8 +348,11 @@ setInterval(() => { artifactSource.tick(); }, artifactSweepMs).unref();
 // project being chosen. WATCHTOWER_SPRINT_FACTS_FILE (tests) replaces the live
 // sources with a JSON file of the same shape.
 const FRESH_MS = 10 * 60 * 1000;
+// Only the sources the sprint facts are built from count: lanes, open and
+// merged PRs, unit tickets. A slow umbrella or stream-watch read must not
+// freeze every unit card.
 function staleSourceNames() {
-  return [streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+  return [lanesSource, prSource, mergedPrSource, unitIssuesSource]
     .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
     .map(s => s.name);
 }
