@@ -24,6 +24,9 @@
     --unknown: #53606f;
     --focus: #78ddff;
     --violet: #b99cff;
+    --panel-lift: #142131;
+    --line-soft: #1c2a39;
+    --shadow-deep: rgba(0, 0, 0, .34);
     --ui: "Segoe UI", system-ui, sans-serif;
     --mono: Consolas, "Cascadia Mono", Menlo, monospace;
   }
@@ -225,7 +228,10 @@
      The same design language as the windows view: the same panels, the same
      lines, the same monospace details. What differs is what a column means —
      here it is a stage of the road, not a state of a live window. */
-  .pipeline { display: none; flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 12px 16px; }
+  .pipeline {
+    display: none; flex: 1 1 auto; min-height: 0; overflow: auto;
+    padding: 11px 14px 20px; scrollbar-gutter: stable;
+  }
   body.view-pipeline .pipeline { display: block; }
   body.view-pipeline .board,
   body.view-pipeline .lanes-strip,
@@ -237,79 +243,256 @@
   body:not(.view-pipeline) #pipe-add-toggle { display: none; }
 
   .stuck-zone {
-    display: none; margin-bottom: 10px; padding: 6px 8px 8px;
-    border: 1px solid #6a2224; border-radius: 5px; background: #160c0e;
+    display: none; margin-bottom: 13px; padding: 9px 10px 10px;
+    border: 1px solid #6a2224; border-radius: 9px;
+    background:
+      radial-gradient(circle at 0 0, rgba(255, 92, 95, .09), transparent 34%),
+      linear-gradient(145deg, #180d10, #100b0d);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .22), inset 0 1px rgba(255, 255, 255, .025);
   }
   .stuck-zone.on { display: block; }
   .stuck-zone > h2 {
-    margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
-    color: var(--blocked);
+    margin: 0 0 8px; font-size: 10px; line-height: 1.35; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--blocked);
   }
-  .stuck-zone .lane-row { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .stuck-zone .lane-row {
+    display: grid; gap: 9px;
+    grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  }
 
-  .pboard { display: grid; gap: 8px; align-items: start;
+  .pboard { display: grid; gap: 9px; align-items: start;
             grid-template-columns: repeat(8, minmax(0, 1fr)); }
   .pcol { min-width: 0; overflow-wrap: anywhere; }
   .pcol > h2 {
-    margin: 0 0 6px; padding: 4px 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 5px;
+    margin: 0 0 7px; padding: 5px 6px 6px; min-width: 0;
+    font-size: 10px; line-height: 1.2; letter-spacing: .11em; text-transform: uppercase;
     color: var(--ink-mid); border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(23, 36, 51, .26), transparent);
   }
-  .pcol > h2 span { color: var(--ink-dim); font-family: var(--mono); }
+  .pcol > h2 span {
+    flex: 0 0 auto; margin-left: auto; padding: 0 5px; border: 1px solid var(--line-soft);
+    border-radius: 8px; color: var(--ink-dim); background: var(--panel-low);
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0;
+  }
   .pcol.acceptance > h2 { color: var(--done); border-color: #6a5122; }
   .pcol.accepted > h2 { color: var(--working); border-color: #1f6a52; }
 
   .pcard {
-    border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: 4px;
-    background: var(--panel); margin-bottom: 8px; padding: 7px 9px; cursor: pointer;
+    --stage: var(--violet);
+    --stage-rgb: 185, 156, 255;
+    position: relative; isolation: isolate; min-width: 0; max-width: 100%; overflow: hidden;
+    margin-bottom: 9px; padding: 0; cursor: pointer;
+    border: 1px solid var(--line); border-left: 4px solid var(--stage); border-radius: 9px;
+    background:
+      radial-gradient(circle at 0 0, rgba(var(--stage-rgb), .075), transparent 42%),
+      linear-gradient(145deg, var(--panel-lift), var(--panel) 52%, #0f1924);
+    box-shadow: 0 7px 18px var(--shadow-deep), inset 0 1px rgba(255, 255, 255, .035);
+    transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
   }
-  .pcard:hover { background: var(--panel-hi); border-color: var(--line-hot); }
-  .pcard.st-acceptance { border-left-color: var(--done); }
-  .pcard.st-accepted { border-left-color: var(--working); }
-  .pcard.st-stuck { border-left-color: var(--blocked); }
-  .pcard .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-  .pcard .nm { font-weight: 700; font-size: 13px; }
+  .pcard::after {
+    content: ""; position: absolute; z-index: -1; inset: 0 0 auto; height: 1px;
+    background: linear-gradient(90deg, rgba(var(--stage-rgb), .5), rgba(255, 255, 255, .12), transparent 72%);
+    pointer-events: none;
+  }
+  .pcard:hover {
+    transform: translateY(-1px); border-color: var(--line-hot); border-left-color: var(--stage);
+    background:
+      radial-gradient(circle at 0 0, rgba(var(--stage-rgb), .11), transparent 45%),
+      linear-gradient(145deg, #1a293a, var(--panel-hi) 55%, #111d29);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, .42), inset 0 1px rgba(255, 255, 255, .05);
+  }
+  .pcard.open {
+    cursor: default; border-color: #35495e; border-left-color: var(--stage);
+    box-shadow: 0 13px 32px rgba(0, 0, 0, .46), 0 0 0 1px rgba(var(--stage-rgb), .045);
+  }
+  .pcard.st-acceptance { --stage: var(--done); --stage-rgb: 255, 180, 74; }
+  .pcard.st-accepted { --stage: var(--working); --stage-rgb: 53, 214, 160; }
+  .pcard.st-stuck { --stage: var(--blocked); --stage-rgb: 255, 92, 95; }
+  .pcard .top {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px;
+    min-width: 0; padding: 9px 9px 4px 10px;
+  }
+  .pcard .nm {
+    min-width: 0; overflow-wrap: anywhere;
+    color: var(--ink); font-weight: 750; font-size: 13.5px; line-height: 1.25; letter-spacing: -.01em;
+  }
   .pcard .nm[data-window] { cursor: pointer; }
   .pcard .nm[data-window]:hover { color: var(--focus); text-decoration: underline; }
+  .pcard .fold-mark {
+    position: relative; flex: 0 0 auto; width: 17px; height: 17px; margin-top: -1px;
+    border: 1px solid var(--line); border-radius: 50%; background: rgba(8, 13, 19, .55);
+  }
+  .pcard .fold-mark::before {
+    content: ""; position: absolute; left: 5px; top: 4px; width: 4px; height: 4px;
+    border-right: 1.5px solid var(--ink-dim); border-bottom: 1.5px solid var(--ink-dim);
+    transform: rotate(45deg); transition: transform 120ms ease, top 120ms ease;
+  }
+  .pcard.open .fold-mark::before { top: 6px; transform: rotate(225deg); }
+  .pcard .scanline {
+    display: flex; align-items: center; gap: 5px; min-width: 0;
+    padding: 0 9px 8px 10px;
+  }
+  .pcard .stage-badge {
+    flex: 0 0 auto; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 6px; border: 1px solid rgba(var(--stage-rgb), .38); border-radius: 9px;
+    background: rgba(var(--stage-rgb), .09); color: var(--stage);
+    font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1.2;
+    letter-spacing: .055em; text-transform: uppercase;
+  }
+  .pcard .card-id {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink-dim); font-family: var(--mono); font-size: 9px;
+  }
+  .pcard .total-clock {
+    display: inline-flex; flex: 0 0 auto; align-items: baseline; gap: 3px; margin-left: auto;
+    padding: 2px 5px; border: 1px solid #24475a; border-radius: 8px;
+    background: rgba(8, 22, 30, .72); color: var(--focus); white-space: nowrap;
+  }
+  .pcard .clock-label {
+    color: var(--ink-dim); font-family: var(--ui); font-size: 8px; letter-spacing: .06em; text-transform: uppercase;
+  }
   /* The clock ticks in the browser: the board sends the stage history, the page
      counts. A card's clock must move without a request per second. */
-  .pcard .clk { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--focus); }
+  .pcard .clk { font-family: var(--mono); font-size: 10px; font-weight: 650; color: var(--focus); }
   .pcard .clk.stopped { color: var(--ink-dim); }
-  .pcard .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
-  .pcard .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
-  .pcard .row.shadow { font-size: 11px; color: var(--ink-dim); font-style: italic; }
+  .pcard .signals {
+    display: grid; gap: 4px; min-width: 0; padding: 0 9px 7px 10px;
+  }
+  .pcard .row {
+    min-width: 0; margin: 0; overflow-wrap: anywhere;
+    font-size: 11.5px; line-height: 1.35; color: var(--ink-mid);
+  }
+  .pcard .row.mono { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+  .pcard .callout {
+    position: relative; padding: 4px 6px 4px 17px; border: 1px solid var(--line-soft); border-radius: 5px;
+    background: rgba(8, 13, 19, .45); color: var(--ink-mid);
+  }
+  .pcard .callout::before {
+    content: ""; position: absolute; left: 7px; top: 8px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--done); box-shadow: 0 0 8px rgba(255, 180, 74, .45);
+  }
+  .pcard .status {
+    position: relative; padding: 4px 6px 4px 17px; border: 1px solid var(--line-soft); border-radius: 5px;
+    background: rgba(8, 13, 19, .42);
+  }
+  .pcard .status::before {
+    content: ""; position: absolute; left: 7px; top: 8px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--ink-dim);
+  }
+  .pcard .status.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
+  .pcard .status.stalled::before { background: var(--done); }
+  .pcard .status.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
+  .pcard .row.shadow {
+    padding: 1px 2px; color: var(--ink-dim); font-size: 10.5px; font-style: italic;
+  }
   .pcard .row.shadow.differs { color: var(--done); }
+  .pcard .artifact-row { padding: 0 8px 7px 9px; }
+  .pcard .artifact-bell {
+    display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 7px 8px;
+    border: 1px solid #825f24; border-radius: 6px;
+    background:
+      linear-gradient(90deg, rgba(255, 180, 74, .18), rgba(255, 180, 74, .065)),
+      var(--panel-low);
+    color: #ffd08a; font-size: 11px; font-weight: 750; line-height: 1.25; text-decoration: none;
+    box-shadow: inset 0 1px rgba(255, 224, 174, .08), 0 0 16px rgba(255, 180, 74, .055);
+  }
+  .pcard .artifact-bell:hover { border-color: var(--done); color: #ffe0aa; }
+  .pcard .bell-icon { flex: 0 0 auto; font-size: 13px; filter: saturate(.9); }
+  .pcard .bell-copy { min-width: 0; overflow-wrap: anywhere; }
+  .pcard .chip-row {
+    display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; padding: 0 8px 7px 9px;
+  }
+  .pcard .meta-chip {
+    display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 3px 6px;
+    border: 1px solid var(--line); border-radius: 9px; background: rgba(8, 13, 19, .52);
+    color: var(--ink-mid); font-family: var(--mono); font-size: 9.5px; line-height: 1.15;
+    text-decoration: none;
+  }
+  .pcard a.meta-chip:hover { border-color: #37657a; color: var(--focus); background: rgba(18, 38, 49, .74); }
+  .pcard .chip-key {
+    flex: 0 0 auto; color: var(--ink-dim); font-family: var(--ui); font-size: 8px;
+    font-weight: 700; letter-spacing: .065em; text-transform: uppercase;
+  }
+  .pcard .chip-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pcard .pr-chip { border-color: #4a3a70; color: var(--violet); }
+  .pcard .pr-chip.ci-green { border-color: #1f6a52; color: var(--working); }
+  .pcard .pr-chip.ci-red { border-color: #6a2224; color: var(--blocked); }
+  .pcard .pr-chip.ci-run { border-color: #6a5122; color: var(--done); }
   .pcard .spec {
-    margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
-    background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
-    white-space: pre-wrap;
+    min-width: 0; margin: 0; color: #bdcad6; font-size: 11.5px; line-height: 1.48;
+    overflow-wrap: anywhere; white-space: pre-wrap;
   }
   .pcard .open-only { display: none; }
-  .pcard.open { cursor: default; }
   .pcard.open .open-only { display: block; }
+  .pcard .card-section {
+    min-width: 0; margin: 0 8px 8px 9px; padding: 8px;
+    border: 1px solid var(--line-soft); border-radius: 7px;
+    background: linear-gradient(145deg, rgba(8, 13, 19, .72), rgba(12, 21, 30, .6));
+    box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+  }
+  .pcard .summary-section { border-left: 2px solid var(--line-hot); }
   .pcard h3 {
-    margin: 8px 0 3px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+    margin: 0 0 6px; font-size: 9px; font-weight: 750; letter-spacing: .13em; text-transform: uppercase;
     color: var(--ink-dim);
   }
-  .pcard .cmt {
-    margin-top: 4px; padding: 3px 6px; border-left: 2px solid var(--line);
-    background: var(--panel-low); font-size: 11.5px; color: var(--ink-mid); white-space: pre-wrap;
+  .pcard .spec-jump { margin-top: 7px; }
+  .pcard .stage-times {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(92px, 100%), 1fr)); gap: 4px;
+    min-width: 0;
   }
+  .pcard .stage-time {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 5px; min-width: 0;
+    padding: 4px 5px; border: 1px solid var(--line-soft); border-radius: 5px;
+    background: rgba(17, 27, 38, .72);
+  }
+  .pcard .stage-name {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink-mid); font-size: 9.5px;
+  }
+  .pcard .stage-time .clk { flex: 0 0 auto; font-size: 9.5px; }
+  .pcard .off-clock {
+    display: block; margin-top: 6px; color: var(--done); font-size: 9.5px; line-height: 1.35;
+  }
+  .pcard .cmt {
+    min-width: 0; margin-top: 5px; padding: 6px 7px; border: 1px solid var(--line-soft);
+    border-left: 2px solid #33485c; border-radius: 0 5px 5px 0;
+    background: rgba(8, 13, 19, .58); font-size: 11.5px; color: var(--ink-mid);
+    overflow-wrap: anywhere; white-space: pre-wrap;
+  }
+  .pcard .cmt:first-child { margin-top: 0; }
+  .pcard .comment-meta { display: flex; align-items: baseline; gap: 5px; margin-bottom: 3px; white-space: normal; }
   .pcard .cmt b { color: var(--ink); font-weight: 600; }
-  .pcard .cmt .when { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
-  .pcard .acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .pcard .cmt .when { margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--ink-dim); }
+  .pcard .comment-body { white-space: pre-wrap; }
+  .pcard .acts { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; }
+  .pcard .acts:empty { display: none; }
+  .pcard .acts .hbtn { flex: 1 1 auto; min-width: 0; padding: 3px 7px; border-radius: 8px; }
   .pcard .acts .hbtn.go { color: var(--working); border-color: #1f6a52; }
   .pcard .acts .hbtn.bad { color: var(--blocked); border-color: #6a2224; }
-  .pcard form { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .pcard form { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; margin-top: 7px; }
   .pcard input, .pcard select {
-    font-family: var(--ui); font-size: 11.5px; padding: 2px 5px; min-width: 0;
+    max-width: 100%; min-width: 0; font-family: var(--ui); font-size: 11px; padding: 4px 6px;
     background: var(--panel-low); color: var(--ink);
-    border: 1px solid var(--line); border-radius: 3px;
+    border: 1px solid var(--line); border-radius: 6px;
   }
-  .pcard input:focus, .pcard select:focus { outline: none; border-color: var(--focus); }
-  .pcard input.author { flex: 0 0 84px; }
-  .pcard input.text { flex: 1 1 120px; }
-  .pcard .cnt { font-family: var(--mono); font-size: 10.5px; }
+  .pcard input:focus, .pcard select:focus {
+    outline: none; border-color: var(--focus); box-shadow: 0 0 0 2px rgba(120, 221, 255, .09);
+  }
+  .pcard input.author { flex: 0 1 84px; }
+  .pcard input.text { flex: 1 1 105px; }
+  .pcard form .hbtn { flex: 0 0 auto; padding: 3px 8px; }
+  .pcard .counter-row {
+    display: flex; flex-wrap: wrap; gap: 4px 8px; min-width: 0; padding: 6px 9px 7px 10px;
+    border-top: 1px solid rgba(37, 52, 69, .72); background: rgba(8, 13, 19, .22);
+  }
+  .pcard .counter-item { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+  .pcard .counter-label {
+    color: var(--ink-dim); font-size: 8px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase;
+  }
+  .pcard .cnt { min-width: 0; font-family: var(--mono); font-size: 9.5px; color: var(--ink-dim); }
   .pcard .cnt b { color: var(--blocked); }
+  .pcard .review-counter .cnt b { color: var(--violet); }
   .pcard .status .verdict {
     font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
   }
@@ -318,10 +501,28 @@
   .pcard .status.looping .verdict { color: var(--blocked); }
   .pcard .status .age { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
   .pcard .status.stale {
-    border: 1px solid #6a5122; background: #1a140c; padding: 3px 6px; border-radius: 3px;
+    border-color: #6a5122; background: #1a140c;
   }
   .pcard .stale-mark { color: var(--done); font-family: var(--mono); font-size: 10px; }
-  .pcard a.spec-link { color: var(--focus); font-family: var(--mono); font-size: 11px; }
+  .pcard a.spec-link {
+    display: inline-flex; max-width: 100%; padding: 2px 6px; border: 1px solid #285266; border-radius: 8px;
+    color: var(--focus); font-family: var(--mono); font-size: 9.5px; text-decoration: none;
+  }
+  .pcard a.spec-link:hover { border-color: var(--focus); background: rgba(120, 221, 255, .055); }
+  .pcard .card-footer {
+    padding: 0 8px 8px 9px;
+  }
+
+  @media (max-width: 1180px) {
+    .pboard { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+  @media (max-width: 680px) {
+    .pipeline { padding: 8px 9px 16px; }
+    .pboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 390px) {
+    .pboard { grid-template-columns: minmax(0, 1fr); }
+  }
 
   /* Onboarding replaces the board itself, so the daily controls are out of the
      way until a project is picked. The pipeline is not a view of herdr windows
@@ -926,6 +1127,45 @@ function actBtn(id, action, body, label, cls) {
     + ' data-id="' + esc(id) + '" data-body="' + esc(JSON.stringify(body)) + '">' + esc(label) + '</button>';
 }
 
+// The pipeline will eventually receive the same PR detail the windows board
+// already knows. Keep it in the card's link rail when it arrives, without
+// drawing an empty placeholder on today's data.
+function pipelinePrChip(p) {
+  if (!p || typeof p !== 'object') return '';
+  const ci = p.ci && typeof p.ci === 'object' ? p.ci : {};
+  const label = p.number != null ? '#' + p.number : (p.title || p.url || '');
+  if (!String(label).trim()) return '';
+  const detail = [];
+  if (ci.text) detail.push(ci.text);
+  else if (p.status) detail.push(p.status);
+  if (p.draft) detail.push('draft');
+  if (p.via) detail.push(p.via);
+  const color = ['green', 'red', 'run'].includes(ci.color) ? ' ci-' + ci.color : '';
+  const content = '<span class="chip-key">PR</span><span class="chip-value">' + esc(label)
+    + (detail.length ? ' · ' + detail.map(esc).join(' · ') : '') + '</span>';
+  return p.url
+    ? '<a class="meta-chip pr-chip' + color + '" target="_blank" rel="noreferrer" href="'
+      + esc(p.url) + '" title="' + esc(p.url) + '">' + content + '</a>'
+    : '<span class="meta-chip pr-chip' + color + '">' + content + '</span>';
+}
+
+// reviewRounds is not part of the card contract yet. This display-only reader
+// accepts either one count or a per-spec object once a future response includes
+// it; absent data produces no markup at all.
+function reviewRoundCounters(rounds) {
+  if (rounds == null) return '';
+  const entries = rounds && typeof rounds === 'object' && !Array.isArray(rounds)
+    ? Object.entries(rounds)
+    : [['review', rounds]];
+  return entries.map(([label, count]) => {
+    if (count == null || typeof count === 'object' || String(count).trim() === '') return '';
+    const one = Number(count) === 1;
+    return '<span class="counter-item review-counter"><span class="counter-label">'
+      + esc(label) + '</span><span class="row cnt"><b>' + esc(count) + '</b> '
+      + (one ? 'round' : 'rounds') + '</span></span>';
+  }).join('');
+}
+
 function pcard(c) {
   const cl = calcClocks(c);
   const open = openCards.has(c.id);
@@ -935,19 +1175,45 @@ function pcard(c) {
   // herdr to switch to that window, same as a click on a windows-view card.
   bits.push('<div class="top"><span class="nm"'
     + (c.window ? ' data-window="' + esc(c.window) + '" title="open the ' + esc(c.window) + ' window in herdr"' : '')
-    + '>' + esc(c.title) + '</span>'
-    + clockSpan('clk', cl.total, cl.totalFrom) + '</div>');
-  bits.push('<div class="row mono">' + esc(STAGE_TITLE[c.stage] ?? c.stage)
-    + ' · ' + esc(c.id) + '</div>');
-  bits.push('<div class="row cnt">' + failLine(c) + '</div>');
+    + '>' + esc(c.title) + '</span><span class="fold-mark" aria-hidden="true"></span></div>');
+  bits.push('<div class="row mono scanline"><span class="stage-badge">'
+    + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span><span class="card-id" title="' + esc(c.id) + '">'
+    + esc(c.id) + '</span><span class="total-clock"><span class="clock-label">total</span>'
+    + clockSpan('clk', cl.total, cl.totalFrom) + '</span></div>');
+
+  // An open card never shows the whole spec — a real one is hundreds of lines
+  // and would swallow the board. It shows the summary (or, without one, the
+  // first lines of the spec, marked as the start), and the full text is a
+  // plain-text page behind the "spec (N lines)" link.
+  const specText = (c.spec || '').trim() ? c.spec : '';
+  const specLines = specText ? specText.trim().split(/\r?\n/).length : 0;
+  const summary = [];
+  if ((c.summary || '').trim()) {
+    summary.push('<h3>summary</h3><div class="spec">' + esc(c.summary) + '</div>');
+  } else if (specText) {
+    const lines = specText.trim().split(/\r?\n/);
+    summary.push('<h3>spec — the start</h3><div class="spec">'
+      + esc(lines.slice(0, 10).join('\n')) + (lines.length > 10 ? '\n…' : '') + '</div>');
+  }
+  if (specText) {
+    summary.push('<div class="row spec-jump"><a class="spec-link" target="_blank"'
+      + ' href="/pipeline/card/' + encodeURIComponent(c.id) + '/spec">'
+      + 'spec (' + specLines + ' line' + (specLines === 1 ? '' : 's') + ')</a></div>');
+  }
+  if (summary.length) {
+    bits.push('<div class="open-only"><section class="card-section summary-section">'
+      + summary.join('') + '</section></div>');
+  }
+
+  const signals = [];
   if (usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim()) {
-    bits.push('<div class="row">waiting for a subscription</div>');
+    signals.push('<div class="row callout">waiting for a subscription</div>');
   }
   if (c.stage === 'ticketed' && !(c.links?.ticket || '').trim()) {
-    bits.push('<div class="row">waiting for the ticket link</div>');
+    signals.push('<div class="row callout">waiting for the ticket link</div>');
   }
   const statusHtml = statusLine(c);
-  if (statusHtml) bits.push(statusHtml);
+  if (statusHtml) signals.push(statusHtml);
 
   // Shadow verdict: what the board WOULD set from observable facts. Written
   // nowhere — this line is the whole output while the rule is on probation.
@@ -956,75 +1222,76 @@ function pcard(c) {
     const head = s.would
       ? (s.same ? 'auto agrees' : 'auto would set: ' + (STAGE_TITLE[s.would] ?? s.would))
       : 'auto holds';
-    bits.push('<div class="row shadow' + (s.would && !s.same ? ' differs' : '') + '"'
+    signals.push('<div class="row shadow' + (s.would && !s.same ? ' differs' : '') + '"'
       + ' title="shadow mode: the board writes no transition yet">'
       + esc(head + ' — ' + (s.reasons ?? []).join('; ')) + '</div>');
   }
+  if (signals.length) bits.push('<div class="signals">' + signals.join('') + '</div>');
+
+  // Attachments live in a flexing chip rail: current links and plain metadata
+  // share it with the future PR list, so long values never force a column wide.
+  const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
+    .map(k => {
+      const value = LINK_FIELDS.includes(k) ? c.links[k] : c[k];
+      const content = '<span class="chip-key">' + esc(k) + '</span><span class="chip-value">'
+        + esc(value) + '</span>';
+      return LINK_FIELDS.includes(k)
+        ? '<a class="meta-chip" target="_blank" rel="noreferrer" href="' + esc(value)
+          + '" title="' + esc(value) + '">' + content + '</a>'
+        : '<span class="meta-chip" title="' + esc(value) + '">' + content + '</span>';
+    });
+  if (Array.isArray(c.prs)) attached.push(...c.prs.map(pipelinePrChip).filter(Boolean));
+  if (attached.length) bits.push('<div class="row mono chip-row">' + attached.join('') + '</div>');
 
   // A published review artifact that the founders have not answered yet is the
   // one attachment worth shouting about: before development it IS the card's
   // open question. Once the card moves into development the answers are folded
   // and the bell goes away — the plain link below still shows it.
   if (c.links?.artifact && ['spec', 'grilled', 'ticketed'].includes(c.stage)) {
-    bits.push('<div class="row"><a target="_blank" href="' + esc(c.links.artifact) + '"'
-      + ' style="color:var(--warn,#ffb44a);font-weight:700;text-decoration:underline">'
-      + '&#128276; artifact awaits answers</a></div>');
+    bits.push('<div class="row artifact-row"><a class="artifact-bell" target="_blank" rel="noreferrer" href="'
+      + esc(c.links.artifact) + '"><span class="bell-icon">&#128276;</span>'
+      + '<span class="bell-copy">artifact awaits answers</span></a></div>');
   }
-  const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
-    .map(k => LINK_FIELDS.includes(k)
-      ? k + ' <a target="_blank" href="' + esc(c.links[k]) + '">' + esc(c.links[k]) + '</a>'
-      : esc(k + ' ' + c[k]));
-  if (attached.length) bits.push('<div class="row mono">' + attached.join(' · ') + '</div>');
 
   // ---- everything below is shown only when the card is opened
   const inner = [];
-  // An open card never shows the whole spec — a real one is hundreds of lines
-  // and would swallow the board. It shows the summary (or, without one, the
-  // first lines of the spec, marked as the start), and the full text is a
-  // plain-text page behind the "spec (N lines)" link.
-  const specText = (c.spec || '').trim() ? c.spec : '';
-  const specLines = specText ? specText.trim().split(/\r?\n/).length : 0;
-  if ((c.summary || '').trim()) {
-    inner.push('<h3>summary</h3><div class="spec">' + esc(c.summary) + '</div>');
-  } else if (specText) {
-    const lines = specText.trim().split(/\r?\n/);
-    inner.push('<h3>spec — the start</h3><div class="spec">'
-      + esc(lines.slice(0, 10).join('\n')) + (lines.length > 10 ? '\n…' : '') + '</div>');
-  }
-  if (specText) {
-    inner.push('<div class="row"><a class="spec-link" target="_blank"'
-      + ' href="/pipeline/card/' + encodeURIComponent(c.id) + '/spec">'
-      + 'spec (' + specLines + ' line' + (specLines === 1 ? '' : 's') + ')</a></div>');
-  }
-
   const stages = ROAD.concat(['stuck']).filter(s => cl.byStage[s]);
-  inner.push('<h3>time per stage</h3><div class="row mono">'
-    + stages.map(s => esc(STAGE_TITLE[s]) + ' '
-        + clockSpan('clk', cl.byStage[s].base, cl.byStage[s].from)).join(' · ')
+  inner.push('<section class="card-section time-section"><h3>time per stage</h3><div class="stage-times">'
+    + stages.map(s => '<span class="stage-time"><span class="stage-name" title="'
+        + esc(STAGE_TITLE[s]) + '">' + esc(STAGE_TITLE[s]) + '</span>'
+        + clockSpan('clk', cl.byStage[s].base, cl.byStage[s].from) + '</span>').join('')
+    + '</div>'
     + (OFF_THE_CLOCK.has(c.stage)
-      ? ' <span style="color:var(--done)">— the total clock is stopped here</span>' : '')
-    + '</div>');
+      ? '<span class="off-clock">The total clock is stopped here.</span>' : '')
+    + '</section>');
 
-  inner.push('<h3>comments</h3>');
-  inner.push((c.comments ?? []).length
-    ? (c.comments.map(m => '<div class="cmt"><b>' + esc(m.author) + '</b> '
-        + '<span class="when">' + esc(ago(m.at)) + '</span><br>' + esc(m.text) + '</div>').join(''))
-    : '<div class="row mono">nobody has commented</div>');
-  inner.push('<form data-comment="' + esc(c.id) + '">'
+  const comments = (c.comments ?? []).length
+    ? (c.comments.map(m => '<div class="cmt"><div class="comment-meta"><b>' + esc(m.author) + '</b>'
+        + '<span class="when">' + esc(ago(m.at)) + '</span></div><div class="comment-body">'
+        + esc(m.text) + '</div></div>').join(''))
+    : '<div class="row mono">nobody has commented</div>';
+  inner.push('<section class="card-section comments-section"><h3>comments</h3>' + comments
+    + '<form data-comment="' + esc(c.id) + '">'
     + (signedIn
       ? ''
       : '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">')
     + '<input class="text" name="text" data-k="' + esc(c.id) + '/text" placeholder="comment" maxlength="4000">'
-    + '<button class="hbtn" type="submit">say</button></form>');
+    + '<button class="hbtn" type="submit">say</button></form></section>');
 
-  inner.push('<h3>attach</h3>');
-  inner.push('<form data-attach="' + esc(c.id) + '">'
+  inner.push('<section class="card-section attach-section"><h3>attach</h3><form data-attach="' + esc(c.id) + '">'
     + '<select name="field" data-k="' + esc(c.id) + '/field">'
     + ATTACH_FIELDS.map(f => '<option value="' + f + '">' + f + '</option>').join('')
     + '</select>'
     + '<input class="text" name="value" data-k="' + esc(c.id) + '/value"'
     + ' placeholder="value (empty clears it)" maxlength="400">'
-    + '<button class="hbtn" type="submit">set</button></form>');
+    + '<button class="hbtn" type="submit">set</button></form></section>');
+
+  bits.push('<div class="open-only">' + inner.join('') + '</div>');
+
+  const futureCounters = Object.prototype.hasOwnProperty.call(c, 'reviewRounds')
+    ? reviewRoundCounters(c.reviewRounds) : '';
+  bits.push('<div class="counter-row"><span class="counter-item"><span class="counter-label">failures</span>'
+    + '<span class="row cnt">' + failLine(c) + '</span></span>' + futureCounters + '</div>');
 
   const acts = [];
   if (c.stage === 'stuck') {
@@ -1047,9 +1314,7 @@ function pcard(c) {
       acts.push(actBtn(c.id, 'fail', { kind }, 'fail: ' + kind, 'bad'));
     }
   }
-  inner.push('<div class="acts">' + acts.join('') + '</div>');
-
-  bits.push('<div class="open-only">' + inner.join('') + '</div>');
+  bits.push('<div class="open-only card-footer"><div class="acts">' + acts.join('') + '</div></div>');
 
   return '<div class="pcard st-' + esc(c.stage) + (open ? ' open' : '') + '" data-card="' + esc(c.id) + '">'
     + bits.join('') + '</div>';
