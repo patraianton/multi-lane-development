@@ -457,6 +457,7 @@ path that was open stays open.
 | `probeToken` | empty | unchanged: Bearer token for every `/probe/*` path |
 | `subscriptions` | empty | array of subscription names the owner may assign (Telegram buttons and `POST /pipeline/assign-subscription`) |
 | `telegram` | missing | outbound Telegram notifications; see [`TELEGRAM.md`](./TELEGRAM.md). Missing, or present without `botToken` and without `dryRun: true` → no sends, one log line at start-up |
+| `lavish`, `cloudflare` | missing | the artifact pipeline's blocks — the board ignores them; the publish and deploy CLIs read them. See [`ARTIFACT.md`](./ARTIFACT.md) |
 
 This wave does **not** send email or Telegram. `POST /auth/request` stores a
 one-time token and prints `login link for <email>: <url>` on the server's
