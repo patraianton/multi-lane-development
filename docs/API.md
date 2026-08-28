@@ -307,6 +307,7 @@ the reason in plain words; the store is left exactly as it was.
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window |
+| `delete` | — | removes the card from the pipeline for good, whatever stage it is in; answers `{ "ok": true, "removed": <the card> }`. An unknown id is 404 with the ids currently in the pipeline |
 
 The Watchdog does **not** use `update`. It writes Status on a path of its own:
 
