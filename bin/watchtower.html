@@ -811,7 +811,7 @@ let pipeTimer = null;
 const openCards = new Set();
 // Whether this board runs the subscription/Telegram flow. Only then does a
 // grilled card wait for a subscription (and lose its plain forward button);
-// a board without the feature keeps its old grilled -> Development button.
+// a board without the feature keeps its plain grilled -> Ticketed button.
 // The server decides this in /pipeline/data; default off so a board that never
 // sends looks exactly as it did before this wave.
 let usesSubscriptions = false;
@@ -1028,8 +1028,9 @@ function pcard(c) {
     acts.push(actBtn(c.id, 'move', { to: NEXT_STAGE[c.stage] },
       '→ ' + STAGE_TITLE[NEXT_STAGE[c.stage]], 'go'));
   }
-  // Failure buttons only where something is actually run: a card in spec or
-  // grilled has nothing to fail yet, and the server refuses it anyway.
+  // Failure buttons only where something is actually run: a card in spec,
+  // grilled or ticketed has nothing to fail yet, and the server refuses it
+  // anyway.
   if (CAN_FAIL.indexOf(c.stage) >= 0) {
     for (const kind of ['local', 'ci', 'acceptance']) {
       acts.push(actBtn(c.id, 'fail', { kind }, 'fail: ' + kind, 'bad'));
