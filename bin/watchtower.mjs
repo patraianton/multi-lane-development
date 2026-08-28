@@ -22,6 +22,7 @@ import { readFile, mkdir, stat, readdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
+import { normStreamWatch } from './stream-watch.mjs';
 import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
@@ -363,19 +364,24 @@ function projectList(panes, wsById) {
 
 // The stream-watch file is the only place that records "this window drives these
 // lanes and writes branches with these prefixes". The file is maintained
-// elsewhere, the board only reads it.
+// elsewhere, the board only reads it — through normStreamWatch, which rebuilds
+// every record so a hand-edited file can lose a record (reported under
+// problems) but can never take the whole board collection down.
 const streamsSource = makeSource('stream-watch', 30000, async () => {
-  if (!config.streamWatch) return { raw: null, byPane: new Map(), byId: new Map(), ctoPane: null, repo: config.repo };
+  if (!config.streamWatch) {
+    return { raw: null, byPane: new Map(), byId: new Map(), ctoPane: null, repo: config.repo, problems: [] };
+  }
   const raw = await readJsonSoft(config.streamWatch, null);
   if (!raw) throw new Error(`cannot read ${config.streamWatch}`);
-  const byPane = new Map();
-  const byId = new Map();
-  for (const s of raw.streams ?? []) {
-    if (s.disabled) continue;
-    if (s.pane) byPane.set(s.pane, s);
-    if (s.id) byId.set(String(s.id).toLowerCase(), s);
-  }
-  return { raw, byPane, byId, ctoPane: raw.cto_pane ?? null, repo: raw.repo ?? config.repo };
+  const norm = normStreamWatch(raw);
+  return {
+    raw,
+    byPane: norm.byPane,
+    byId: norm.byId,
+    ctoPane: norm.ctoPane,
+    repo: norm.repo ?? config.repo,
+    problems: norm.problems,
+  };
 });
 
 // PROGRAM-STATE.md of each program: that is where the umbrella issue number is.
@@ -1627,6 +1633,9 @@ async function collect() {
     repo: (streams?.repo ?? config.repo) || null,
     prsOpen: prs.length,
     umbrellas: [...umbrellas.values()],
+    // Records the stream-watch file lost on the way in (skipped or trimmed by
+    // normStreamWatch). The source itself is ok — only these records are not.
+    streamProblems: streams?.problems ?? [],
     sources,
     probeStale: stale,
     hooksNotice: await hooksNotice(),
@@ -1739,6 +1748,9 @@ function buildAgentBoard(payload, full) {
       .map(s => ({ source: s.name, error: clipText(s.error, full) || 'no answer' })),
     ...(payload.hosts ?? []).filter(h => !h.ok)
       .map(h => ({ source: `lane host ${h.host}`, error: clipText(h.error, full) || 'no answer' })),
+    // The stream-watch file was read, but these records were skipped or trimmed.
+    ...(payload.streamProblems ?? [])
+      .map(text => ({ source: 'stream-watch', error: clipText(text, full) })),
   ];
   if (payload.slotsAlarm) {
     problems.push({ source: 'ci-slots', error: payload.slotsAlarm });
