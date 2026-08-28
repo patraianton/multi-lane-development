@@ -27,8 +27,8 @@ will detonate in this spec) · `slicing` (unit breakdown). Each finding carries 
 
 The five lenses:
 
-1. **Complexity and slicing** — does the work cut into units of ≤600 changed lines touching
-   one protected area each? Where is hidden coupling? What looks like one unit on paper but
+1. **Complexity and slicing** — does the work cut into units of ≤600 added lines
+   (generated files excluded) touching one protected area each? Where is hidden coupling? What looks like one unit on paper but
    is three in the code? Produce a concrete unit breakdown with order and dependencies.
 2. **Acceptance subjects** — for every acceptance criterion: is it proven by machine or by
    reading production? Where is the wording ambiguous enough for a disputable NO-GO? Which
