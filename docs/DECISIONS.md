@@ -20,13 +20,16 @@ the record of when and why.
 
 ## 2026-08-28 — from the five-lens ticket panel and the owner
 
-00. **Ultra production mode (owner, 2026-08-28 evening).** From sprint wave 2 on, a unit is
-   built by a multi-agent workflow (planner -> parallel implementers -> adversarial refuters
-   before push), driven by the sprint orchestrator; solo single-agent lanes are the test
-   stand (verification commands, red probe, local gate on the pushed branch), not the author.
-   Every unit is tagged mode=solo-codex or mode=ultra in the sprint log with wall-clock and
-   review-round counts — the owner compares the modes on speed AND quality before making
-   ultra the default everywhere.
+00. **Ultra production mode (owner, 2026-08-28 evening; corrected after research).** Codex
+   has NATIVE multi-agent ultra: `-c model_reasoning_effort=ultra` on gpt-5.6-sol means
+   "maximum reasoning with automatic task delegation" (built-in sub-agents, multi_agent v2),
+   while our previous `xhigh` explicitly prohibited sub-agents in the model prompt. From
+   wave 2 on every lane run launches with `model_reasoning_effort=ultra` and
+   `agents.max_concurrent_threads_per_session=5`. Guards: never pass `--ephemeral` (breaks
+   spawning); sub-agents share ONE working copy, so code-writing task files must partition
+   files between sub-agents explicitly; token burn scales with agent count (accepted).
+   Every unit is tagged mode=solo-codex (wave 1) or mode=ultra-codex (wave 2+) in the sprint
+   log with wall-clock and review-round counts — the owner compares speed AND quality.
 
 0. **One sprint in development at a time (owner insight, 2026-08-28).** A single sprint's
    independent tickets already saturate the lane and CI capacity. Parallelism lives INSIDE
