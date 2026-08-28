@@ -304,7 +304,7 @@ gets 404 and the ids currently in the pipeline.
 The spec text itself is **not** in the default answer — a real spec is hundreds
 of lines. Instead the answer carries:
 
-- `summary` — the card's short retelling (up to 1200 characters), `-` when none
+- `summary` — the card's short retelling (up to 200 characters), `-` when none
   is written;
 - `spec-lines` — how many lines the spec is (`0` — the card has no spec);
 - a `help` line (`specHint` in JSON) saying where the text is: `?spec=1` on this
@@ -332,13 +332,13 @@ the reason in plain words; the store is left exactly as it was.
 
 | action | body | what it does |
 | --- | --- | --- |
-| `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec (clipped to 1200 characters) |
+| `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec — at most 200 characters, longer is 400 naming the limit and the actual length |
 | `move` | `to` | one step along the road; anything else is 400 |
 | `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
-| `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. The spec is not touched |
+| `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. At most 200 characters — longer is 400 naming the limit and the actual length, never a silent clip. The spec is not touched |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window |
 | `delete` | — | removes the card from the pipeline for good, whatever stage it is in; answers `{ "ok": true, "removed": <the card> }`. An unknown id is 404 with the ids currently in the pipeline |
 

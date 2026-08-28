@@ -90,7 +90,7 @@ const STALE_MULTIPLIER = 2;
 const LIMIT = {
   title: 200,
   spec: 20000,
-  summary: 1200,     // the short retelling a card shows instead of its spec
+  summary: 200,      // the short retelling a card shows instead of its spec
   author: 100,
   comment: 4000,
   link: 400,
@@ -134,6 +134,18 @@ export function setPipelineBoard(next = {}) {
 
 function str(v, limit) {
   return String(v ?? '').slice(0, limit);
+}
+
+// A summary arriving over the API. Unlike the fields above it is never clipped:
+// the author would keep seeing a different text than they wrote. Over the limit
+// is a 400 naming both numbers, so they know how much to cut without counting.
+function checkedSummary(v) {
+  const summary = String(v ?? '').trim();
+  if (summary.length > LIMIT.summary) {
+    throw new BadRequest(`the summary is ${summary.length} characters long`
+      + ` — the limit is ${LIMIT.summary}`);
+  }
+  return summary;
 }
 
 // Reading a card from disk. Every field is rebuilt from scratch: a file edited
@@ -545,7 +557,7 @@ async function createCard(body) {
     id: newId(),
     title,
     spec,
-    summary: str(body.summary, LIMIT.summary).trim(),
+    summary: checkedSummary(body.summary),
     stage: 'spec',
     createdAt: now,
     stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
@@ -653,7 +665,7 @@ async function summaryCard(body) {
   if (typeof body.summary !== 'string') {
     throw new BadRequest('a summary text is required (send summary: "" to clear it)');
   }
-  const summary = str(body.summary, LIMIT.summary).trim();
+  const summary = checkedSummary(body.summary);
   return editCard(body.id, card => { card.summary = summary; });
 }
 
