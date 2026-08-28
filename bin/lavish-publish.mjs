@@ -70,8 +70,8 @@ async function api(base, token, method, pathName, body, dryRun) {
 
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0];
-if (!command || !['publish', 'poll', 'reply', 'end'].includes(command)) {
-  fail('usage: lavish-publish.mjs publish|poll|reply|end … (see docs/ARTIFACT.md)');
+if (!command || !['publish', 'poll', 'reply', 'end', 'state'].includes(command)) {
+  fail('usage: lavish-publish.mjs publish|poll|reply|end|state … (see docs/ARTIFACT.md)');
 }
 
 const config = await readBoardConfig();
@@ -82,6 +82,27 @@ if (!base || !token) {
   fail('both --base and --token are needed when the board config has no lavish block');
 }
 const dryRun = args['dry-run'] === true;
+
+// One POST to the board (attaching the artifact link, marking it answered).
+async function postBoard(pathname, body) {
+  const boardBase = String(args.board ?? config.boardUrl).replace(/\/+$/, '');
+  const boardToken = String(args['board-token'] ?? config.boardApiToken);
+  if (dryRun) {
+    console.log(`dry-run: POST ${boardBase}${pathname} body ${JSON.stringify(body)}`);
+    return null;
+  }
+  const res = await fetch(`${boardBase}${pathname}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(boardToken ? { authorization: `Bearer ${boardToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const answer = await res.json().catch(() => ({}));
+  if (!res.ok) fail(`the board refused ${pathname} (${res.status}): ${answer.error ?? ''}`);
+  return answer;
+}
 
 if (command === 'publish') {
   const file = args._[1];
@@ -97,22 +118,8 @@ if (command === 'publish') {
   if (published) console.log(`key: ${published.key} (version ${published.version})`);
 
   if (args.card) {
-    const boardBase = String(args.board ?? config.boardUrl).replace(/\/+$/, '');
-    const boardToken = String(args['board-token'] ?? config.boardApiToken);
-    const update = { id: args.card, links: { artifact: url } };
-    if (dryRun) {
-      console.log(`dry-run: POST ${boardBase}/pipeline/card/update body ${JSON.stringify(update)}`);
-    } else {
-      const res = await fetch(`${boardBase}/pipeline/card/update`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(boardToken ? { authorization: `Bearer ${boardToken}` } : {}),
-        },
-        body: JSON.stringify(update),
-      });
-      const answer = await res.json().catch(() => ({}));
-      if (!res.ok) fail(`the board refused the card update (${res.status}): ${answer.error ?? ''}`);
+    const answer = await postBoard('/pipeline/card/update', { id: args.card, links: { artifact: url } });
+    if (answer) {
       console.log(`card ${args.card}: links.artifact set${answer.card?.notified?.artifact ? ', founders notified' : ''}`);
     }
   }
@@ -127,6 +134,15 @@ if (command === 'poll') {
     // --watch keeps quiet through "waiting" and stops on the first real answer.
     const done = !args.watch || answer.status !== 'waiting';
     if (done) console.log(JSON.stringify(answer, null, 2));
+    // Delivered answers are the fact the board wants: with --card the same
+    // poll marks the card "artifact answered" (the board's own sweep would
+    // see it within a minute anyway; this makes it immediate).
+    if (done && args.card && answer.status === 'feedback'
+        && Array.isArray(answer.prompts) && answer.prompts.length) {
+      const marked = await postBoard('/pipeline/card/artifact-answered',
+        { id: args.card, answers: answer.prompts.length, by: 'lavish-publish poll' });
+      if (marked) console.log(`card ${args.card}: artifact marked answered (${answer.prompts.length} answer(s))`);
+    }
     if (done) break;
     await new Promise(r => setTimeout(r, intervalMs));
   }
@@ -138,6 +154,12 @@ if (command === 'reply') {
   if (!text) fail('reply needs --text');
   const answer = await api(base, token, 'POST', `/api/${key}/agent-reply`, { text }, dryRun);
   if (answer) console.log('reply sent');
+}
+
+if (command === 'state') {
+  const key = sessionKeyOf(args._[1], base);
+  const answer = await api(base, token, 'GET', `/api/state?key=${key}`, undefined, dryRun);
+  if (answer) console.log(JSON.stringify(answer, null, 2));
 }
 
 if (command === 'end') {

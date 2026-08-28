@@ -14,7 +14,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // directory. `config` becomes state/autopase-board.json — pass a function to
 // receive the directory path (for settings that must point into it, like
 // streamWatch). Extra `files` land in the same directory.
-export async function startBoard({ port, config = {}, files = {} }) {
+export async function startBoard({ port, config = {}, files = {}, env = {} }) {
   const dir = await mkdtemp(path.join(tmpdir(), 'watchtower-test-'));
   for (const [name, content] of Object.entries(files)) {
     await writeFile(path.join(dir, name),
@@ -22,8 +22,11 @@ export async function startBoard({ port, config = {}, files = {} }) {
   }
   const cfg = typeof config === 'function' ? config(dir) : config;
   await writeFile(path.join(dir, 'autopase-board.json'), JSON.stringify(cfg, null, 2));
+  // `env` adds process environment for the board (a function receives the
+  // state directory, for variables that must point into it).
+  const extraEnv = typeof env === 'function' ? env(dir) : env;
   const child = spawn(process.execPath, [path.join(ROOT, 'bin', 'watchtower.mjs')], {
-    env: { ...process.env, WATCHTOWER_PORT: String(port), WATCHTOWER_STATE_DIR: dir },
+    env: { ...process.env, ...extraEnv, WATCHTOWER_PORT: String(port), WATCHTOWER_STATE_DIR: dir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

@@ -203,6 +203,11 @@ function normCard(raw) {
     const at = isoOr(rawNotified[kind], null);
     if (at) notified[kind] = at;
   }
+  // The founders' answers on the review artifact: when they were first seen,
+  // how many, and who saw them. Absent until an answer exists.
+  const rawAnswered = src.artifactAnswered && typeof src.artifactAnswered === 'object'
+    && !Array.isArray(src.artifactAnswered) ? src.artifactAnswered : null;
+  const answeredAt = rawAnswered ? isoOr(rawAnswered.at, null) : null;
   const card = {
     id,
     title,
@@ -230,6 +235,13 @@ function normCard(raw) {
   // Omit an empty notified map so cards that never sent look like they did
   // before this wave (byte-identical when Telegram is off).
   if (Object.keys(notified).length) card.notified = notified;
+  if (answeredAt) {
+    card.artifactAnswered = {
+      at: answeredAt,
+      answers: Math.max(1, int(rawAnswered.answers)),
+      by: str(rawAnswered.by, LIMIT.author).trim(),
+    };
+  }
   return card;
 }
 
@@ -605,6 +617,17 @@ async function deleteCard(body) {
   });
 }
 
+// A linked review artifact is the card's open question: nothing enters
+// ticketed while it is unanswered. The board marks the answers itself (the
+// artifact-answers sweep reads the desktop Lavish state or the Cloudflare
+// instance), or an agent posts artifact-answered when they came another way.
+function requireArtifactAnswered(card, to) {
+  if (to !== 'ticketed' || !card.links.artifact || card.artifactAnswered) return;
+  throw new BadRequest('the review artifact has not been answered yet — a card enters "ticketed"'
+    + ' only after the founders answer on the artifact (the board marks that itself; or POST'
+    + ' /pipeline/card/artifact-answered when the answers came another way)');
+}
+
 async function moveCard(body) {
   const to = String(body.to ?? '');
   if (!STAGE_KEYS.has(to)) {
@@ -624,6 +647,7 @@ async function moveCard(body) {
       throw new BadRequest('a card leaves "ticketed" only with a ticket link'
         + ' — set links.ticket (POST /pipeline/card/update) to the GitHub ticket first');
     }
+    requireArtifactAnswered(card, to);
     enterStage(card, to, new Date().toISOString());
     // A stage passed is the run that did not fail: the streak starts over.
     card.consecutiveFails = 0;
@@ -721,9 +745,13 @@ async function updateCard(body) {
 
   return editCard(body.id, card => {
     if (body.links) {
+      const previousArtifact = card.links.artifact;
       for (const key of LINK_KEYS) {
         if (body.links[key] !== undefined) card.links[key] = str(body.links[key], LIMIT.link).trim();
       }
+      // A new review page is a new round of questions: the answered mark
+      // belonged to the old one.
+      if (card.links.artifact && card.links.artifact !== previousArtifact) delete card.artifactAnswered;
     }
     for (const key of ['lane', 'subscription', 'slot', 'window']) {
       if (body[key] !== undefined) card[key] = str(body[key], LIMIT.slotish).trim();
@@ -780,6 +808,7 @@ async function assignSubscription(body) {
     if (card.subscription) {
       throw new BadRequest(`a subscription is already assigned ("${card.subscription}")`);
     }
+    requireArtifactAnswered(card, 'ticketed');
     const now = new Date().toISOString();
     card.subscription = subscription;
     enterStage(card, 'ticketed', now);
@@ -790,6 +819,59 @@ async function assignSubscription(body) {
       at: now,
     });
   });
+}
+
+// The founders answered on the review artifact. Idempotent: the first mark
+// keeps its time and writes one comment; a later mark only raises the count.
+async function artifactAnsweredCard(body) {
+  const answers = Math.max(1, int(body.answers));
+  const at = isoOr(body.at, new Date().toISOString());
+  const by = str(body.by, LIMIT.author).trim() || 'board';
+  return editCard(body.id, card => {
+    if (!card.links.artifact) {
+      throw new BadRequest('the card has no artifact link — set links.artifact (POST /pipeline/card/update) first');
+    }
+    if (card.artifactAnswered) {
+      if (answers > card.artifactAnswered.answers) card.artifactAnswered.answers = answers;
+      return;
+    }
+    card.artifactAnswered = { at, answers, by };
+    card.comments.push({
+      author: by,
+      text: `review artifact answered — ${answers} answer${answers === 1 ? '' : 's'} seen (${card.links.artifact})`,
+      at: new Date().toISOString(),
+    });
+  });
+}
+
+// The stages where a linked artifact is still the card's open question.
+const PAPER_STAGES = new Set(['spec', 'grilled', 'ticketed']);
+
+function artifactCell(card) {
+  if (!card.links.artifact) return '-';
+  if (!card.artifactAnswered) return PAPER_STAGES.has(card.stage) ? 'awaiting answers' : 'no answers recorded';
+  const a = card.artifactAnswered;
+  return `answered ${a.at} (${a.answers} answer${a.answers === 1 ? '' : 's'}, by ${a.by || 'board'})`;
+}
+
+// The artifact-answers sweep (watchtower.mjs runs it on a timer): for every
+// card whose linked artifact is still unanswered on a paper stage, ask the
+// probe how many founder answers exist and mark the card when there are any.
+// The probe reads without draining anything — the CTO's poll still receives
+// every answer. Returns what was checked and what was marked.
+export async function sweepArtifactAnswers(probe) {
+  const st = await load();
+  const due = st.cards.filter(c => c.links.artifact && !c.artifactAnswered && PAPER_STAGES.has(c.stage));
+  let marked = 0;
+  for (const card of due) {
+    let seen;
+    try { seen = await probe(card.links.artifact); }
+    catch (e) { throw new Error(`artifact of card ${card.id}: ${String(e?.message || e)}`); }
+    if (!seen || !(seen.answers > 0)) continue;
+    await artifactAnsweredCard({ id: card.id, answers: seen.answers, at: seen.lastAt, by: seen.source || 'board' });
+    marked += 1;
+  }
+  return { checked: due.length, marked };
 }
 
 // --------------------------------------------------------------- page view
@@ -917,6 +999,7 @@ function agentRow(card, now, meta) {
     status: present
       ? { text: card.status.text || '', verdict: card.status.verdict || '', at: card.status.at }
       : null,
+    artifactAnswered: card.artifactAnswered ?? null,
     slot: card.slot || '',
     subscription: card.subscription || '',
     window: card.window || '',
@@ -1034,6 +1117,7 @@ async function buildAgentCard(card, withSpec = false) {
     slot: card.slot || '-',
     window: card.window || '-',
     links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
+    artifact: artifactCell(card),
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
         + `${stale ? ', stale' : ''})`
@@ -1071,6 +1155,7 @@ function renderToonCard(c) {
     `slot: ${c.slot}`,
     `window: ${c.window}`,
     `links: ${c.links}`,
+    `artifact: ${c.artifact}`,
     `status: ${c.status}`,
     // Folded like the spec below: TOON is line-based, and the API accepts a
     // summary with newlines in it.
@@ -1099,6 +1184,7 @@ const ACTIONS = {
   comment: commentCard,
   summary: summaryCard,
   update: updateCard,
+  'artifact-answered': artifactAnsweredCard,
 };
 
 // Returns true when the request belonged to the pipeline and has been answered.

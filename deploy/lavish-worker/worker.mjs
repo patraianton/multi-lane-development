@@ -300,6 +300,26 @@ export function createWorker(assets) {
       return json(200, answer);
     }
 
+    // GET /api/state?key=… — how many founder answers the session has ever
+    // received and whether it is still open, without draining anything.
+    if (pathname === '/api/state' && method === 'GET') {
+      if (!isAuthorized(request, env)) return json(401, { error: 'a Bearer token is required' });
+      const key = String(url.searchParams.get('key') ?? '').trim();
+      if (!KEY_RE.test(key)) return json(400, { error: 'key must be 16 lowercase hex characters' });
+      if (!(await kv.get(`meta:${key}`, 'json'))) return json(200, { status: 'missing' });
+      const [ans, ended, pending] = await Promise.all([
+        kv.get(`ans:${key}`, 'json'),
+        kv.get(`end:${key}`, 'json'),
+        listAll(kv, `fb:${key}:`),
+      ]);
+      return json(200, {
+        status: ended ? 'ended' : 'open',
+        answers: Number(ans?.answers) || 0,
+        lastAnswerAt: typeof ans?.lastAnswerAt === 'string' ? ans.lastAnswerAt : null,
+        pending: pending.length,
+      });
+    }
+
     if (pathname === '/api/end' && method === 'POST') {
       if (!isAuthorized(request, env)) return json(401, { error: 'a Bearer token is required' });
       let body;
@@ -433,6 +453,13 @@ export function createWorker(assets) {
               await kv.put(stampKey(`chat:${key}:`), JSON.stringify({ role: 'user', text: p.text, at }));
             }
           }
+          // A running count that a poll never drains: the board reads it to
+          // mark the card "artifact answered" without touching the queue.
+          const prior = await kv.get(`ans:${key}`, 'json');
+          await kv.put(`ans:${key}`, JSON.stringify({
+            answers: (Number(prior?.answers) || 0) + prompts.length,
+            lastAnswerAt: at,
+          }));
         }
         if (endSession) {
           await kv.put(`end:${key}`, JSON.stringify({ ended_by: 'user', at }));

@@ -75,6 +75,16 @@ folded into the spec does the card move to `ticketed`, where the CTO writes the 
 tickets (one per work unit); the board
 refuses `ticketed → development` until `links.ticket` is set.
 
+The board tracks the answers itself. Every 30 s it reads where the artifact's answers
+live — the desktop Lavish state file (`~/.lavish-axi/state.json`; any link naming that
+session key counts, tunnels included) or the Cloudflare instance (`GET /api/state`) — and
+the moment founder answers exist it marks the card `artifact answered` (time, count, who
+saw it, one comment), without draining the CTO's poll. The bell on the card turns into
+that mark. `grilled → ticketed` (and the subscription auto-advance) is refused while a
+linked artifact is unmarked; answers that arrived another way (Telegram, a call) are
+recorded with `POST /pipeline/card/artifact-answered`, and a different artifact link
+starts a new round with the mark cleared.
+
 ## 2a. The owner zone — the single definition
 
 This is the one place the owner zone is defined; every other doc references it
