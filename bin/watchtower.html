@@ -242,6 +242,16 @@
   body:not(.view-pipeline) #pipe-counts,
   body:not(.view-pipeline) #pipe-add-toggle { display: none; }
 
+  /* Sprints that have split into unit cards live here, above the columns:
+     a sprint does not move on its own — its stage follows its units — and
+     the columns are for the work. */
+  .sprint-band { display: none; margin: 0 0 12px; }
+  .sprint-band.on { display: block; }
+  .sprint-band > h2 {
+    margin: 0 0 6px; font: 700 10px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-dim);
+  }
+  .sprint-band .band-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; align-items: start; }
+  .sprint-band .pcard { margin: 0; }
   .stuck-zone {
     display: none; margin-bottom: 13px; padding: 9px 10px 10px;
     border: 1px solid #6a2224; border-radius: 9px;
@@ -635,6 +645,7 @@
 <div class="pipeline" id="pipeline">
   <!-- Stuck is not a column of the road: it is a card that failed three times in
        a row and now waits for a human. It sits above everything, in red. -->
+  <div class="sprint-band" id="sprint-band"></div>
   <div class="stuck-zone" id="stuck-zone"></div>
   <div class="pboard" id="pboard"></div>
 </div>
@@ -1563,6 +1574,16 @@ function renderPipeline(d) {
     + cards.filter(c => c.stage === 'accepted').length + '</b> accepted'
     + (staleN ? ' · <b>' + staleN + '</b> stale Status' : '');
 
+  // A sprint that has split into unit cards is shown in the band above the
+  // columns, not in a column.
+  const bandIds = new Set(cards.filter(c => c.sprint && cards.some(u => u.parent === c.id)).map(c => c.id));
+  const band = $('sprint-band');
+  band.classList.toggle('on', bandIds.size > 0);
+  band.innerHTML = bandIds.size
+    ? '<h2>Sprint' + (bandIds.size === 1 ? '' : 's') + ' — ' + bandIds.size + ' in flight · stage follows the unit cards below</h2>'
+      + '<div class="band-row">' + cards.filter(c => bandIds.has(c.id)).map(pcard).join('') + '</div>'
+    : '';
+
   const zone = $('stuck-zone');
   zone.classList.toggle('on', stuck.length > 0);
   zone.innerHTML = stuck.length
@@ -1572,7 +1593,7 @@ function renderPipeline(d) {
     : '';
 
   $('pboard').innerHTML = ROAD.map(key => {
-    const list = cards.filter(c => c.stage === key);
+    const list = cards.filter(c => c.stage === key && !bandIds.has(c.id));
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
       + ' <span>' + list.length + '</span></h2>'
       + (list.length ? list.map(pcard).join('') : '<div class="empty">empty</div>')

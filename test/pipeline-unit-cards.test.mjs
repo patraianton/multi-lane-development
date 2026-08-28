@@ -86,6 +86,8 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U4.unitFacts.state, 'queued');
     // The clock of a spawned card starts at the stage the facts put it in.
     assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'ci_pr']);
+    // The sprint's own stage followed its units: work has started.
+    assert.equal(data.cards.find(c => c.id === id).stage, 'development');
 
     // A second sweep changes nothing and spawns nothing twice.
     await settle(700);
@@ -118,6 +120,17 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     const u4 = held.cards.find(c => c.id === by.U4.id);
     assert.equal(u4.stage, 'ticketed', 'stale sources: no move');
     assert.equal(u4.links.pr, 'https://github.com/acme/web/pull/1550');
+
+    // Every unit merged (or closed): the sprint reaches acceptance by itself —
+    // the owner's cue — and no further.
+    const done = {
+      ...FACTS, staleSources: [], prs: [],
+      mergedPrs: FACTS.unitIssues[1515].map((u, i) => ({ number: 1600 + i, url: `https://github.com/acme/web/pull/${1600 + i}`, branch: u.branch, mergedAt: '2026-08-29T01:00:00Z' })),
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(done));
+    const finished = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'acceptance');
+    assert.equal(finished.cards.find(c => c.id === id).stage, 'acceptance');
+    assert.ok(finished.cards.filter(c => c.parent === id).every(u => u.stage === 'accepted'));
 
     // Deleting the sprint takes its unit cards with it.
     const del = await postJson(board.base, '/pipeline/card/delete', { id });

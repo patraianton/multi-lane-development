@@ -13,6 +13,10 @@ the record of when and why.
    open → `ci_pr`, PR merged → `accepted`. The sprint card stays the roll-up (counts,
    lanes table) and the thing people move; the units are the work in the columns.
    Nobody announces "U5 is on lane-b" — the lane's branch or `TASK-<ticket>` file says so.
+   **Placement (owner, 23:50):** a split sprint does not sit in a column — it would never
+   move and only take space. It lives in the sprint band above the columns; its stage is
+   derived from the units (development while any is unfinished, acceptance when all are
+   merged), and the columns hold the unit cards.
 
 ## 2026-08-28 — from the five-lens ticket panel and the owner
 
