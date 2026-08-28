@@ -23,7 +23,8 @@ answering the bot; Stuck and Acceptance pings.
 
 ## Wave E — CTO loop
 Hook queue on the board, probe delivery into the CTO window, grill flow (Lavish artifact,
-answer polling), one full GitHub ticket via the CTO's GitHub App, lane assignment.
+answer polling), the GitHub ticket set via the CTO's GitHub App (ADR-0004 as amended:
+umbrella + one ticket per grill unit, [TICKETING.md](./TICKETING.md)), lane assignment.
 
 ## Wave F — Execution stages
 Development launch (branch + Opus orchestrator on the assigned lane), Local check (Codex on
