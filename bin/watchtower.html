@@ -248,7 +248,7 @@
   .stuck-zone .lane-row { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 
   .pboard { display: grid; gap: 8px; align-items: start;
-            grid-template-columns: repeat(7, minmax(0, 1fr)); }
+            grid-template-columns: repeat(8, minmax(0, 1fr)); }
   .pcol { min-width: 0; overflow-wrap: anywhere; }
   .pcol > h2 {
     margin: 0 0 6px; padding: 4px 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
@@ -780,7 +780,8 @@ $('add-form').onsubmit = async (ev) => {
 // draw, so a wrong click is impossible rather than merely refused.
 const NEXT_STAGE = {
   spec: 'grilled',
-  grilled: 'development',
+  grilled: 'ticketed',
+  ticketed: 'development',
   development: 'local_check',
   local_check: 'ci_pr',
   ci_pr: 'acceptance',
@@ -793,11 +794,11 @@ const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'acceptance'];
 // neither adds to the card's delivery clock.
 const OFF_THE_CLOCK = new Set(['acceptance', 'accepted']);
 const STAGE_TITLE = {
-  spec: 'Spec', grilled: 'Grilled', development: 'Development',
+  spec: 'Spec', grilled: 'Grilled', ticketed: 'Ticketed', development: 'Development',
   local_check: 'Local check', ci_pr: 'CI/PR', acceptance: 'Acceptance',
   accepted: 'Accepted', stuck: 'Stuck',
 };
-const ROAD = ['spec', 'grilled', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
+const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
@@ -942,6 +943,9 @@ function pcard(c) {
   if (usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim()) {
     bits.push('<div class="row">waiting for a subscription</div>');
   }
+  if (c.stage === 'ticketed' && !(c.links?.ticket || '').trim()) {
+    bits.push('<div class="row">waiting for the ticket link</div>');
+  }
   const statusHtml = statusLine(c);
   if (statusHtml) bits.push(statusHtml);
 
@@ -1017,7 +1021,10 @@ function pcard(c) {
   } else if (c.stage === 'acceptance') {
     acts.push(actBtn(c.id, 'accept', {}, 'accept', 'go'));
   } else if (NEXT_STAGE[c.stage]
-      && !(usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim())) {
+      && !(usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim())
+      // The server refuses ticketed → development without a ticket link, so the
+      // button is not drawn until the link is attached.
+      && !(c.stage === 'ticketed' && !(c.links?.ticket || '').trim())) {
     acts.push(actBtn(c.id, 'move', { to: NEXT_STAGE[c.stage] },
       '→ ' + STAGE_TITLE[NEXT_STAGE[c.stage]], 'go'));
   }

@@ -17,12 +17,13 @@ import {
 
 // ------------------------------------------------------------------- stages
 
-// The stage a card sits in. Six working stages, one terminal stage and Stuck,
+// The stage a card sits in. Seven working stages, one terminal stage and Stuck,
 // which is not a step of the road but where a card lands after its third
 // consecutive failure and waits for a human.
 export const STAGES = [
   { key: 'spec', title: 'Spec' },
   { key: 'grilled', title: 'Grilled' },
+  { key: 'ticketed', title: 'Ticketed' },
   { key: 'development', title: 'Development' },
   { key: 'local_check', title: 'Local check' },
   { key: 'ci_pr', title: 'CI/PR' },
@@ -41,7 +42,8 @@ const STAGE_KEYS = new Set(STAGES.map(s => s.key));
 // third one in a row) and a human pulling a card out of Stuck.
 const MOVES = {
   spec: ['grilled'],
-  grilled: ['development'],
+  grilled: ['ticketed'],
+  ticketed: ['development'],
   development: ['local_check'],
   local_check: ['ci_pr'],
   ci_pr: ['acceptance'],
@@ -70,9 +72,10 @@ const FAIL_KINDS = {
 const STUCK_AFTER = 3;
 
 // Where a failure can happen at all: the stages where work is actually being
-// checked. A card in Spec or Grilled has not been built yet, so "it failed" there
-// is not a late report, it is a wrong request — and answering it would walk the
-// card forward into Development around the grill, which no move is allowed to do.
+// checked. A card in Spec, Grilled or Ticketed has not been built yet, so "it
+// failed" there is not a late report, it is a wrong request — and answering it
+// would walk the card forward into Development around the grill and the
+// tickets, which no move is allowed to do.
 const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
 
 // What the watchdog may write into a card's status line (Wave G writes it; the
@@ -598,6 +601,12 @@ async function moveCard(body) {
         : `a card in "${card.stage}" cannot be moved by hand`
           + (card.stage === 'stuck' ? ' — use /pipeline/card/unstuck' : ''));
     }
+    // Development starts only from written tickets: the CTO's work in Ticketed
+    // is the GitHub tickets, and links.ticket is the proof it happened.
+    if (card.stage === 'ticketed' && to === 'development' && !card.links.ticket) {
+      throw new BadRequest('a card leaves "ticketed" only with a ticket link'
+        + ' — set links.ticket (POST /pipeline/card/update) to the GitHub ticket first');
+    }
     enterStage(card, to, new Date().toISOString());
     // A stage passed is the run that did not fail: the streak starts over.
     card.consecutiveFails = 0;
@@ -733,7 +742,8 @@ async function writeStatus(id, body) {
 
 // Owner (or the Telegram bot on their behalf) picks who pays for the run.
 // Only from Grilled, only while none is set; the card then walks into
-// Development in the same write.
+// Ticketed in the same write, where the CTO writes the GitHub tickets before
+// development starts.
 async function assignSubscription(body) {
   const subscription = str(body.subscription, LIMIT.slotish).trim();
   if (!subscription) throw new BadRequest('a subscription is required');
@@ -755,7 +765,7 @@ async function assignSubscription(body) {
     }
     const now = new Date().toISOString();
     card.subscription = subscription;
-    enterStage(card, 'development', now);
+    enterStage(card, 'ticketed', now);
     card.consecutiveFails = 0;
     card.comments.push({
       author: authorFromBy(body.by) || 'board',
@@ -778,7 +788,7 @@ async function pageData() {
     stuckAfter: STUCK_AFTER,
     offTheClock: [...OFF_THE_CLOCK],
     // Whether this board uses the subscription/Telegram flow at all. A board
-    // with no subscriptions configured keeps its plain grilled -> Development
+    // with no subscriptions configured keeps its plain grilled -> Ticketed
     // button and never shows "waiting for a subscription": the assign endpoint
     // has no names to offer there anyway.
     usesSubscriptions: BOARD.subscriptions.length > 0,
@@ -962,7 +972,7 @@ function renderToonPipeline(v) {
       + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
-  help.push('stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted;'
+  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, acceptance, accepted;'
     + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; acceptance is the owner\'s decision and does not count'
     + ' — a card waiting there shows "(stopped)"');

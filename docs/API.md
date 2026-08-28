@@ -223,6 +223,7 @@ A card sits in one stage at a time:
 | --- | --- |
 | `spec` | a founder has written what is wanted; nothing is decided yet |
 | `grilled` | the CTO has interrogated the spec and folded the answers back in |
+| `ticketed` | the CTO is writing the GitHub tickets — one per work unit — before any development starts |
 | `development` | code is being written on the assigned lane |
 | `local_check` | the local check runs on the same lane |
 | `ci_pr` | a PR is open and CI runs on the assigned slot |
@@ -230,14 +231,18 @@ A card sits in one stage at a time:
 | `accepted` | terminal; the card is finished |
 | `stuck` | three failures in a row — the loop itself is the problem, a human has to look |
 
-The road is one-way: `spec → grilled → development → local_check → ci_pr →
-acceptance → accepted`. Nothing else is a move. A **failure** (`local`, `ci` or
+The road is one-way: `spec → grilled → ticketed → development → local_check →
+ci_pr → acceptance → accepted`. Nothing else is a move. `ticketed` records the
+phase between the grill and the code: after the grill the CTO writes the GitHub
+tickets (one per work unit) there, and the board refuses `ticketed →
+development` until the card carries a `links.ticket` — entering `ticketed` from
+`grilled` is free. A **failure** (`local`, `ci` or
 `acceptance`) puts the card back into `development` and raises both its own
 counter and `consecutiveFails`; the third consecutive failure sends it to `stuck`
 instead. A failure can only be reported from a stage where something was actually
-run — `development`, `local_check`, `ci_pr`, `acceptance`. From `spec` or
-`grilled` it is a 400: nothing has been built yet, and answering it would carry
-the card into `development` around the grill. Any stage passed successfully resets `consecutiveFails` to zero, and so
+run — `development`, `local_check`, `ci_pr`, `acceptance`. From `spec`,
+`grilled` or `ticketed` it is a 400: nothing has been built yet, and answering it
+would carry the card into `development` around the grill and the tickets. Any stage passed successfully resets `consecutiveFails` to zero, and so
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
 run of three.
 
@@ -333,7 +338,7 @@ the reason in plain words; the store is left exactly as it was.
 | action | body | what it does |
 | --- | --- | --- |
 | `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec (clipped to 1200 characters) |
-| `move` | `to` | one step along the road; anything else is 400 |
+| `move` | `to` | one step along the road; anything else is 400. `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
 | `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
@@ -367,7 +372,8 @@ Valid only while the card is in `grilled` and `subscription` is empty.
 `subscription` must be one of the names in the board config's
 `subscriptions` array. The board sets it, records a comment
 `subscription <name> assigned by <by>`, and moves the card to
-`development`. `by` is a string or `{ "name", "tag", "tgUserId" }`
+`ticketed`, where the CTO writes the GitHub tickets before development
+starts. `by` is a string or `{ "name", "tag", "tgUserId" }`
 (what the Telegram bot sends). Wrong stage, unknown name, already
 assigned, or a missing field → `400`. Auth is the same as the other
 pipeline mutations.
@@ -580,7 +586,7 @@ stuck[1]{id,title,fails,waiting}:
 stale: 0 — no active card has a stale Status
 help[5]:
   one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
-  stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
+  stages: spec, grilled, ticketed, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
   clock is the delivery time; acceptance is the owner's decision and does not count — a card waiting there shows "(stopped)"
   stale status: an active card (development, local_check, ci_pr) whose Status is missing or older than twice the Watchdog interval
   ?format=json — the same shape as plain JSON

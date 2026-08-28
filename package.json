@@ -1,0 +1,9 @@
+{
+  "name": "watchtower",
+  "private": true,
+  "description": "Watchtower board: pipeline, remote board, watchdog and the Telegram bot",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}
