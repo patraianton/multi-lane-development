@@ -59,6 +59,7 @@ Each piece is a small Node process with no extra packages. Development-launch, l
 | **Local-check** | `bin/local-check.mjs` | For a card in `local_check`: on the same lane, run the project's local test command, poll the log for `LOCAL_CHECK_EXIT=N`. Pass → move to `ci_pr`. Fail → `POST /pipeline/card/fail` `{ "kind": "local" }`. |
 | **CI-slot** | `bin/ci-slot.mjs` | For a card in `ci_pr`: claim a **free** slot from the pool, pin that slot's GitHub Actions runner label on the PR, poll `gh pr checks`. Green → squash-merge → move to `acceptance`. Red → fail `{ "kind": "ci" }`. Either way, release the slot. **There is no queue.** If no slot is free, it prints `no free CI slot — add capacity`, assigns nothing, and exits 3. Occupancy is `state/ci-slots.json`; the board only reads it (`GET /api/slots`). |
 | **Watchdog** | `bin/watchdog.mjs` | A separate process from the board. Every `intervalMin` minutes (default 15) it scores each **active** card (`development`, `local_check`, `ci_pr`): lane log tail, CI via `gh` if the card has a PR link, then a cheap language-model command writes Status and a verdict. It never moves a card and never talks to herdr. |
+| **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
 
 The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card, queues hooks, and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
 
@@ -90,6 +91,8 @@ node bin/ci-slot.mjs --once <card-id> --dry-run
 node bin/watchdog.mjs --once --dry-run
 node bin/telegram-bot.mjs --selftest
 ```
+
+The test suite is plain `node --test` with no packages: `npm test`.
 
 ---
 
@@ -314,6 +317,7 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Waves A–G |
 | [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, slots, auth, probe endpoints |
 | [`docs/GRILL.md`](docs/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
+| [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
 | [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle, snapshot shape, hook delivery |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Bot, the four notifications, assign-subscription |
 | [`docs/DEVLAUNCH.md`](docs/DEVLAUNCH.md) | Development-launch |
