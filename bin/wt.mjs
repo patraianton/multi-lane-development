@@ -200,8 +200,9 @@ if (wantWindowCard && wantFull) {
     + 'help: one card is printed in full anyway, without clipping', 2);
 }
 if (wantPipelineCard && wantFull) {
-  die('error: --full is not needed together with card\n'
-    + 'help: one card is printed in full anyway, without clipping', 2);
+  die('error: --full does not apply to card\n'
+    + 'help: the card answer is unclipped but carries the spec line count, not the text —'
+    + ' add --spec for the spec itself', 2);
 }
 const wantSpec = args.includes('--spec');
 if (wantSpec && !wantPipelineCard) {

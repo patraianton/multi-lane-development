@@ -1023,7 +1023,9 @@ function renderToonCard(c) {
     `window: ${c.window}`,
     `links: ${c.links}`,
     `status: ${c.status}`,
-    `summary: ${c.summary}`,
+    // Folded like the spec below: TOON is line-based, and the API accepts a
+    // summary with newlines in it.
+    `summary: ${c.summary.replace(/\s+/g, ' ').trim() || '-'}`,
     `spec-lines: ${c.specLines}`,
   ];
   // The whole spec on one line, whitespace folded: TOON is line-based. The text
