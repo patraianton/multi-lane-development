@@ -149,7 +149,7 @@ still starts, with no extra env.
 
 ## What a launch does
 
-1. `GET {boardUrl}/api/pipeline/card/{id}?format=json` (contract below).
+1. `GET {boardUrl}/api/pipeline/card/{id}?format=json&spec=1` (contract below).
 2. Derive `feat/card-<id>-<slug(title)>`. The slug is the title in
    lowercase, with anything that is not a letter or a digit turned into
    `-`, clipped so the whole branch name stays short. No title →
@@ -213,10 +213,14 @@ a failure of that call.
 The board must implement the two endpoints below. Unknown extra JSON
 fields on either side are ignored.
 
-### `GET {boardUrl}/api/pipeline/card/{id}?format=json`
+### `GET {boardUrl}/api/pipeline/card/{id}?format=json&spec=1`
 
-One pipeline card, in full. Query `format=json` is required; this process
-does not parse the short text form. `{id}` is URL-encoded.
+One pipeline card with its spec text. Query `format=json` is required;
+this process does not parse the short text form. `spec=1` is required
+too: without it the board answers the card with a `spec-lines` count
+instead of the `spec` text (see [`docs/API.md`](./API.md), One pipeline
+card), and the TASK file is built from exactly that text. `{id}` is
+URL-encoded.
 
 **Contract: a JSON object for one card**, with at least:
 
@@ -244,7 +248,7 @@ does not parse the short text form. `{id}` is URL-encoded.
 | `stage` | Pipeline column. Compared case-insensitively; spaces and slashes become `_`, so `"Local check"` matches `local_check`. `--run` only accepts `development`. |
 | `lane` | Lane id; looked up in config `lanes`. Empty or `"-"` means no lane. |
 | `subscription` | Subscription name; looked up in config `subscriptions`. Empty or `"-"` means none. |
-| `spec` | Written into `TASK-<id>.md`. Empty or `"-"` becomes `(no spec on the card)`. |
+| `spec` | Written into `TASK-<id>.md`. Empty or `"-"` becomes `(no spec on the card)`. Only present because the request asks with `spec=1`. |
 | `links` | Object, or the board's flattened string `"branch feat/foo, ticket https://…"`. Only `branch` is written back, after the launch. |
 
 A wrapper `{ "card": { … } }` is also accepted. Empty optional fields may
@@ -254,9 +258,10 @@ A 404 is "there is no card with that id". A 2xx body that is not an object
 with `id` is an error for the whole process (dry-run and `--run` both
 exit 1 when `boardUrl` was set and the fetch failed).
 
-This is the same path as [`docs/API.md`](./API.md) (Pipeline, one card in
-full). The live board's JSON view currently flattens `links` into a
-string and prints `"-"` for an empty lane; both shapes are accepted.
+This is the same path as [`docs/API.md`](./API.md) (Pipeline, One
+pipeline card). The live board's JSON view currently flattens `links`
+into a string and prints `"-"` for an empty lane; both shapes are
+accepted.
 
 ### `POST {boardUrl}/pipeline/card/update`
 
