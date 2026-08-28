@@ -10,6 +10,7 @@
 
 import path from 'node:path';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
+import { lanesLine } from './sprint-facts.mjs';
 import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
@@ -225,6 +226,11 @@ function normCard(raw) {
     subscription: str(src.subscription, LIMIT.slotish).trim(),
     slot: str(src.slot, LIMIT.slotish).trim(),
     window: str(src.window, LIMIT.slotish).trim(),
+    // A unit card: one ticket of a sprint card (parent), spawned by the board
+    // from the sprint facts. Empty on every other card.
+    parent: str(src.parent, LIMIT.slotish).trim(),
+    ticket: int(src.ticket),
+    unit: str(src.unit, LIMIT.slotish).trim(),
     status: {
       text: str(src.status?.text, LIMIT.status).trim(),
       verdict,
@@ -588,6 +594,9 @@ async function createCard(body) {
     subscription: '',
     slot: '',
     window: '',
+    parent: '',
+    ticket: 0,
+    unit: '',
     status: { text: '', verdict: '', at: null },
     comments: [],
   };
@@ -613,7 +622,10 @@ async function deleteCard(body) {
   return commit(st => {
     const i = st.cards.findIndex(c => c.id === id);
     if (i < 0) throw new MissingCard(id, st.cards.map(c => c.id));
-    return st.cards.splice(i, 1)[0];
+    const removed = st.cards.splice(i, 1)[0];
+    // A sprint's unit cards are its own: they leave with it.
+    for (let k = st.cards.length - 1; k >= 0; k--) if (st.cards[k].parent === id) st.cards.splice(k, 1);
+    return removed;
   });
 }
 
@@ -847,6 +859,18 @@ async function artifactAnsweredCard(body) {
 // The stages where a linked artifact is still the card's open question.
 const PAPER_STAGES = new Set(['spec', 'grilled', 'ticketed']);
 
+// The sprint in numbers for the list views; the full table is on the card.
+function sprintSummary(s) {
+  return {
+    umbrella: s.umbrella,
+    ...s.counts,
+    lanes: s.lanes.map(l => ({ host: l.host, lane: l.lane, unit: l.unit, ticket: l.ticket, busy: l.busy })),
+    laneCount: s.laneCount,
+    free: s.free,
+    stale: s.stale,
+  };
+}
+
 function artifactCell(card) {
   if (!card.links.artifact) return '-';
   if (!card.artifactAnswered) return PAPER_STAGES.has(card.stage) ? 'awaiting answers' : 'no answers recorded';
@@ -893,7 +917,7 @@ async function pageData() {
     usesSubscriptions: BOARD.subscriptions.length > 0,
     watchdogIntervalMin: meta.intervalMin,
     watchdogConfigured: meta.configured,
-    cards: st.cards.map(c => (shadowMap.has(c.id) ? { ...c, shadow: shadowMap.get(c.id) } : c)),
+    cards: st.cards.map(c => cardExtras(c, st.cards)),
   };
 }
 
@@ -913,6 +937,127 @@ async function pageData() {
 //     acceptance — the card says what is missing instead.
 const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
+
+// Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
+// umbrella issue, its unit tickets bound to lanes and PRs by facts.
+// watchtower.mjs recomputes them after every sweep of the live sources.
+let sprintMap = new Map(); // card id -> sprint
+
+export function setCardSprints(map) {
+  sprintMap = map instanceof Map ? map : new Map();
+}
+
+// The cards as stored, for the board's sweeps (read-only by contract).
+export async function listPipelineCards() {
+  const st = await load();
+  return st.cards;
+}
+
+function cardExtras(c, all = []) {
+  const extra = {};
+  if (shadowMap.has(c.id)) extra.shadow = shadowMap.get(c.id);
+  if (sprintMap.has(c.id)) extra.sprint = sprintMap.get(c.id);
+  if (c.parent) {
+    const parent = all.find(p => p.id === c.parent);
+    if (parent) extra.sprintTitle = parent.title;
+    const u = (sprintMap.get(c.parent)?.units ?? []).find(x => x.ticket === c.ticket);
+    if (u) extra.unitFacts = { lane: u.lane, pr: u.pr, merged: u.merged, state: u.state, open: u.open };
+  }
+  return Object.keys(extra).length ? { ...c, ...extra } : c;
+}
+
+// ----------------------------------------------------------- unit cards
+//
+// After ticketed a sprint is its unit cards: one card per unit ticket, spawned
+// here from the sprint facts, its branch / PR / lane refreshed every sweep, and
+// walked forward by facts alone — on a busy lane → development, PR open →
+// ci_pr, PR merged → accepted (a unit's acceptance IS the GO review its merge
+// required; the owner accepts the sprint, not seventeen units). Never
+// backwards, never out of stuck, never while a source is stale: unknown is not
+// empty. The sprint card itself is moved by people (and, later, ADR-0006).
+const ROAD_ORDER = STAGES.filter(s => s.key !== 'stuck').map(s => s.key);
+
+function unitTitle(u) {
+  const bare = String(u.title ?? '').replace(/^\s*[A-Z][A-Z0-9-]*-U\d{1,3}\s*[:—-]\s*/i, '').trim();
+  return str(`${u.unit ? u.unit + ' ' : ''}#${u.ticket}${bare ? ' — ' + bare : ''}`, LIMIT.title);
+}
+
+function unitTargetStage(u) {
+  if (u.merged) return 'accepted';
+  if (u.pr) return 'ci_pr';
+  if (u.lane?.busy) return 'development';
+  return null;
+}
+
+// What the facts would change, without changing anything — so a sweep that
+// finds nothing new writes nothing to disk.
+function unitPlan(cards, sprints) {
+  const plan = [];
+  for (const [sprintId, s] of sprints) {
+    const sprint = cards.find(c => c.id === sprintId);
+    if (!sprint || sprint.parent || ['spec', 'grilled'].includes(sprint.stage)) continue;
+    for (const u of s.units ?? []) {
+      const card = cards.find(c => c.parent === sprintId && c.ticket === u.ticket);
+      const lane = u.lane ? `${u.lane.host}/${u.lane.lane}` : '';
+      const pr = str(u.merged?.url || u.pr?.url || card?.links.pr || '', LIMIT.link);
+      const branch = u.branch ? str(u.branch, LIMIT.link) : (card?.links.branch ?? '');
+      const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
+      const move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
+      if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, target: target && target !== 'ticketed' ? target : null });
+      else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch) {
+        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, move });
+      }
+    }
+  }
+  return plan;
+}
+
+export async function syncSprintUnits(sprints) {
+  if (!(sprints instanceof Map) || !sprints.size) return { spawned: 0, moved: 0 };
+  const st = await load();
+  if (!unitPlan(st.cards, sprints).length) return { spawned: 0, moved: 0 };
+  return commit(state => {
+    const now = new Date().toISOString();
+    let spawned = 0, moved = 0;
+    for (const step of unitPlan(state.cards, sprints)) {
+      if (step.kind === 'spawn') {
+        const sprint = state.cards.find(c => c.id === step.sprintId);
+        const card = {
+          id: newId(),
+          title: unitTitle(step.u),
+          spec: '',
+          summary: '',
+          stage: 'ticketed',
+          createdAt: now,
+          stageHistory: [{ stage: 'ticketed', enteredAt: now, leftAt: null }],
+          counters: { localFails: 0, ciFails: 0, acceptanceFails: 0 },
+          consecutiveFails: 0,
+          links: { ticket: str(step.u.url, LIMIT.link), branch: step.branch, pr: step.pr, artifact: '' },
+          lane: step.lane,
+          subscription: sprint?.subscription ?? '',
+          slot: '',
+          window: '',
+          parent: step.sprintId,
+          ticket: int(step.u.ticket),
+          unit: str(step.u.unit, LIMIT.slotish),
+          status: { text: '', verdict: '', at: null },
+          comments: [],
+        };
+        if (step.target) { enterStage(card, step.target, now); moved++; }
+        state.cards.push(card);
+        spawned++;
+        continue;
+      }
+      const card = state.cards.find(c => c.id === step.id);
+      if (!card) continue;
+      card.lane = step.lane;
+      card.links.pr = step.pr;
+      card.links.branch = step.branch;
+      if (step.move) { enterStage(card, step.move, now); card.consecutiveFails = 0; moved++; }
+    }
+    return { spawned, moved };
+  });
+}
 
 export function setShadowFacts({ facts, staleSources, at }) {
   const cards = state?.cards ?? [];
@@ -1000,6 +1145,10 @@ function agentRow(card, now, meta) {
       ? { text: card.status.text || '', verdict: card.status.verdict || '', at: card.status.at }
       : null,
     artifactAnswered: card.artifactAnswered ?? null,
+    sprint: sprintMap.has(card.id) ? sprintSummary(sprintMap.get(card.id)) : null,
+    parent: card.parent || '',
+    unit: card.unit || '',
+    ticket: card.ticket || 0,
     slot: card.slot || '',
     subscription: card.subscription || '',
     window: card.window || '',
@@ -1027,6 +1176,7 @@ async function buildAgentPipeline(cards, full, port) {
       failures: cards.reduce((n, c) =>
         n + c.counters.localFails + c.counters.ciFails + c.counters.acceptanceFails, 0),
       staleStatus: stale.length,
+      units: cards.filter(c => c.parent).length,
     },
     cards: rows,
     stuck: stuck.map(c => ({
@@ -1118,6 +1268,21 @@ async function buildAgentCard(card, withSpec = false) {
     window: card.window || '-',
     links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
     artifact: artifactCell(card),
+    lanes: lanesLine(sprintMap.get(card.id) ?? null),
+    sprintOf: card.parent
+      ? `${card.parent}${(() => { const p = (state?.cards ?? []).find(c => c.id === card.parent); return p ? ' — ' + p.title : ''; })()}`
+      : '-',
+    unit: card.unit || '-',
+    ticket: card.ticket || 0,
+    sprint: sprintMap.has(card.id) ? sprintSummary(sprintMap.get(card.id)) : null,
+    units: (sprintMap.get(card.id)?.units ?? []).map(u => ({
+      unit: u.unit || '-',
+      ticket: `#${u.ticket}`,
+      branch: u.branch || '-',
+      lane: u.lane ? `${u.lane.host}/${u.lane.lane}${u.lane.busy ? '' : ' (idle)'}` : '-',
+      pr: u.merged ? `#${u.merged.number} merged` : u.pr ? `#${u.pr.number} ${u.pr.ci?.text ?? ''}`.trim() : '-',
+      state: u.state,
+    })),
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
         + `${stale ? ', stale' : ''})`
@@ -1156,6 +1321,8 @@ function renderToonCard(c) {
     `window: ${c.window}`,
     `links: ${c.links}`,
     `artifact: ${c.artifact}`,
+    `lanes: ${c.lanes}`,
+    `sprint-of: ${c.sprintOf}`,
     `status: ${c.status}`,
     // Folded like the spec below: TOON is line-based, and the API accepts a
     // summary with newlines in it.
@@ -1166,6 +1333,8 @@ function renderToonCard(c) {
   // as written is behind /pipeline/card/<id>/spec.
   if (c.spec !== undefined) out.push(`spec: ${c.spec.replace(/\s+/g, ' ').trim() || '-'}`);
   out.push(
+    toonTable('units', c.units, ['unit', 'ticket', 'branch', 'lane', 'pr', 'state'],
+      c.sprint ? 'no unit tickets reference the umbrella yet' : 'not a sprint card — links.ticket is not an umbrella issue'),
     toonTable('comments', c.comments, ['author', 'at', 'text'], 'nobody has commented'),
     toonTable('history', c.history, ['stage', 'entered', 'left', 'took'], 'no history'),
     `help: ${c.specHint}`,
