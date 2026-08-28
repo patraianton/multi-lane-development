@@ -110,10 +110,14 @@ test('the sweep reads the desktop Lavish state and marks the card without draini
         status: 'open',
         pending_prompts: 0,
         prompts: [],
+        // Two form answers were queued and already drained by the CTO's poll
+        // (the fork counts them at queue time); one chat message is still in
+        // `chat`. The count wins over what the poll left behind.
+        answers_total: 3,
+        last_answer_at: '2026-08-28T16:33:35.512Z',
         chat: [
           { role: 'agent', text: 'Here are the questions.', at: '2026-08-28T15:14:57.419Z' },
           { role: 'user', text: 'Option A for question 1.', at: '2026-08-28T16:31:16.000Z' },
-          { role: 'user', text: 'Option C for question 2.', at: '2026-08-28T16:33:35.512Z' },
         ],
         updated_at: '2026-08-28T16:33:35.512Z',
       },
@@ -149,7 +153,7 @@ test('the sweep reads the desktop Lavish state and marks the card without draini
       await new Promise(r => setTimeout(r, 150));
     }
     assert.ok(card, 'the sweep never marked the card');
-    assert.equal(card.artifact, 'answered 2026-08-28T16:33:35.512Z (2 answers, by lavish-local)');
+    assert.equal(card.artifact, 'answered 2026-08-28T16:33:35.512Z (3 answers, by lavish-local)');
     assert.equal(card.comments.filter(c => c.text.startsWith('review artifact answered')).length, 1);
 
     // The state file was only read: the session is byte-identical.
