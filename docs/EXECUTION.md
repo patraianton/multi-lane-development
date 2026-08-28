@@ -148,7 +148,7 @@ Given a card in `ci_pr`:
    (`gh`), pin CI by adding the slot's runner **label** on the PR, poll
    `gh pr checks`.
 4. Green → `gh pr merge --squash` → `POST /pipeline/card/move`
-   `{ "to": "acceptance" }`.
+   `{ "to": "done" }`.
 5. Red → `POST /pipeline/card/fail` `{ "kind": "ci" }`.
 6. Either way, **release the slot**.
 
@@ -244,17 +244,17 @@ the endpoints below; they do not move a card themselves.
 
 A card sits in one stage. The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → acceptance → accepted`
+`spec → grilled → ticketed → development → local_check → ci_pr → done`
 
 A **failure** is one of three kinds. Each has its own counter. A failure
 can only be reported from a stage where something was actually run
-(`development`, `local_check`, `ci_pr`, `acceptance`):
+(`development`, `local_check`, `ci_pr`):
 
 | POST | body | who sends it | counter |
 | --- | --- | --- | --- |
 | `/pipeline/card/fail` | `{ "id", "kind": "local" }` | Local-check, when the log says `LOCAL_CHECK_EXIT` ≠ 0 | `localFails` |
 | `/pipeline/card/fail` | `{ "id", "kind": "ci" }` | CI-slot, when `gh pr checks` is red | `ciFails` |
-| `/pipeline/card/fail` | `{ "id", "kind": "acceptance" }` | a human (or a later runner), not these two | `acceptanceFails` |
+| `/pipeline/card/fail` | `{ "id", "kind": "review" }` | a human (or a later runner) when the review says NO-GO, not these two | `reviewFails` |
 
 The board then:
 
@@ -265,7 +265,7 @@ The board then:
    clears the streak)
 
 A successful move along the road (Local-check's pass to `ci_pr`, CI-slot's
-pass to `acceptance`, a human accepting) resets `consecutiveFails` to zero.
+pass to `done`) resets `consecutiveFails` to zero.
 So does a human pulling the card out of `stuck`. The decision buys the card
 a fresh run of three.
 
@@ -298,7 +298,7 @@ CI-slot POSTs:
 ```json
 POST /pipeline/card/update   { "id": "cci1", "slot": "ci-1" }
 POST /pipeline/card/update   { "id": "cci1", "links": { "pr": "https://github.com/owner/name/pull/12" } }
-POST /pipeline/card/move     { "id": "cci1", "to": "acceptance" }
+POST /pipeline/card/move     { "id": "cci1", "to": "done" }
 POST /pipeline/card/fail     { "id": "cci1", "kind": "ci" }
 ```
 
@@ -343,7 +343,7 @@ way to find a type error CI reports in minutes.
 - "Green" means a `pr-ci` run of the CURRENT workflow on the head SHA — never
   a stale green from before a CI restructuring.
 - Where the board's CI-slot runner drives CI/PR (above), it merges on green
-  itself and the GO gate lives in the `acceptance` stage — same two
+  itself, so the GO review must come before it is pointed at the PR — same two
   ingredients, different order ([TICKETING.md](./TICKETING.md) §2.10).
 
 **Protected areas** — the places where mistakes have cost real money:

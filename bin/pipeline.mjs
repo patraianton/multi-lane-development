@@ -1,4 +1,4 @@
-// The delivery pipeline: persistent cards that move from a spec to acceptance.
+// The delivery pipeline: persistent cards that move from a spec to done.
 //
 // A Card is not a Window. A window is a live herdr session and disappears with
 // the machine; a card lives in state/pipeline-cards.json, carries its spec, its
@@ -18,7 +18,7 @@ import {
 
 // ------------------------------------------------------------------- stages
 
-// The stage a card sits in. Seven working stages, one terminal stage and Stuck,
+// The stage a card sits in. Six working stages, one terminal stage and Stuck,
 // which is not a step of the road but where a card lands after its third
 // consecutive failure and waits for a human.
 export const STAGES = [
@@ -28,11 +28,15 @@ export const STAGES = [
   { key: 'development', title: 'Development' },
   { key: 'local_check', title: 'Local check' },
   { key: 'ci_pr', title: 'CI/PR' },
-  { key: 'acceptance', title: 'Acceptance' },
-  { key: 'accepted', title: 'Accepted' },
+  { key: 'done', title: 'Done' },
   { key: 'stuck', title: 'Stuck' },
 ];
 const STAGE_KEYS = new Set(STAGES.map(s => s.key));
+
+// Stage names from before decision 10 (2026-08-29): a card stored as
+// "accepted", or waiting in "acceptance", is a done card. Read on load only.
+const RENAMED_STAGES = { accepted: 'done', acceptance: 'done' };
+const stageKey = s => RENAMED_STAGES[s] ?? s;
 
 // Every move a card may make on its own road. Everything else is a 400: a card
 // never skips the grill, never walks backwards by hand and never leaves the
@@ -47,25 +51,23 @@ const MOVES = {
   ticketed: ['development'],
   development: ['local_check'],
   local_check: ['ci_pr'],
-  ci_pr: ['acceptance'],
-  acceptance: ['accepted'],
-  accepted: [],
+  ci_pr: ['done'],
+  done: [],
   stuck: [],
 };
 
-// Stages whose time counts towards the card's delivery clock. Acceptance is the
-// owner's decision, not the pipeline's work — the card waits there with its
-// clock stopped (the wait is still written into stageHistory, so it can be read
-// separately). Accepted is terminal: nothing is being spent there any more.
-const OFF_THE_CLOCK = new Set(['acceptance', 'accepted']);
+// Stages whose time counts towards the card's delivery clock. Done is terminal:
+// nothing is being spent there any more.
+const OFF_THE_CLOCK = new Set(['done']);
 
 // A failure is one of three kinds; each has its own counter on the card, because
-// "the local check failed three times" and "acceptance was refused three times"
-// are different diseases.
+// "the local check failed three times" and "the review said NO-GO three times"
+// are different diseases. (The review kind was called "acceptance" while an
+// acceptance stage existed — decision 10; old counters are read as review.)
 const FAIL_KINDS = {
   local: 'localFails',
   ci: 'ciFails',
-  acceptance: 'acceptanceFails',
+  review: 'reviewFails',
 };
 
 // The third consecutive failure sends the card to Stuck: something is looping
@@ -77,7 +79,7 @@ const STUCK_AFTER = 3;
 // failed" there is not a late report, it is a wrong request — and answering it
 // would walk the card forward into Development around the grill and the
 // tickets, which no move is allowed to do.
-const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
+const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr']);
 
 // What the watchdog may write into a card's status line (Wave G writes it; the
 // value is validated here so a wrong word never reaches the board).
@@ -108,7 +110,7 @@ const LIMIT = {
 
 const LINK_KEYS = ['ticket', 'branch', 'pr', 'artifact'];
 
-const NOTIFY_KINDS = ['artifact', 'stuck', 'acceptance', 'assignSubscription'];
+const NOTIFY_KINDS = ['artifact', 'stuck', 'done', 'assignSubscription'];
 
 // -------------------------------------------------------------------- store
 
@@ -166,14 +168,14 @@ function normCard(raw) {
   const title = str(src.title, LIMIT.title).trim();
   if (!title) return null;
 
-  const stage = STAGE_KEYS.has(src.stage) ? src.stage : 'spec';
+  const stage = STAGE_KEYS.has(stageKey(src.stage)) ? stageKey(src.stage) : 'spec';
   const createdAt = isoOr(src.createdAt, new Date().toISOString());
 
   const stageHistory = [];
   for (const h of Array.isArray(src.stageHistory) ? src.stageHistory : []) {
-    if (!h || !STAGE_KEYS.has(h.stage)) continue;
+    if (!h || !STAGE_KEYS.has(stageKey(h.stage))) continue;
     stageHistory.push({
-      stage: h.stage,
+      stage: stageKey(h.stage),
       enteredAt: isoOr(h.enteredAt, createdAt),
       leftAt: isoOr(h.leftAt, null),
     });
@@ -184,6 +186,8 @@ function normCard(raw) {
 
   const counters = {};
   for (const key of Object.values(FAIL_KINDS)) counters[key] = int(src.counters?.[key]);
+  // Stored before decision 10: the review counter was named after the stage.
+  if (!counters.reviewFails && src.counters?.acceptanceFails) counters.reviewFails = int(src.counters.acceptanceFails);
 
   const links = {};
   for (const key of LINK_KEYS) links[key] = str(src.links?.[key], LIMIT.link).trim();
@@ -360,7 +364,7 @@ function spanMs(seg, now) {
 
 // The clocks of one card, all of them out of stageHistory:
 //   byStage — every stage the card has been in, summed over its visits;
-//   total   — the delivery time, acceptance and accepted left out;
+//   total   — the delivery time, done left out;
 //   running — is the total still growing right now (the page ticks it itself).
 export function clocks(card, now = Date.now()) {
   const byStage = {};
@@ -477,7 +481,7 @@ function snapshotNotify(card) {
 
 // Decide which Telegram messages this edit earned, and stamp the card in the
 // same write so a restart cannot send the same event again. A new entry into
-// stuck / acceptance may notify again (fresh timestamp). Artifact and
+// stuck / done may notify again (fresh timestamp). Artifact and
 // assign-subscription fire once until that field is first set.
 function takeNotifyEvents(before, card) {
   const events = [];
@@ -489,7 +493,9 @@ function takeNotifyEvents(before, card) {
     events.push(kind);
   };
   if (card.stage === 'stuck' && before.stage !== 'stuck') stamp('stuck');
-  if (card.stage === 'acceptance' && before.stage !== 'acceptance') stamp('acceptance');
+  // A sprint or a standalone card finishing is the founders' cue; a unit card
+  // finishing is one of many and stays quiet.
+  if (card.stage === 'done' && before.stage !== 'done' && !card.parent) stamp('done');
   if (card.stage === 'grilled'
       && card.links.artifact
       && card.links.artifact !== before.artifact
@@ -522,7 +528,7 @@ function stuckDigest(card) {
   const bits = [];
   if (c.localFails) bits.push(`local ${c.localFails}`);
   if (c.ciFails) bits.push(`ci ${c.ciFails}`);
-  if (c.acceptanceFails) bits.push(`acceptance ${c.acceptanceFails}`);
+  if (c.reviewFails) bits.push(`review ${c.reviewFails}`);
   const counters = bits.length
     ? bits.join(', ') + (card.consecutiveFails ? ` (${card.consecutiveFails} in a row)` : '')
     : (card.consecutiveFails ? `${card.consecutiveFails} in a row` : 'no counters');
@@ -540,7 +546,7 @@ async function emitNotifications(card, events) {
     try {
       if (kind === 'artifact' && s.artifactReady) await s.artifactReady(card);
       else if (kind === 'stuck' && s.stuck) await s.stuck(card, stuckDigest(card));
-      else if (kind === 'acceptance' && s.acceptance) await s.acceptance(card);
+      else if (kind === 'done' && s.done) await s.done(card);
       else if (kind === 'assignSubscription' && s.assignSubscription) {
         await s.assignSubscription(card, BOARD.subscriptions);
       }
@@ -587,7 +593,7 @@ async function createCard(body) {
     stage: 'spec',
     createdAt: now,
     stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
-    counters: { localFails: 0, ciFails: 0, acceptanceFails: 0 },
+    counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
     consecutiveFails: 0,
     links: { ticket: '', branch: '', pr: '', artifact: '' },
     lane: '',
@@ -669,10 +675,10 @@ async function moveCard(body) {
 async function failCard(body) {
   const kind = String(body.kind ?? '');
   if (!FAIL_KINDS[kind]) {
-    throw new BadRequest(`unknown failure kind "${kind}" — use local, ci or acceptance`);
+    throw new BadRequest(`unknown failure kind "${kind}" — use local, ci or review`);
   }
   return editCard(body.id, card => {
-    if (card.stage === 'accepted') throw new BadRequest('an accepted card cannot fail');
+    if (card.stage === 'done') throw new BadRequest('a done card cannot fail');
     if (card.stage === 'stuck') throw new BadRequest('the card is already stuck — return it to development first');
     if (!CAN_FAIL.has(card.stage)) {
       throw new BadRequest(`a card in "${card.stage}" cannot fail — nothing has been run yet;`
@@ -694,16 +700,6 @@ async function unstuckCard(body) {
     // A human decided what to do about the loop, so the card gets a fresh run of
     // three attempts. Otherwise the very next failure would bounce it straight
     // back into Stuck and the decision would have bought nothing.
-    card.consecutiveFails = 0;
-  });
-}
-
-async function acceptCard(body) {
-  return editCard(body.id, card => {
-    if (card.stage !== 'acceptance') {
-      throw new BadRequest(`only a card in "acceptance" can be accepted, this one is in "${card.stage}"`);
-    }
-    enterStage(card, 'accepted', new Date().toISOString());
     card.consecutiveFails = 0;
   });
 }
@@ -942,8 +938,8 @@ async function pageData() {
 //   - unknown is never read as empty: a dead or stale source voids every verdict;
 //   - a stream whose sprint scope is not machine-readable (no units:"issues"
 //     promise in stream-watch, no branch prefixes, no umbrella) can never reach
-//     acceptance — the card says what is missing instead.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'acceptance']);
+//     done — the card says what is missing instead.
+const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'done']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
@@ -978,9 +974,9 @@ function cardExtras(c, all = []) {
 //
 // After ticketed a sprint is its unit cards: one card per unit ticket, spawned
 // here from the sprint facts, its branch / PR / lane refreshed every sweep, and
-// walked forward by facts alone — on a busy lane → development, PR open →
-// ci_pr, PR merged → accepted (a unit's acceptance IS the GO review its merge
-// required; the owner accepts the sprint, not seventeen units). Never
+// walked forward by facts alone — on a busy lane → development, the lane
+// running the project's local check → local_check, PR open → ci_pr, PR
+// merged → done (a unit's review IS the GO its merge required). Never
 // backwards, never out of stuck, never while a source is stale: unknown is not
 // empty. The sprint card itself is moved by people (and, later, ADR-0006).
 const ROAD_ORDER = STAGES.filter(s => s.key !== 'stuck').map(s => s.key);
@@ -991,8 +987,9 @@ function unitTitle(u) {
 }
 
 function unitTargetStage(u) {
-  if (u.merged) return 'accepted';
+  if (u.merged) return 'done';
   if (u.pr) return 'ci_pr';
+  if (u.lane?.check) return 'local_check';
   if (u.lane?.busy) return 'development';
   return null;
 }
@@ -1020,14 +1017,14 @@ function unitPlan(cards, sprints) {
       }
     }
     // The sprint's own stage follows its units: development once any unit has
-    // started, acceptance once every unit is merged (or closed) — the whole
-    // scope done, which is the owner's cue. Forward only, facts only.
+    // started, done once every unit is merged (or closed) — the whole scope
+    // delivered. Forward only, facts only.
     const units = s.units ?? [];
     if (units.length && !s.stale?.length && sprint.stage !== 'stuck') {
       const allDone = units.every(u => u.merged || !u.open);
       const anyStarted = units.some(u => u.lane || u.pr || u.merged);
       let to = null;
-      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = 'acceptance';
+      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = 'done';
       else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
       if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
     }
@@ -1053,7 +1050,7 @@ export async function syncSprintUnits(sprints) {
           stage: 'ticketed',
           createdAt: now,
           stageHistory: [{ stage: 'ticketed', enteredAt: now, leftAt: null }],
-          counters: { localFails: 0, ciFails: 0, acceptanceFails: 0 },
+          counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
           consecutiveFails: 0,
           links: { ticket: str(step.u.url, LIMIT.link), branch: step.branch, pr: step.pr, artifact: '' },
           lane: step.lane,
@@ -1129,9 +1126,9 @@ function shadowVerdict(card, f, staleSources, at) {
   } else if (f.openUnitIssues.length) {
     v.reasons.push(`scope not empty: open unit tickets ${f.openUnitIssues.map(i => '#' + i.number).join(' ')}`);
   } else if (!f.merged.length) {
-    v.reasons.push('no merged PRs bound to this window — nothing to accept');
+    v.reasons.push('no merged PRs bound to this window — nothing to finish');
   } else {
-    v.would = 'acceptance';
+    v.would = 'done';
     v.reasons.push(`scope empty, ${f.merged.length} merged PR(s), lanes free`);
   }
   v.same = v.would === card.stage;
@@ -1148,7 +1145,7 @@ function failCell(card) {
   const bits = [];
   if (c.localFails) bits.push(`local ${c.localFails}`);
   if (c.ciFails) bits.push(`ci ${c.ciFails}`);
-  if (c.acceptanceFails) bits.push(`acceptance ${c.acceptanceFails}`);
+  if (c.reviewFails) bits.push(`review ${c.reviewFails}`);
   if (!bits.length) return '-';
   const all = bits.join(' ');
   return card.consecutiveFails ? `${all} (${card.consecutiveFails} in a row)` : all;
@@ -1201,10 +1198,9 @@ async function buildAgentPipeline(cards, full, port) {
     summary: {
       cards: cards.length,
       stuck: stuck.length,
-      waitingForAcceptance: cards.filter(c => c.stage === 'acceptance').length,
-      accepted: cards.filter(c => c.stage === 'accepted').length,
+      done: cards.filter(c => c.stage === 'done').length,
       failures: cards.reduce((n, c) =>
-        n + c.counters.localFails + c.counters.ciFails + c.counters.acceptanceFails, 0),
+        n + c.counters.localFails + c.counters.ciFails + c.counters.reviewFails, 0),
       staleStatus: stale.length,
       units: cards.filter(c => c.parent).length,
     },
@@ -1236,8 +1232,8 @@ function renderToonPipeline(v) {
   const out = [
     `pipeline: ${v.pipeline}`,
     `generated: ${v.generated}`,
-    `summary: cards ${s.cards}, stuck ${s.stuck}, waiting for acceptance ${s.waitingForAcceptance},`
-      + ` accepted ${s.accepted}, failures ${s.failures}, stale status ${s.staleStatus}`,
+    `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done},`
+      + ` failures ${s.failures}, stale status ${s.staleStatus}`,
     toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
       'no cards in the pipeline'),
     toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
@@ -1252,10 +1248,10 @@ function renderToonPipeline(v) {
       + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
-  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, acceptance, accepted;'
+  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, done;'
     + ' stuck — three failures in a row, waiting for a human');
-  help.push('clock is the delivery time; acceptance is the owner\'s decision and does not count'
-    + ' — a card waiting there shows "(stopped)"');
+  help.push('clock is the delivery time; done is terminal and does not count'
+    + ' — a finished card shows "(stopped)"');
   help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
     + ' missing or older than twice the Watchdog interval');
   help.push('?format=json — the same shape as plain JSON');
@@ -1383,7 +1379,6 @@ const ACTIONS = {
   move: moveCard,
   fail: failCard,
   unstuck: unstuckCard,
-  accept: acceptCard,
   comment: commentCard,
   summary: summaryCard,
   update: updateCard,

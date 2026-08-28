@@ -71,7 +71,7 @@ prints it as written.
 
 `owner: true` marks the founder who assigns subscriptions. Exactly one founder
 should be the owner. The other is `owner: false`. Artifact-ready, Stuck and
-Acceptance tag **both**; the subscription prompt tags **the owner**.
+Done tag **both**; the subscription prompt tags **the owner**.
 
 ## Config
 
@@ -144,10 +144,10 @@ The board calls:
 - `notifyArtifactReady` when a card in `grilled` first gets `links.artifact`;
 - `notifyAssignSubscription` when a card in `grilled` first gets `lane` while `subscription` is still empty;
 - `notifyStuck` when a card **enters** `stuck` (a later entry after a new failure may notify again);
-- `notifyAcceptance` when a card **enters** `acceptance`.
+- `notifyDone` when a sprint or a standalone card (not a unit card) **enters** `done`.
 
 A failed send is logged and never changes the HTTP answer. The card remembers
-what was notified in `notified: { artifact, stuck, acceptance, assignSubscription }`
+what was notified in `notified: { artifact, stuck, done, assignSubscription }`
 (ISO timestamps), so a restart or a repeated identical update does not send twice.
 
 ## Running
@@ -191,7 +191,7 @@ import {
   notifyArtifactReady,
   notifyAssignSubscription,
   notifyStuck,
-  notifyAcceptance,
+  notifyDone,
 } from './telegram-bot.mjs';
 ```
 
@@ -279,14 +279,14 @@ Card: https://watchtower.example/#pipeline/c-selftest
 No keyboard. `digest` is the short error the board already has; the bot does
 not go looking for logs.
 
-### 4. Acceptance — `notifyAcceptance(card)`
+### 4. Done — `notifyDone(card)`
 
-Tags **both** founders. The card reached Acceptance and waits for a human.
+Tags **both** founders. The card is done: its PR is merged (a sprint — every unit merged or closed).
 
 ```
 @anton @partner
 
-Card "Ship the pipeline Telegram bot" reached Acceptance.
+Card "Ship the pipeline Telegram bot" is done.
 
 Card: https://watchtower.example/#pipeline/c-selftest
 ```

@@ -91,7 +91,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.free, ['radar/lane-2', 'lanes-01/lane-5']);
   assert.deepEqual(s.busyElsewhere, ['hostinger/lane-6']);
   assert.equal(s.laneCount, 7);
-  assert.deepEqual(s.counts, { units: 6, onLane: 2, pr: 2, merged: 1, queued: 1 });
+  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, queued: 1 });
   assert.deepEqual(s.stale, ['umbrella']);
   assert.equal(lanesLine(s), 'mac/lane-a U0 #1521, lanes-01/lane-3 U1 #1516, radar/lane-1 U2 #1517, mac/lane-b U5 #1519');
 });

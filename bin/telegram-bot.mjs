@@ -350,11 +350,11 @@ function stuckText(cfg, card, digest) {
   ]);
 }
 
-function acceptanceText(cfg, card) {
+function doneText(cfg, card) {
   return lines([
     tagAll(cfg.founders),
     '',
-    `Card "${cardTitleOf(card)}" reached Acceptance.`,
+    `Card "${cardTitleOf(card)}" is done.`,
     '',
     `Card: ${cardUrl(cfg, card)}`,
   ]);
@@ -467,12 +467,12 @@ export async function notifyStuck(card, digest) {
   });
 }
 
-export async function notifyAcceptance(card) {
+export async function notifyDone(card) {
   const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
   return sendMessage(cfg, {
-    name: 'notifyAcceptance',
-    text: acceptanceText(cfg, card),
+    name: 'notifyDone',
+    text: doneText(cfg, card),
   });
 }
 
@@ -698,7 +698,7 @@ async function runSelftest() {
   await notifyArtifactReady(SELFTEST_CARD);
   await notifyAssignSubscription(SELFTEST_CARD, SELFTEST_SUBSCRIPTIONS);
   await notifyStuck(SELFTEST_CARD, SELFTEST_DIGEST);
-  await notifyAcceptance(SELFTEST_CARD);
+  await notifyDone(SELFTEST_CARD);
 }
 
 async function main() {

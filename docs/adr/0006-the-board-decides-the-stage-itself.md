@@ -2,6 +2,9 @@
 
 Date: 2026-08-27. Status: accepted (step 1 shipped; steps 2–3 pending).
 
+Superseded in part by [decision 10](../DECISIONS.md) (2026-08-29): the acceptance stage
+no longer exists — where this record says "acceptance" / "accepted", read "done".
+
 ## Context
 
 The owner's rule: a stream card moves to Acceptance when *the whole sprint

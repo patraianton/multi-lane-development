@@ -4,7 +4,7 @@ The agreed model lives in [`CONTEXT.md`](../CONTEXT.md) and [`docs/adr/`](./adr/
 
 ## Wave A — Pipeline cards (in code)
 Persistent card store (atomic JSON journal): spec text, flat comments, stage, per-stage clocks
-(ticking; stopped at Acceptance), failure counters (local / CI / acceptance), Stuck after the
+(ticking; stopped at Done), failure counters (local / CI / review), Stuck after the
 third consecutive failure, links (ticket, branch, PR, artifact, lane, subscription, slot).
 A Pipeline view next to the existing windows view: stage columns, card creation form, card
 page. Stage transitions over validated endpoints. No auth, no Telegram yet.
@@ -19,7 +19,7 @@ signed-in founder (agents authenticate with tokens).
 
 ## Wave D — Telegram bot
 The board's own bot, one group, addressed tags, links into cards; subscription assignment by
-answering the bot; Stuck and Acceptance pings.
+answering the bot; Stuck and Done pings.
 
 ## Wave E — CTO loop
 Hook queue on the board, probe delivery into the CTO window, grill flow (Lavish artifact,
@@ -28,7 +28,7 @@ umbrella + one ticket per grill unit, [TICKETING.md](./TICKETING.md)), lane assi
 
 ## Wave F — Execution stages
 Development launch (branch + Opus orchestrator on the assigned lane), Local check (Codex on
-the same lane), CI slot assignment (pinned runner labels, no queues), merge, Acceptance,
+the same lane), CI slot assignment (pinned runner labels, no queues), merge, Done,
 failure loops back to Development.
 
 ## Wave G — Watchdog

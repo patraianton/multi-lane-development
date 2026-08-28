@@ -193,7 +193,7 @@ help[4]:
 ## Pipeline
 
 The board also carries the delivery pipeline: persistent **cards** that move from
-a spec to acceptance. A card is not a window — it lives in the board's own state
+a spec to done. A card is not a window — it lives in the board's own state
 (`state/pipeline-cards.json`), keeps its spec, its comments, its per-stage clocks
 and its failure counters, and only leaves a stage through a validated transition.
 The windows endpoints above are untouched by any of this; the pipeline has
@@ -227,20 +227,19 @@ A card sits in one stage at a time:
 | `development` | code is being written on the assigned lane |
 | `local_check` | the local check runs on the same lane |
 | `ci_pr` | a PR is open and CI runs on the assigned slot |
-| `acceptance` | done as far as the pipeline is concerned; the owner decides |
-| `accepted` | terminal; the card is finished |
+| `done` | terminal; the PR is merged, the card is finished |
 | `stuck` | three failures in a row — the loop itself is the problem, a human has to look |
 
 The road is one-way: `spec → grilled → ticketed → development → local_check →
-ci_pr → acceptance → accepted`. Nothing else is a move. `ticketed` records the
+ci_pr → done`. Nothing else is a move. `ticketed` records the
 phase between the grill and the code: after the grill the CTO writes the GitHub
 tickets (one per work unit) there, and the board refuses `ticketed →
 development` until the card carries a `links.ticket` — entering `ticketed` from
 `grilled` is free. A **failure** (`local`, `ci` or
-`acceptance`) puts the card back into `development` and raises both its own
+`review`) puts the card back into `development` and raises both its own
 counter and `consecutiveFails`; the third consecutive failure sends it to `stuck`
 instead. A failure can only be reported from a stage where something was actually
-run — `development`, `local_check`, `ci_pr`, `acceptance`. From `spec`,
+run — `development`, `local_check`, `ci_pr`. From `spec`,
 `grilled` or `ticketed` it is a 400: nothing has been built yet, and answering it
 would carry the card into `development` around the grill and the tickets. Any stage passed successfully resets `consecutiveFails` to zero, and so
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
@@ -259,7 +258,7 @@ auto holds`) and carried as `shadow: { would, same, reasons, at }` on
 `/pipeline/data` and in the `/api/pipeline` JSON rows. A dead or stale source
 voids the verdict (`facts incomplete`) — unknown is never read as empty. A
 stream without a machine-readable sprint scope (no `units: "issues"` promise
-in stream-watch, no branch prefixes, no umbrella) can never reach acceptance
+in stream-watch, no branch prefixes, no umbrella) can never reach done
 by facts, and the verdict says what is missing. Automatic transitions are a
 later step, enabled only after the shadow has been checked against reality.
 
@@ -267,17 +266,14 @@ later step, enabled only after the shadow has been checked against reality.
 
 Every clock is computed from `stageHistory` — the list of `{stage, enteredAt,
 leftAt}` segments a card has been through. `clock` on the list is the card's
-**delivery time**: the sum of every segment except `acceptance` and `accepted`.
-Acceptance is the owner's decision, not the pipeline's work, so a card waiting
-there does not age — its `clock` is printed with `(stopped)`. The wait itself is
-still written into the history and is readable in `clock-by-stage`, so "the owner
-sat on it for two days" is never lost, it is just not charged to delivery.
+**delivery time**: the sum of every segment except `done`, which is terminal —
+a finished card does not age, its `clock` is printed with `(stopped)`. Every
+segment, `done` included, stays in the history and is readable in `clock-by-stage`.
 
 ### What is in the answer
 
 Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
-counters: **cards**, **stuck**, **waiting for acceptance**, **accepted**,
-**failures**, **stale status**), then:
+counters: **cards**, **stuck**, **done**, **failures**, **stale status**), then:
 
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
   (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (the watchdog's word: `moving`,
@@ -324,7 +320,8 @@ exist, the board spawns one card per unit ticket: `parent` (the sprint card's
 id), `ticket`, `unit`, `links.ticket` / `links.branch` from the ticket,
 `links.pr` and `lane` refreshed from the facts every sweep, `sprint-of` in the
 card view. They start at `ticketed` and are walked forward by facts alone —
-busy lane → `development`, PR open → `ci_pr`, PR merged → `accepted` — never
+busy lane → `development`, the lane running the project's local check →
+`local_check`, PR open → `ci_pr`, PR merged → `done` — never
 backwards, never out of `stuck`, and not at all while a source is stale.
 Deleting the sprint card deletes its unit cards. The list view's `summary`
 counts them under `units`.
@@ -380,9 +377,8 @@ the reason in plain words; the store is left exactly as it was.
 | --- | --- | --- |
 | `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec — at most 200 characters, longer is 400 naming the limit and the actual length |
 | `move` | `to` | one step along the road; anything else is 400. `grilled → ticketed` additionally requires a linked review artifact, if there is one, to be marked answered (`artifactAnswered`); `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
-| `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
+| `fail` | `kind`: `local` \| `ci` \| `review` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
-| `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. At most 200 characters — longer is 400 naming the limit and the actual length, never a silent clip. The spec is not touched |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window. A *different* `links.artifact` is a new round of questions and clears `artifactAnswered` |
@@ -619,9 +615,9 @@ in the board header.
 ```
 pipeline: http://127.0.0.1:4878
 generated: 2026-08-26T17:36:54.960Z
-summary: cards 3, stuck 1, waiting for acceptance 0, accepted 1, failures 7, stale status 0
+summary: cards 3, stuck 1, done 1, failures 7, stale status 0
 cards[3]{id,title,stage,clock,fails,verdict}:
-  cmtadl1k48ian,Ship the pipeline view,accepted,3h 12m (stopped),local 3 ci 1,moving
+  cmtadl1k48ian,Ship the pipeline view,done,3h 12m (stopped),local 3 ci 1,moving
   cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
   cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
 stuck[1]{id,title,fails,waiting}:
@@ -629,8 +625,8 @@ stuck[1]{id,title,fails,waiting}:
 stale: 0 — no active card has a stale Status
 help[5]:
   one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
-  stages: spec, grilled, ticketed, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
-  clock is the delivery time; acceptance is the owner's decision and does not count — a card waiting there shows "(stopped)"
+  stages: spec, grilled, ticketed, development, local_check, ci_pr, done; stuck — three failures in a row, waiting for a human
+  clock is the delivery time; done is terminal and does not count — a finished card shows "(stopped)"
   stale status: an active card (development, local_check, ci_pr) whose Status is missing or older than twice the Watchdog interval
   ?format=json — the same shape as plain JSON
 ```

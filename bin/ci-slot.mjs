@@ -971,7 +971,7 @@ function printPlan(ctx) {
   const failPost = cfg.boardUrl ? failUrl(cfg) : '{boardUrl}/pipeline/card/fail';
   lines.push('POST on green (after merge):');
   lines.push(`  POST ${passUrl}`);
-  lines.push(`  ${JSON.stringify({ id: card.id, to: 'acceptance' })}`);
+  lines.push(`  ${JSON.stringify({ id: card.id, to: 'done' })}`);
   lines.push('');
   lines.push('POST on red (no merge):');
   lines.push(`  POST ${failPost}`);
@@ -1215,8 +1215,8 @@ async function main() {
     if (result.verdict === 'green') {
       process.stdout.write('CI green\n');
       await mergePr(cfg, prNumber);
-      await postJson(cfg, moveUrl(cfg), { id: card.id, to: 'acceptance' },
-        `moved card ${card.id} to acceptance`);
+      await postJson(cfg, moveUrl(cfg), { id: card.id, to: 'done' },
+        `moved card ${card.id} to done`);
     } else {
       process.stdout.write('CI red\n');
       await postJson(cfg, failUrl(cfg), { id: card.id, kind: 'ci' },

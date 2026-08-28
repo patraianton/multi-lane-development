@@ -7,7 +7,7 @@
 //   herdr api snapshot / workspace list / agent list  — windows, panes, state
 //   herdr agent explain <pane>                        — which rule set that state
 //   herdr pane read <pane> --source visible           — footer line: account, model, effort
-//   ssh <host> hzlane status                          — build lanes on Linux hosts
+//   ssh <host> hzlane status + pgrep (local check)  — build lanes on Linux hosts
 //   ssh <host> (git + pgrep + lsof)                   — build lanes on a Mac kitchen
 //   gh pr list / gh issue view                        — open PRs, CI colour, umbrella issues
 //   stream-watch file                                 — window -> lanes and branch prefixes
@@ -40,7 +40,7 @@ import {
   notifyArtifactReady,
   notifyAssignSubscription,
   notifyStuck,
-  notifyAcceptance,
+  notifyDone,
 } from './telegram-bot.mjs';
 import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
 import {
@@ -252,7 +252,7 @@ function applyConfig(raw) {
       artifactReady: notifyArtifactReady,
       assignSubscription: notifyAssignSubscription,
       stuck: notifyStuck,
-      acceptance: notifyAcceptance,
+      done: notifyDone,
     } : null,
   });
   return config;
@@ -513,6 +513,31 @@ const programsSource = makeSource('programs', 30000, async () => {
 
 // ------------------------------------------------------------- build lanes
 
+// A lane running the project's local check (scripts/ci-local.mjs, usually
+// through ci-local-and-stamp.sh) is a fact of its own — it is what the
+// local_check stage means. The process's working directory names the lane.
+// The bracketed first letters keep pgrep from matching this very command.
+// CWD is replaced per platform: /proc on Linux, lsof on the Mac.
+const CHECK_PROBE = [
+  'for p in $(pgrep -f "[s]cripts/ci-local.mjs|[c]i-local-and-stamp" 2>/dev/null); do',
+  'echo "CHECK $p|$(ps -o etime= -p $p | tr -d " ")|CWD|$(ps -o args= -p $p | tr "\\n" " " | cut -c1-200)";',
+  'done;',
+].join(' ');
+const HZ_PROBE = 'hzlane status 2>&1; '
+  + CHECK_PROBE.replace('CWD', '$(readlink /proc/$p/cwd 2>/dev/null)');
+
+// "CHECK <pid>|<etime>|<cwd>|<cmd>" → the lane whose folder the check runs in.
+function attachChecks(lanes, out) {
+  for (const line of String(out).split(/\r?\n/)) {
+    const m = line.match(/^CHECK\s+(\d+)\|([^|]*)\|([^|]*)\|(.*)$/);
+    if (!m) continue;
+    const cwd = m[3].trim().replace(/[\\/]+$/, '');
+    const lane = lanes.find(l => cwd.endsWith('/' + l.lane) || cwd.includes('/' + l.lane + '/'));
+    if (!lane || lane.check) continue;
+    lane.check = { pid: m[1], since: m[2] ? `${m[2]} ago` : null, cmd: m[4].trim() };
+  }
+}
+
 // hzlane status: "lane-3: BUSY since Wed 2026-08-26 09:25:20 UTC  branch=feat/…"
 function parseHzlane(out, hostName) {
   const lanes = [];
@@ -535,6 +560,7 @@ function parseHzlane(out, hostName) {
     }
     if (/^\s*(ci|host):/i.test(line)) extras.push(line.trim());
   }
+  attachChecks(lanes, out);
   return { lanes, extras };
 }
 
@@ -548,6 +574,7 @@ const MAC_PROBE = [
   'for p in $(pgrep -f "codex exec" 2>/dev/null); do',
   'echo "PROC $p|$(ps -o etime= -p $p | tr -d " ")|$(lsof -a -d cwd -p $p -Fn 2>/dev/null | grep "^n" | head -1 | cut -c2-)|$(ps -o command= -p $p | tr "\\n" " " | cut -c1-400)";',
   'done;',
+  CHECK_PROBE.replace('CWD', '$(lsof -a -d cwd -p $p -Fn 2>/dev/null | grep "^n" | head -1 | cut -c2-)'),
   'echo "UP $(uptime | tr -s " ")"',
 ].join(' ');
 
@@ -575,6 +602,7 @@ function parseMac(out, hostName, kitchenAbs) {
   // count is useful: it eats the same cores.
   const outside = procs.filter(p => !lanes.some(l => p.cwd && p.cwd.endsWith('/' + l.lane))).length;
   if (outside) extras.push(`${outside} more codex process(es) outside the project lanes`);
+  attachChecks(lanes, out);
   return { lanes, extras, kitchen: kitchenAbs };
 }
 
@@ -597,7 +625,7 @@ function sshArgs(host, remote) {
 async function probeHost(name, host) {
   const remote = host.kind === 'mac'
     ? MAC_PROBE.replaceAll('KITCHEN', host.kitchen ?? '~/kitchens')
-    : 'hzlane status 2>&1';
+    : HZ_PROBE;
   const started = Date.now();
   const budget = Math.max(45000, (connectTimeoutSec(host) + 35) * 1000);
   let out = await runText(SSH, sshArgs(host, remote), budget);

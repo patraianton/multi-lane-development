@@ -5,7 +5,7 @@ A live board for a coding-agent fleet, and a delivery pipeline those agents run.
 The page has two views, served by one process (`bin/watchtower.mjs`):
 
 - **Windows** — the original monitoring board. Every herdr window on a chosen project: what the agent is doing, which build lane is compiling, which pull requests are open and what CI says, and — first column, always — who is waiting for a human.
-- **Pipeline** — persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → acceptance, while live data (windows, lanes, branches, PRs) attaches to it.
+- **Pipeline** — persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → done, while live data (windows, lanes, branches, PRs) attaches to it.
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
@@ -17,7 +17,7 @@ This repository grew from the windows board through waves A–G (pipeline store,
 
 A card sits in one stage at a time. The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → acceptance → accepted`
+`spec → grilled → ticketed → development → local_check → ci_pr → done`
 
 | Stage | Meaning |
 | --- | --- |
@@ -27,19 +27,18 @@ A card sits in one stage at a time. The road is one-way:
 | `development` | Code is being written on the assigned lane |
 | `local_check` | The local check runs on the same lane |
 | `ci_pr` | A pull request is open and CI runs on an assigned slot |
-| `acceptance` | Done as far as the pipeline is concerned; a founder decides |
-| `accepted` | Terminal; the card is finished |
+| `done` | Terminal; the PR is merged, the card is finished |
 | `stuck` | Three failures in a row — a human has to look |
 
 `ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/GRILL.md`](docs/GRILL.md) §2).
 
-A **sprint** — a card whose `links.ticket` is an umbrella issue — splits into **unit cards** once it has left `grilled` and its unit tickets exist: one card per ticket, bound to the sprint, moved by facts alone (busy lane → `development`, PR open → `ci_pr`, PR merged → `accepted`). The sprint card then leaves the columns for the **sprint band** above them, and its own stage follows the units: `development` once any unit has started, `acceptance` once every unit is merged — the owner's cue to accept the sprint. Details: [`docs/API.md`](docs/API.md) (Unit cards).
+A **sprint** — a card whose `links.ticket` is an umbrella issue — splits into **unit cards** once it has left `grilled` and its unit tickets exist: one card per ticket, bound to the sprint, moved by facts alone (busy lane → `development`, the lane running the project's local check → `local_check`, PR open → `ci_pr`, PR merged → `done`). The sprint card then leaves the columns for the **sprint band** above them, and its own stage follows the units: `development` once any unit has started, `done` once every unit is merged or closed. Details: [`docs/API.md`](docs/API.md) (Unit cards).
 
-`stuck` is not a step of the road. A **failure** (`local`, `ci`, or `acceptance`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `acceptance`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
+`stuck` is not a step of the road. A **failure** (`local`, `ci`, or `review`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
 
 A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`).
 
-Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `acceptance` and `accepted`. Acceptance is the owner's decision, not the pipeline's work — a card waiting there shows `(stopped)`.
+Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
 
 **Status** is a different field: a one-line "what is happening right now", written by the Watchdog, with a verdict `moving` / `stalled` / `looping`. It is not the stage.
 
@@ -56,10 +55,10 @@ Each piece is a small Node process with no extra packages. Development-launch, l
 | **Board server** | `bin/watchtower.mjs` | Serves the page, `/api/*`, pipeline mutations, probe endpoints, and the hook queue. Listens on `127.0.0.1:4878`. |
 | **Probe** | `bin/probe.mjs` | Runs on the owner's machine, next to herdr. Every `intervalSec` seconds it POSTs a herdr snapshot to the board, pulls queued hooks, delivers each with `herdr pane run`, and acks what it delivered. Lanes, PRs and CI are not in this payload — the board host reads those itself. |
 | **CTO hook queue** | `POST /hooks/enqueue`, `state/hooks.json` | The CTO stays a herdr window on the owner's machine. The board never calls it. Work is queued as hooks; the probe delivers them. A hook waiting more than ten minutes shows `hooks queued, oldest Nm` in the header. |
-| **Telegram bot** | `bin/telegram-bot.mjs` | One group, two founders. The **board** posts four notifications (artifact ready, assign subscription, stuck, acceptance). A **separate** poller long-polls button presses and POSTs `assign-subscription` back. Do not start two pollers on the same bot. |
+| **Telegram bot** | `bin/telegram-bot.mjs` | One group, two founders. The **board** posts four notifications (artifact ready, assign subscription, stuck, done). A **separate** poller long-polls button presses and POSTs `assign-subscription` back. Do not start two pollers on the same bot. |
 | **Development-launch** | `bin/dev-launch.mjs` | For a card in `development`: on the assigned lane, fetch the product repo, create `feat/card-<id>-…`, write `TASK-<id>.md`, start the lane's `launchCommand` detached, then POST the branch onto the card. It never picks a lane, never assigns a subscription, and never waits for the orchestrator. |
 | **Local-check** | `bin/local-check.mjs` | For a card in `local_check`: on the same lane, run the project's local test command, poll the log for `LOCAL_CHECK_EXIT=N`. Pass → move to `ci_pr`. Fail → `POST /pipeline/card/fail` `{ "kind": "local" }`. |
-| **CI-slot** | `bin/ci-slot.mjs` | For a card in `ci_pr`: claim a **free** slot from the pool, pin that slot's GitHub Actions runner label on the PR, poll `gh pr checks`. Green → squash-merge → move to `acceptance`. Red → fail `{ "kind": "ci" }`. Either way, release the slot. **There is no queue.** If no slot is free, it prints `no free CI slot — add capacity`, assigns nothing, and exits 3. Occupancy is `state/ci-slots.json`; the board only reads it (`GET /api/slots`). |
+| **CI-slot** | `bin/ci-slot.mjs` | For a card in `ci_pr`: claim a **free** slot from the pool, pin that slot's GitHub Actions runner label on the PR, poll `gh pr checks`. Green → squash-merge → move to `done`. Red → fail `{ "kind": "ci" }`. Either way, release the slot. **There is no queue.** If no slot is free, it prints `no free CI slot — add capacity`, assigns nothing, and exits 3. Occupancy is `state/ci-slots.json`; the board only reads it (`GET /api/slots`). |
 | **Watchdog** | `bin/watchdog.mjs` | A separate process from the board. Every `intervalMin` minutes (default 15) it scores each **active** card (`development`, `local_check`, `ci_pr`): lane log tail, CI via `gh` if the card has a PR link, then a cheap language-model command writes Status and a verdict. It never moves a card and never talks to herdr. |
 | **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
 
