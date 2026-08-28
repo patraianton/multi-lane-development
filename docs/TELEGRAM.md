@@ -6,7 +6,8 @@ and carries a link back to the pipeline card.
 
 The owner assigns a card's subscription by pressing a button under the bot's
 message. The bot then POSTs to the board; the board writes the subscription
-on the card and advances it to Development in the same write.
+on the card and advances it to Ticketed in the same write — the CTO writes
+the GitHub tickets there before development starts.
 
 This file is the contract. The bot is `bin/telegram-bot.mjs`. It has no
 external packages: it calls `https://api.telegram.org` with the built-in
@@ -227,7 +228,7 @@ Tags **the owner**. One inline button per available subscription.
 ```
 @anton
 
-Assign a subscription for "Ship the pipeline Telegram bot" so the card can enter Development.
+Assign a subscription for "Ship the pipeline Telegram bot" so the card can move on to Ticketed.
 
 Card: https://watchtower.example/#pipeline/c-selftest
 ```
@@ -332,7 +333,7 @@ Body:
 
 A 2xx response is success. The board records the subscription, writes a
 comment `subscription <name> assigned by <by>`, and moves the card from
-Grilled to Development in that same write. The card must be in `grilled`
+Grilled to Ticketed in that same write. The card must be in `grilled`
 with an empty subscription, and the name must be one of config
 `subscriptions`. Wrong stage, unknown name, or a second assign answers
 `400`. Any other HTTP status is a failure: the bot shows the error to the

@@ -244,7 +244,7 @@ the endpoints below; they do not move a card themselves.
 
 A card sits in one stage. The road is one-way:
 
-`spec → grilled → development → local_check → ci_pr → acceptance → accepted`
+`spec → grilled → ticketed → development → local_check → ci_pr → acceptance → accepted`
 
 A **failure** is one of three kinds. Each has its own counter. A failure
 can only be reported from a stage where something was actually run

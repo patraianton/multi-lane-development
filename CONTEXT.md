@@ -1,8 +1,8 @@
 # Watchtower
 
 A live board for a coding-agent fleet, evolving into a delivery pipeline: persistent task cards
-move through stages (spec → grilled → development → local check → CI/PR → acceptance) while live
-data — herdr windows, build lanes, branches, PRs — attaches to them.
+move through stages (spec → grilled → ticketed → development → local check → CI/PR → acceptance)
+while live data — herdr windows, build lanes, branches, PRs — attaches to them.
 
 ## Language
 
@@ -17,8 +17,10 @@ work, not the work item itself.
 _Avoid_: card (the pre-pipeline Watchtower used card = window; that meaning is retired)
 
 **Stage**:
-A pipeline column a card is in: Spec, Grilled, Development, Local check, CI/PR, Acceptance —
-plus Stuck, where a card lands after its third consecutive failure and waits for a founder.
+A pipeline column a card is in: Spec, Grilled, Ticketed, Development, Local check, CI/PR,
+Acceptance — plus Stuck, where a card lands after its third consecutive failure and waits for a
+founder. Ticketed is the CTO writing the GitHub tickets (one per work unit) after the grill;
+the card leaves it for Development only with a ticket link attached.
 _Avoid_: status (reserved for the watchdog's "what is happening right now" line), column (UI term)
 
 **Slot**:
@@ -29,7 +31,7 @@ _Avoid_: runner (the GitHub Actions term for the same machine), queue
 **Subscription**:
 A coding-agent account (Codex or Claude home) that pays for a card's development run. The
 owner assigns one per card by answering the Telegram bot; the card auto-advances to
-Development once assigned.
+Ticketed once assigned.
 
 **Watchdog**:
 The board's built-in checker: every ~15 minutes it gathers evidence for each active card
@@ -63,7 +65,8 @@ delivers queued hooks into agent windows.
 
 **Ticket**:
 The GitHub issue the CTO creates in the product repo after the grill — the durable, public
-record of the finished spec. Written under the CTO's own GitHub App identity.
+record of the finished spec. Written under the CTO's own GitHub App identity, during the
+Ticketed stage; its link on the card (`links.ticket`) is what opens the way to Development.
 _Avoid_: issue (when speaking of the pipeline artifact), card (the board entity)
 
 **Founder**:
