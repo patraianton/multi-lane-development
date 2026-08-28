@@ -353,6 +353,26 @@ function staleSourceNames() {
     .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
     .map(s => s.name);
 }
+// Lanes of a host whose probe just failed are unknown, not empty. The last
+// good answer stands in for up to ten minutes (a unit keeps its lane through
+// one dropped sweep); after that the host counts as a stale source and the
+// unit cards hold still.
+const lastGoodLanes = new Map(); // host -> { lanes, at }
+function lanesWithMemory(hostResults, staleSources) {
+  const lanes = [];
+  for (const h of hostResults ?? []) {
+    if (h.ok) {
+      lastGoodLanes.set(h.host, { lanes: (h.lanes ?? []).map(l => ({ ...l, hostOk: true })), at: Date.now() });
+      lanes.push(...lastGoodLanes.get(h.host).lanes);
+      continue;
+    }
+    const kept = lastGoodLanes.get(h.host);
+    if (kept && Date.now() - kept.at <= FRESH_MS) lanes.push(...kept.lanes.map(l => ({ ...l, hostOk: false, remembered: true })));
+    else staleSources.push(`lanes:${h.host}`);
+  }
+  return lanes;
+}
+
 const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
 const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   let facts;
@@ -369,12 +389,13 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // the pipeline still sees lanes, PRs and tickets move.
     await Promise.all([streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
       .map(src => src.tick()).filter(Boolean));
+    const staleSources = staleSourceNames();
     facts = {
-      lanes: (lanesSource.value ?? []).flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok }))),
+      lanes: lanesWithMemory(lanesSource.value, staleSources),
       prs: prSource.value ?? [],
       mergedPrs: mergedPrSource.value ?? [],
       unitIssues: unitIssuesSource.value ?? new Map(),
-      staleSources: staleSourceNames(),
+      staleSources,
     };
   }
   const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
@@ -568,7 +589,11 @@ async function probeHost(name, host) {
     ? MAC_PROBE.replaceAll('KITCHEN', host.kitchen ?? '~/kitchens')
     : 'hzlane status 2>&1';
   const started = Date.now();
-  const out = await runText(SSH, sshArgs(host, remote), Math.max(45000, (connectTimeoutSec(host) + 35) * 1000));
+  const budget = Math.max(45000, (connectTimeoutSec(host) + 35) * 1000);
+  let out = await runText(SSH, sshArgs(host, remote), budget);
+  // A second attempt right away usually lands where the first one was dropped
+  // on the way (mesh VPN paths); one retry, not a loop.
+  if (out === null) out = await runText(SSH, sshArgs(host, remote), budget);
   if (out === null) {
     return { host: name, target: host.target, ok: false, lanes: [], extras: [], error: 'ssh did not answer', tookMs: Date.now() - started };
   }
