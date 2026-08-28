@@ -16,7 +16,8 @@ bin\wt.cmd pipeline        the delivery pipeline as short text
 bin\wt.cmd --pipeline      the same as pipeline
 bin\wt.cmd pipeline --full specs in full, no clipping
 bin\wt.cmd pipeline --json the same shape as plain JSON
-bin\wt.cmd card <id>       one pipeline card in full
+bin\wt.cmd card <id>       one pipeline card (summary and spec line count)
+bin\wt.cmd card <id> --spec  the same card with the spec text
 bin\wt.cmd --help          help for every field
 ```
 
@@ -199,16 +200,20 @@ The windows endpoints above are untouched by any of this; the pipeline has
 endpoints of its own.
 
 ```
-GET http://127.0.0.1:4878/api/pipeline             short text (TOON-flavoured)
+GET http://127.0.0.1:4878/api/pipeline                    short text (TOON-flavoured)
 GET http://127.0.0.1:4878/api/pipeline?format=json
 GET http://127.0.0.1:4878/api/pipeline?full=1
-GET http://127.0.0.1:4878/api/pipeline/card/<id>   one card in full
+GET http://127.0.0.1:4878/api/pipeline/card/<id>          one card (spec counted, not included)
+GET http://127.0.0.1:4878/api/pipeline/card/<id>?spec=1   the same card with the spec text
+GET http://127.0.0.1:4878/pipeline/card/<id>/spec         the spec as written, text/plain
 ```
 
 `format` and `full` behave exactly as on `/api/board`, down to the wording of the
 errors: an unknown parameter, an unknown value, an empty value or the same
 parameter twice all answer 400 with a hint. `full` is rejected on the single-card
-view — it prints in full anyway.
+view — it prints in full anyway. The single-card view takes `spec=1` instead:
+without it the answer carries the card's `summary` and the spec's line count,
+not the text (see **One pipeline card** below).
 
 ### Stages
 
@@ -280,17 +285,44 @@ counters: **cards**, **stuck**, **waiting for acceptance**, **accepted**,
   Empty until a Status exists, unless `state/watchdog.json` is present;
 - `specs` — under `?full=1` only, the spec text of every card that has one.
 
-The long parts of a card — the spec as written, every comment, the whole stage
-history — are not on the list at all. They are read one card at a time:
+The long parts of a card — the summary, every comment, the whole stage
+history — are not on the list at all. They are read one card at a time.
+
+### One pipeline card
 
 ```
 GET http://127.0.0.1:4878/api/pipeline/card/<id>
+GET http://127.0.0.1:4878/api/pipeline/card/<id>?spec=1
 ```
 
-which answers with plain `field: value` lines (`card`, `title`, `stage`,
+It answers with plain `field: value` lines (`card`, `title`, `stage`,
 `created`, `clock`, `clock-by-stage`, `fails`, `consecutive-fails`, `lane`,
-`subscription`, `slot`, `window`, `links`, `status`, `spec`) plus a `comments`
-table and a `history` table. An unknown id gets 404 and the ids currently in the pipeline.
+`subscription`, `slot`, `window`, `links`, `status`, `summary`, `spec-lines`)
+plus a `comments` table, a `history` table and a `help` line. An unknown id
+gets 404 and the ids currently in the pipeline.
+
+The spec text itself is **not** in the default answer — a real spec is hundreds
+of lines. Instead the answer carries:
+
+- `summary` — the card's short retelling (up to 1200 characters), `-` when none
+  is written;
+- `spec-lines` — how many lines the spec is (`0` — the card has no spec);
+- a `help` line (`specHint` in JSON) saying where the text is: `?spec=1` on this
+  same address adds a `spec` field with the full text (folded to one line in the
+  TOON shape, as written in JSON), and `/pipeline/card/<id>/spec` serves it as a
+  page.
+
+```
+GET http://127.0.0.1:4878/pipeline/card/<id>/spec
+```
+
+answers `text/plain; charset=utf-8` with the spec exactly as written — no
+clipping, no folding, no markup — so it opens in a browser as a readable page.
+A card with no spec answers `(the card has no spec)`; an unknown id is 404.
+Auth is the same as reading the board (`/pipeline/data`): open while
+`auth.founders` is empty, otherwise a founder session, localhost-as-owner, or
+`apiToken`. The board page links here from every open card as
+`spec (N lines)`.
 
 ### Changing a card
 
@@ -300,12 +332,13 @@ the reason in plain words; the store is left exactly as it was.
 
 | action | body | what it does |
 | --- | --- | --- |
-| `create` | `title` (required), `spec` | a new card at the `spec` stage |
+| `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec (clipped to 1200 characters) |
 | `move` | `to` | one step along the road; anything else is 400 |
 | `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
+| `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. The spec is not touched |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window |
 
 The Watchdog does **not** use `update`. It writes Status on a path of its own:
@@ -545,7 +578,7 @@ stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
 stale: 0 — no active card has a stale Status
 help[5]:
-  one card in full (spec, comments, history) — /api/pipeline/card/<id>, the whole pipeline in full — ?full=1
+  one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
   stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted; stuck — three failures in a row, waiting for a human
   clock is the delivery time; acceptance is the owner's decision and does not count — a card waiting there shows "(stopped)"
   stale status: an active card (development, local_check, ci_pr) whose Status is missing or older than twice the Watchdog interval

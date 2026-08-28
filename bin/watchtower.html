@@ -321,6 +321,7 @@
     border: 1px solid #6a5122; background: #1a140c; padding: 3px 6px; border-radius: 3px;
   }
   .pcard .stale-mark { color: var(--done); font-family: var(--mono); font-size: 10px; }
+  .pcard a.spec-link { color: var(--focus); font-family: var(--mono); font-size: 11px; }
 
   /* Onboarding replaces the board itself, so the daily controls are out of the
      way until a project is picked. The pipeline is not a view of herdr windows
@@ -360,11 +361,13 @@
   </form>
 </div>
 <!-- "+ Card": a card is born at the Spec stage with a title and, if you already
-     have one, the spec text. Everything else is filled in as it moves. -->
+     have them, the spec text and a short summary. Everything else is filled in
+     as it moves. -->
 <div class="handbar" id="pipebar">
   <form id="pipe-form" autocomplete="off">
     <input class="t" id="pipe-title" placeholder="title (required)" maxlength="200">
     <input class="txt" id="pipe-spec" placeholder="spec (optional)" maxlength="20000">
+    <input class="txt" id="pipe-summary" placeholder="summary (optional, short)" maxlength="1200">
     <button class="hbtn" type="submit">add card</button>
     <span class="note" id="pipe-note"></span>
   </form>
@@ -960,8 +963,23 @@ function pcard(c) {
 
   // ---- everything below is shown only when the card is opened
   const inner = [];
-  if (c.spec && c.spec.trim()) {
-    inner.push('<h3>spec</h3><div class="spec">' + esc(c.spec) + '</div>');
+  // An open card never shows the whole spec — a real one is hundreds of lines
+  // and would swallow the board. It shows the summary (or, without one, the
+  // first lines of the spec, marked as the start), and the full text is a
+  // plain-text page behind the "spec (N lines)" link.
+  const specText = (c.spec || '').trim() ? c.spec : '';
+  const specLines = specText ? specText.trim().split(/\r?\n/).length : 0;
+  if ((c.summary || '').trim()) {
+    inner.push('<h3>summary</h3><div class="spec">' + esc(c.summary) + '</div>');
+  } else if (specText) {
+    const lines = specText.trim().split(/\r?\n/);
+    inner.push('<h3>spec — the start</h3><div class="spec">'
+      + esc(lines.slice(0, 10).join('\n')) + (lines.length > 10 ? '\n…' : '') + '</div>');
+  }
+  if (specText) {
+    inner.push('<div class="row"><a class="spec-link" target="_blank"'
+      + ' href="/pipeline/card/' + encodeURIComponent(c.id) + '/spec">'
+      + 'spec (' + specLines + ' line' + (specLines === 1 ? '' : 's') + ')</a></div>');
   }
 
   const stages = ROAD.concat(['stuck']).filter(s => cl.byStage[s]);
@@ -1199,10 +1217,12 @@ $('pipe-form').onsubmit = async (ev) => {
   const title = $('pipe-title').value.trim();
   if (!title) { $('pipe-note').textContent = 'a title is required'; $('pipe-title').focus(); return; }
   $('pipe-note').textContent = '';
-  const r = await post('/pipeline/card/create', { title, spec: $('pipe-spec').value });
+  const r = await post('/pipeline/card/create',
+    { title, spec: $('pipe-spec').value, summary: $('pipe-summary').value });
   if (r && r.error) { $('pipe-note').textContent = r.error; return; }
   $('pipe-title').value = '';
   $('pipe-spec').value = '';
+  $('pipe-summary').value = '';
   $('pipe-note').textContent = 'added to Spec';
   setTimeout(() => { $('pipe-note').textContent = ''; }, 2000);
   pipePoll();

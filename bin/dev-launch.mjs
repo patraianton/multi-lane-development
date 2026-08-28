@@ -726,7 +726,9 @@ async function boardFetch(url, { method, token, body }) {
 }
 
 function cardUrl(cfg, id) {
-  return `${cfg.boardUrl}/api/pipeline/card/${encodeURIComponent(id)}?format=json`;
+  // spec=1: the card API answers without the spec text by default, and the
+  // TASK file is built from exactly that text.
+  return `${cfg.boardUrl}/api/pipeline/card/${encodeURIComponent(id)}?format=json&spec=1`;
 }
 
 function updateUrl(cfg) {
