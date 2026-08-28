@@ -73,12 +73,48 @@ test('streams that is not a list, and a file that is not an object', () => {
   }
 });
 
-test('disabled records are skipped silently, as before', () => {
+test('disabled records are skipped silently whatever they hold, as before', () => {
   const out = normStreamWatch({
-    streams: [{ id: 'off', branch_prefix: 'x-', disabled: true }],
+    streams: [
+      { id: 'off', branch_prefix: 'x-', disabled: true },
+      { id: 'off-rubbish', branch_prefix: 42, lanes: 'junk', disabled: true },
+    ],
   });
   assert.deepEqual(out.problems, []);
   assert.ok(!out.byId.has('off'));
+  assert.ok(!out.byId.has('off-rubbish'));
+});
+
+test('an empty prefix is dropped and reported — it would match every branch', () => {
+  const asString = normStreamWatch({ streams: [{ id: 's', branch_prefix: '' }] });
+  assert.deepEqual(asString.byId.get('s').branch_prefix, []);
+  assert.equal(asString.problems.length, 1);
+  assert.ok(asString.problems[0].includes('empty'));
+  const inList = normStreamWatch({ streams: [{ id: 's', branch_prefix: ['ok-', '', '  '] }] });
+  assert.deepEqual(inList.byId.get('s').branch_prefix, ['ok-']);
+  assert.equal(inList.problems.length, 1);
+});
+
+test('rubbish lanes lose themselves, the record stays', () => {
+  const notList = normStreamWatch({ streams: [{ id: 's', lanes: 'junk' }] });
+  assert.deepEqual(notList.byId.get('s').lanes, []);
+  assert.equal(notList.problems.length, 1);
+  assert.ok(notList.problems[0].includes('lanes'));
+  const badEntry = normStreamWatch({
+    streams: [{ id: 's', lanes: [null, { host: 'mac', task_match: 'T-' }, 'x'] }],
+  });
+  assert.deepEqual(badEntry.byId.get('s').lanes, [{ host: 'mac', task_match: 'T-' }]);
+  assert.equal(badEntry.problems.length, 1);
+});
+
+test('a rubbish state_file loses itself, the record stays', () => {
+  const out = normStreamWatch({ streams: [{ id: 's', state_file: 42 }] });
+  assert.equal(out.byId.get('s').state_file, '');
+  assert.equal(out.problems.length, 1);
+  assert.ok(out.problems[0].includes('state_file'));
+  const ok = normStreamWatch({ streams: [{ id: 's', state_file: 'C:\\x\\PROGRAM-STATE.md' }] });
+  assert.equal(ok.byId.get('s').state_file, 'C:\\x\\PROGRAM-STATE.md');
+  assert.deepEqual(ok.problems, []);
 });
 
 test('cto_pane and repo come through; a rubbish repo is ignored and reported', () => {
