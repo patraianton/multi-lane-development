@@ -1,0 +1,16 @@
+// Template only — bin/lavish-deploy.mjs copies this to wrangler.gen.jsonc
+// (gitignored) with the real account id and KV namespace id filled in, then
+// runs `npx wrangler deploy --config wrangler.gen.jsonc`. Never put real ids
+// or tokens in this file: it is committed.
+{
+  "name": "watchtower-lavish",
+  "main": "index.mjs",
+  "compatibility_date": "2026-08-01",
+  "account_id": "__ACCOUNT_ID__",
+  "kv_namespaces": [
+    { "binding": "LAVISH_KV", "id": "__KV_NAMESPACE_ID__" }
+  ]
+  // The publish/poll token is a secret, never a var:
+  //   npx wrangler secret put LAVISH_API_TOKEN --config wrangler.gen.jsonc
+  // (bin/lavish-deploy.mjs does this too.)
+}
