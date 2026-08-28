@@ -25,7 +25,7 @@ rule's substance where it is used.
 board: `bin/pipeline.mjs` runs `spec → grilled → ticketed → development`, and the move
 `ticketed → development` is refused until `links.ticket` is set on the card. The owner's
 subscription answer stays valid from `grilled` and auto-advances the card to `ticketed`
-(not `development`); the CTO moves the card onward only after the §4 checklist is green —
+(not `development`; refused while a linked review artifact is still unanswered); the CTO moves the card onward only after the §4 checklist is green —
 the `links.ticket` gate is the machine-enforced floor, the checklist is the contract.
 
 Input: a `grilled` card — the grill outcome ([GRILL.md](./GRILL.md) §2) with the unit

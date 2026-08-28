@@ -302,9 +302,19 @@ GET http://127.0.0.1:4878/api/pipeline/card/<id>?spec=1
 
 It answers with plain `field: value` lines (`card`, `title`, `stage`,
 `created`, `clock`, `clock-by-stage`, `fails`, `consecutive-fails`, `lane`,
-`subscription`, `slot`, `window`, `links`, `status`, `summary`, `spec-lines`)
-plus a `comments` table, a `history` table and a `help` line. An unknown id
-gets 404 and the ids currently in the pipeline.
+`subscription`, `slot`, `window`, `links`, `artifact`, `status`, `summary`,
+`spec-lines`) plus a `comments` table, a `history` table and a `help` line. An
+unknown id gets 404 and the ids currently in the pipeline.
+
+`artifact` is the state of the linked review artifact: `-` (no link),
+`awaiting answers` (linked, no founder answer seen yet, card on a paper
+stage), or `answered <time> (<N> answers, by <who>)`. In JSON the list view
+and the page carry the same fact as `artifactAnswered: { at, answers, by }`
+(`null` until an answer exists). The board writes it itself — every 30 s it
+reads where the artifact's answers live (the desktop Lavish state file for any
+link naming a local session key, tunnels included; the Cloudflare instance's
+`GET /api/state` for links under `lavish.publicBaseUrl`) and marks the card
+the moment founder answers exist, without draining the CTO's poll.
 
 The spec text itself is **not** in the default answer — a real spec is hundreds
 of lines. Instead the answer carries:
@@ -339,13 +349,14 @@ the reason in plain words; the store is left exactly as it was.
 | action | body | what it does |
 | --- | --- | --- |
 | `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec — at most 200 characters, longer is 400 naming the limit and the actual length |
-| `move` | `to` | one step along the road; anything else is 400. `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
+| `move` | `to` | one step along the road; anything else is 400. `grilled → ticketed` additionally requires a linked review artifact, if there is one, to be marked answered (`artifactAnswered`); `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
 | `fail` | `kind`: `local` \| `ci` \| `acceptance` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr`, `acceptance` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
 | `accept` | — | `acceptance → accepted` |
 | `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
 | `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. At most 200 characters — longer is 400 naming the limit and the actual length, never a silent clip. The spec is not touched |
-| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window |
+| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window. A *different* `links.artifact` is a new round of questions and clears `artifactAnswered` |
+| `artifact-answered` | `answers` (count, default 1), `by`, `at` | records that the founders answered on the linked review artifact: sets `artifactAnswered` (the first mark keeps its time and writes one comment; later marks only raise the count). 400 without `links.artifact`. The board's own sweep posts this for answers it can see; an agent posts it when the answers came another way (Telegram, a call) |
 | `delete` | — | removes the card from the pipeline for good, whatever stage it is in; answers `{ "ok": true, "removed": <the card> }`. An unknown id is 404 with the ids currently in the pipeline |
 
 The Watchdog does **not** use `update`. It writes Status on a path of its own:

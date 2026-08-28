@@ -27,7 +27,12 @@ import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
 } from './serve.mjs';
-import { configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems } from './pipeline.mjs';
+import {
+  configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
+  sweepArtifactAnswers,
+} from './pipeline.mjs';
+import { makeArtifactProbe } from './artifact-answers.mjs';
+import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
 import {
   configureTelegram,
@@ -312,6 +317,29 @@ function reportAuthWarnings(auth) {
 }
 
 const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
+
+// The founders' answers on a review artifact are read where they live — the
+// desktop Lavish state file, or the Cloudflare instance from the `lavish`
+// block — and marked on the card. Nothing is drained: the CTO's poll still
+// receives every answer. Runs on its own timer, not on page polls, so a board
+// nobody is looking at still notices.
+const artifactSweepMs = Math.max(200, Number(process.env.WATCHTOWER_ARTIFACT_SWEEP_MS) || 30000);
+let artifactSweepError = '';
+const artifactSource = makeSource('artifact-answers', artifactSweepMs, async () => {
+  let lavish = { publicBaseUrl: '', apiToken: '' };
+  try { lavish = parseLavish(config.lavish); } catch { /* a malformed block: local state only */ }
+  try {
+    const result = await sweepArtifactAnswers(makeArtifactProbe({ lavish }));
+    artifactSweepError = '';
+    return result;
+  } catch (e) {
+    const message = String(e?.message || e);
+    if (message !== artifactSweepError) console.log(`artifact-answers: ${message}`);
+    artifactSweepError = message;
+    throw e;
+  }
+});
+setInterval(() => { artifactSource.tick(); }, artifactSweepMs).unref();
 
 // Which project the board is showing, and how the filter is expressed.
 //   none    — nothing chosen yet, the page shows onboarding
@@ -2269,6 +2297,7 @@ configureHooks(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
+artifactSource.tick();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
     console.log(`Watchtower is already running: http://127.0.0.1:${PORT}`);

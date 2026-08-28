@@ -31,7 +31,7 @@ A card sits in one stage at a time. The road is one-way:
 | `accepted` | Terminal; the card is finished |
 | `stuck` | Three failures in a row — a human has to look |
 
-`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` is free.
+`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/GRILL.md`](docs/GRILL.md) §2).
 
 `stuck` is not a step of the road. A **failure** (`local`, `ci`, or `acceptance`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `acceptance`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
 

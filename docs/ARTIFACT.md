@@ -144,9 +144,18 @@ node bin/lavish-publish.mjs publish grill-outcome.html --card c-abc123
 ```
 node bin/lavish-publish.mjs poll <key-or-url>            one shot
 node bin/lavish-publish.mjs poll <key-or-url> --watch    wait for feedback
+node bin/lavish-publish.mjs poll <key-or-url> --card <id>   …and mark the card answered
+node bin/lavish-publish.mjs state <key-or-url>           answers so far, without draining
 node bin/lavish-publish.mjs reply <key-or-url> --text "answer shown in the page chat"
 node bin/lavish-publish.mjs end <key-or-url>
 ```
+
+`state` answers `{ status: open|ended|missing, answers, lastAnswerAt, pending }` —
+`answers` counts everything the founders ever queued and is never drained by a
+poll; the board's artifact-answers sweep reads it (`GET /api/state?key=…`,
+Bearer) to mark a card `artifact answered`. `poll --card <id>` posts the same
+mark the moment a poll delivers prompts, so the card does not wait for the
+sweep.
 
 `poll` prints the same JSON shape the desktop `lavish-axi poll` delivers:
 `status: feedback` with the queued prompts (each with `uid`, `prompt`,
