@@ -961,9 +961,20 @@ function pcard(c) {
       + esc(head + ' — ' + (s.reasons ?? []).join('; ')) + '</div>');
   }
 
+  // A published review artifact that the founders have not answered yet is the
+  // one attachment worth shouting about: before development it IS the card's
+  // open question. Once the card moves into development the answers are folded
+  // and the bell goes away — the plain link below still shows it.
+  if (c.links?.artifact && ['spec', 'grilled', 'ticketed'].includes(c.stage)) {
+    bits.push('<div class="row"><a target="_blank" href="' + esc(c.links.artifact) + '"'
+      + ' style="color:var(--warn,#ffb44a);font-weight:700;text-decoration:underline">'
+      + '&#128276; artifact awaits answers</a></div>');
+  }
   const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
-    .map(k => k + ' ' + (LINK_FIELDS.includes(k) ? c.links[k] : c[k]));
-  if (attached.length) bits.push('<div class="row mono">' + esc(attached.join(' · ')) + '</div>');
+    .map(k => LINK_FIELDS.includes(k)
+      ? k + ' <a target="_blank" href="' + esc(c.links[k]) + '">' + esc(c.links[k]) + '</a>'
+      : esc(k + ' ' + c[k]));
+  if (attached.length) bits.push('<div class="row mono">' + attached.join(' · ') + '</div>');
 
   // ---- everything below is shown only when the card is opened
   const inner = [];
