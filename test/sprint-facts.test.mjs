@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, unitLabel, umbrellaOf, lanesLine } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -45,8 +45,18 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   ];
   const mergedPrs = [{ number: 1530, url: 'pr/1530', branch: 'feat/salon-u03-reserve-reader', mergedAt: '2026-08-28T20:00:00Z' }];
 
+  const ciRunners = [
+    { name: 'radar-runner-1', status: 'online', busy: true, labels: ['self-hosted', 'vps1', 'hetzner'] },
+    { name: 'radar-runner-2', status: 'online', busy: true, labels: ['self-hosted', 'vps1', 'hetzner'] },
+    { name: 'hzci-1', status: 'online', busy: false, labels: ['self-hosted', 'vps1'] },
+    { name: 'vps1-runner', status: 'offline', busy: false, labels: ['self-hosted', 'vps1', 'hostinger'] },
+  ];
+  const ciJobs = new Map([[1540, [
+    { workflow: 'pr-ci', job: 'pr-ci', status: 'completed', runner: 'hzci-1', startedAt: '2026-08-28T20:00:00Z' },
+    { workflow: 'pr-ci', job: 'browser-smoke', status: 'in_progress', runner: 'radar-runner-2', startedAt: '2026-08-28T20:50:00Z' },
+  ]]]);
   const facts = sprintFactsFor([card, { id: 'plain', links: { ticket: '' } }],
-    { lanes, prs, mergedPrs, unitIssues, staleSources: ['umbrella'], at: '2026-08-28T21:00:00Z' });
+    { lanes, prs, mergedPrs, unitIssues, ciJobs, ciRunners, staleSources: ['umbrella'], at: '2026-08-28T21:00:00Z' });
   assert.equal(facts.has('plain'), false, 'a card without an umbrella link is not a sprint');
   const s = facts.get('csprint');
   assert.equal(s.umbrella, 1515);
@@ -58,6 +68,12 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U2.pr.number, 1541);
   assert.equal(by.U2.state, 'pr open');
   assert.equal(by.U1.state, 'pr green');
+  // The CI slot: the job in progress names the runner and its server.
+  assert.deepEqual(by.U1.pr.runner, { name: 'radar-runner-2', host: 'hetzner', status: 'in_progress', since: '2026-08-28T20:50:00Z', job: 'browser-smoke' });
+  assert.equal(by.U2.pr.runner, undefined, 'no job facts for that PR');
+  assert.deepEqual(s.ciSlots, { total: 4, online: 3, busy: 2, offline: 1, byHost: { hetzner: { total: 2, online: 2, busy: 2 }, hzci: { total: 1, online: 1, busy: 0 }, hostinger: { total: 1, online: 0, busy: 0 } } });
+  assert.equal(runnerHost('vps1-runner-3', ciRunners), 'vps1-runner', 'unknown runner: name without its number');
+  assert.equal(ciSlotSummary([]).total, 0);
   // TASK-file binding on the Mac; the branch there belongs to another unit.
   assert.deepEqual({ host: by.U0.lane.host, lane: by.U0.lane.lane }, { host: 'mac', lane: 'lane-a' });
   assert.equal(by.U0.state, 'on lane');

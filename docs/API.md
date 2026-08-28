@@ -329,6 +329,13 @@ backwards, never out of `stuck`, and not at all while a source is stale.
 Deleting the sprint card deletes its unit cards. The list view's `summary`
 counts them under `units`.
 
+**CI slots.** A unit card in `ci_pr` carries `slot` = the self-hosted runner
+its check is running on (read from the PR's workflow jobs on GitHub — job
+status, runner name, start time), and the page shows it as `CI <runner> ·
+<host>` with the running time. The sprint card's `ci-slots` line (and
+`sprint.ciSlots` in JSON) is the runner pool: busy of online per host, plus
+offline runners — the repo's self-hosted runners, one call a minute.
+
 `artifact` is the state of the linked review artifact: `-` (no link),
 `awaiting answers` (linked, no founder answer seen yet, card on a paper
 stage), or `answered <time> (<N> answers, by <who>)`. In JSON the list view

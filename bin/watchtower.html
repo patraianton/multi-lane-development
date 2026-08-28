@@ -1214,7 +1214,8 @@ function sprintTable(s) {
     else if (u.pr) {
       const ci = u.pr.ci || {};
       const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr';
-      pr = link(u.pr.url, '#' + u.pr.number) + ' <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>';
+      pr = link(u.pr.url, '#' + u.pr.number) + ' <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>'
+        + (u.pr.runner && u.pr.runner.name ? ' <span class="st-queued">· ' + esc(u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '')) + '</span>' : '');
     }
     const stateCls = 'st-' + String(u.state || 'queued').replace(/\s+/g, '-');
     return '<tr><td class="unit">' + esc(u.unit || '—') + '</td>'
@@ -1355,6 +1356,14 @@ function pcard(c) {
         ? { number: uf.merged.number, url: uf.merged.url, status: 'merged', ci: { color: 'green', text: 'merged' } }
         : uf.pr));
     }
+    // The CI slot: which runner, on which server, for how long.
+    if (uf && uf.pr && uf.pr.runner && !uf.merged) {
+      const r = uf.pr.runner;
+      const when = r.status === 'in_progress' ? (r.since ? 'running ' + esc(ago(r.since)).replace(' ago', '') : 'running') : 'queued';
+      pieces.push('<span class="meta-chip lane-chip busy" title="' + esc('CI job ' + (r.job || '') + ' on ' + (r.name || '?') + (r.host ? ' (' + r.host + ')' : '')) + '">'
+        + '<span class="chip-key">CI ' + esc(r.name || 'slot?') + (r.host ? ' · ' + esc(r.host) : '') + '</span>'
+        + '<span class="chip-value">' + when + '</span></span>');
+    }
     bits.push('<div class="row mono chip-row">' + pieces.join('') + '</div>');
     if (uf && uf.state) {
       bits.push('<div class="row unit-state st-' + esc(String(uf.state).replace(/\s+/g, '-')) + '">' + esc(uf.state)
@@ -1400,7 +1409,8 @@ function pcard(c) {
           const ci = u.pr.ci || {};
           const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr';
           pr = '<a href="' + esc(u.pr.url || '#') + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">#'
-            + esc(String(u.pr.number)) + '</a> <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>';
+            + esc(String(u.pr.number)) + '</a> <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>'
+            + (u.pr.runner && u.pr.runner.name ? ' <span class="st-queued">· ' + esc(u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '')) + '</span>' : '');
         }
         return '<tr><td class="unit">' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket) + '</td>'
           + '<td>' + lane + '</td><td>' + pr + '</td></tr>';
@@ -1409,6 +1419,12 @@ function pcard(c) {
     const k = sprint.counts || {};
     const parts = [k.units + ' unit' + (k.units === 1 ? '' : 's'), k.onLane + ' on lanes', k.pr + ' in PR', k.merged + ' merged', k.queued + ' queued'];
     if (sprint.laneCount) parts.push((sprint.free || []).length + ' of ' + sprint.laneCount + ' lanes free');
+    if (sprint.ciSlots && sprint.ciSlots.total) {
+      const ci = sprint.ciSlots;
+      parts.push('CI slots ' + ci.busy + ' of ' + ci.online + ' busy'
+        + ' (' + Object.entries(ci.byHost || {}).map(([h, v]) => h + ' ' + v.busy + '/' + v.online).join(', ')
+        + (ci.offline ? '; ' + ci.offline + ' offline' : '') + ')');
+    }
     if (sprint.stale && sprint.stale.length) parts.push('sources stale: ' + sprint.stale.join(', '));
     bits.push('<div class="row sprint-line" title="' + esc('free: ' + ((sprint.free || []).join(', ') || 'none')
       + (sprint.busyElsewhere && sprint.busyElsewhere.length ? ' · busy with other work: ' + sprint.busyElsewhere.join(', ') : '')) + '">'

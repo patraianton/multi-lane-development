@@ -859,11 +859,19 @@ async function artifactAnsweredCard(body) {
 // The stages where a linked artifact is still the card's open question.
 const PAPER_STAGES = new Set(['spec', 'grilled', 'ticketed']);
 
+// "6 of 7 busy (hetzner 4/4, hzci 2/3; offline 3)" — the CI slot pool.
+function ciSlotsLine(ci) {
+  if (!ci || !ci.total) return '-';
+  const hosts = Object.entries(ci.byHost).map(([h, v]) => `${h} ${v.busy}/${v.online}`).join(', ');
+  return `${ci.busy} of ${ci.online} busy (${hosts}${ci.offline ? `; offline ${ci.offline}` : ''})`;
+}
+
 // The sprint in numbers for the list views; the full table is on the card.
 function sprintSummary(s) {
   return {
     umbrella: s.umbrella,
     ...s.counts,
+    ciSlots: s.ciSlots ?? null,
     lanes: s.lanes.map(l => ({ host: l.host, lane: l.lane, unit: l.unit, ticket: l.ticket, busy: l.busy })),
     laneCount: s.laneCount,
     free: s.free,
@@ -1001,11 +1009,14 @@ function unitPlan(cards, sprints) {
       const lane = u.lane ? `${u.lane.host}/${u.lane.lane}` : '';
       const pr = str(u.merged?.url || u.pr?.url || card?.links.pr || '', LIMIT.link);
       const branch = u.branch ? str(u.branch, LIMIT.link) : (card?.links.branch ?? '');
+      // The CI slot: the runner the PR's check is on right now (ADR-0005's
+      // slot, read from GitHub rather than assigned).
+      const slot = str(u.pr?.runner?.name ?? '', LIMIT.slotish);
       const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       const move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
-      if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, target: target && target !== 'ticketed' ? target : null });
-      else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch) {
-        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, move });
+      if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
+      else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot) {
+        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, move });
       }
     }
     // The sprint's own stage follows its units: development once any unit has
@@ -1047,7 +1058,7 @@ export async function syncSprintUnits(sprints) {
           links: { ticket: str(step.u.url, LIMIT.link), branch: step.branch, pr: step.pr, artifact: '' },
           lane: step.lane,
           subscription: sprint?.subscription ?? '',
-          slot: '',
+          slot: step.slot,
           window: '',
           parent: step.sprintId,
           ticket: int(step.u.ticket),
@@ -1071,6 +1082,7 @@ export async function syncSprintUnits(sprints) {
       card.lane = step.lane;
       card.links.pr = step.pr;
       card.links.branch = step.branch;
+      card.slot = step.slot;
       if (step.move) { enterStage(card, step.move, now); card.consecutiveFails = 0; moved++; }
     }
     return { spawned, moved };
@@ -1287,6 +1299,7 @@ async function buildAgentCard(card, withSpec = false) {
     links: LINK_KEYS.filter(k => card.links[k]).map(k => `${k} ${card.links[k]}`).join(', ') || '-',
     artifact: artifactCell(card),
     lanes: lanesLine(sprintMap.get(card.id) ?? null),
+    ciSlots: ciSlotsLine(sprintMap.get(card.id)?.ciSlots ?? null),
     sprintOf: card.parent
       ? `${card.parent}${(() => { const p = (state?.cards ?? []).find(c => c.id === card.parent); return p ? ' — ' + p.title : ''; })()}`
       : '-',
@@ -1298,7 +1311,9 @@ async function buildAgentCard(card, withSpec = false) {
       ticket: `#${u.ticket}`,
       branch: u.branch || '-',
       lane: u.lane ? `${u.lane.host}/${u.lane.lane}${u.lane.busy ? '' : ' (idle)'}` : '-',
-      pr: u.merged ? `#${u.merged.number} merged` : u.pr ? `#${u.pr.number} ${u.pr.ci?.text ?? ''}`.trim() : '-',
+      pr: u.merged ? `#${u.merged.number} merged`
+        : u.pr ? `#${u.pr.number} ${u.pr.ci?.text ?? ''}${u.pr.runner?.name ? ' · ' + u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '') : ''}`.trim()
+        : '-',
       state: u.state,
     })),
     status: hasStatus(card)
@@ -1340,6 +1355,7 @@ function renderToonCard(c) {
     `links: ${c.links}`,
     `artifact: ${c.artifact}`,
     `lanes: ${c.lanes}`,
+    `ci-slots: ${c.ciSlots}`,
     `sprint-of: ${c.sprintOf}`,
     `status: ${c.status}`,
     // Folded like the spec below: TOON is line-based, and the API accepts a
