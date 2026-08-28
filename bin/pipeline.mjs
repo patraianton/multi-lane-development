@@ -559,6 +559,28 @@ async function createCard(body) {
   return card;
 }
 
+// An unknown id on delete is a 404 with the live ids — the same answer as
+// reading a card — not a 400: the request is well-formed, the card is gone.
+class MissingCard extends Error {
+  constructor(id, ids) {
+    super(`there is no card "${id}" in the pipeline`);
+    this.ids = ids;
+  }
+}
+
+// Deleting a card is the owner's decision after the work has landed, not a
+// stage: the card leaves the store for good, whatever stage it was in. The
+// removal goes through the same commit queue as every other mutation, so it is
+// written atomically and can never race a concurrent edit.
+async function deleteCard(body) {
+  const id = String(body.id ?? '').trim();
+  return commit(st => {
+    const i = st.cards.findIndex(c => c.id === id);
+    if (i < 0) throw new MissingCard(id, st.cards.map(c => c.id));
+    return st.cards.splice(i, 1)[0];
+  });
+}
+
 async function moveCard(body) {
   const to = String(body.to ?? '');
   if (!STAGE_KEYS.has(to)) {
@@ -1092,15 +1114,34 @@ export async function handlePipeline(req, res, url, port) {
     return true;
   }
 
-  // Every mutation: /pipeline/card/<action>, a JSON body, an English 400 when
-  // the body does not say what it must.
+  // Deleting a card. It lives next to the action table but answers its own
+  // way: the deleted card comes back whole in `removed`, and an unknown id is
+  // a 404 with the live ids — the table's wrapper can only say 200 or 400.
+  if (req.method === 'POST' && url.pathname === '/pipeline/card/delete') {
+    const body = await readBody(req);
+    if (!String(body.id ?? '').trim()) {
+      send(res, 400, JSON.stringify({ error: 'a card id is required' }));
+      return true;
+    }
+    try {
+      const removed = await deleteCard(body);
+      send(res, 200, JSON.stringify({ ok: true, removed }));
+    } catch (e) {
+      if (!(e instanceof MissingCard)) throw e;
+      send(res, 404, JSON.stringify({ error: e.message, cards: e.ids }));
+    }
+    return true;
+  }
+
+  // Every other mutation: /pipeline/card/<action>, a JSON body, an English 400
+  // when the body does not say what it must.
   if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')) {
     const action = url.pathname.slice('/pipeline/card/'.length);
     const fn = ACTIONS[action];
     if (!fn) {
       send(res, 404, JSON.stringify({
         error: `no such pipeline action "${action}"`,
-        actions: Object.keys(ACTIONS),
+        actions: [...Object.keys(ACTIONS), 'delete'],
       }));
       return true;
     }
