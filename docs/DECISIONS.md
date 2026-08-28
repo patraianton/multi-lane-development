@@ -20,6 +20,14 @@ the record of when and why.
 
 ## 2026-08-28 — from the five-lens ticket panel and the owner
 
+00. **Ultra production mode (owner, 2026-08-28 evening).** From sprint wave 2 on, a unit is
+   built by a multi-agent workflow (planner -> parallel implementers -> adversarial refuters
+   before push), driven by the sprint orchestrator; solo single-agent lanes are the test
+   stand (verification commands, red probe, local gate on the pushed branch), not the author.
+   Every unit is tagged mode=solo-codex or mode=ultra in the sprint log with wall-clock and
+   review-round counts — the owner compares the modes on speed AND quality before making
+   ultra the default everywhere.
+
 0. **One sprint in development at a time (owner insight, 2026-08-28).** A single sprint's
    independent tickets already saturate the lane and CI capacity. Parallelism lives INSIDE
    a sprint. The next sprint travels the paper stages (spec -> grill -> answers -> tickets)
