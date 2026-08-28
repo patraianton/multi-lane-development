@@ -1,3 +1,8 @@
 node_modules/
 *.log
 state/
+
+# Lavish worker: generated assets and deploy config stay out of git
+deploy/lavish-worker/assets.gen.mjs
+deploy/lavish-worker/wrangler.gen.jsonc
+node_modules/
