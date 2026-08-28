@@ -1369,7 +1369,8 @@ function pcard(c) {
       const value = LINK_FIELDS.includes(k) ? c.links[k] : c[k];
       const content = '<span class="chip-key">' + esc(k) + '</span><span class="chip-value">'
         + esc(LINK_FIELDS.includes(k) ? shortLink(k, value) : value) + '</span>';
-      return LINK_FIELDS.includes(k)
+      // A branch name is not an address: only a real URL becomes a link.
+      return LINK_FIELDS.includes(k) && /^https?:[/][/]/.test(String(value))
         ? '<a class="meta-chip" target="_blank" rel="noreferrer" href="' + esc(value)
           + '" title="' + esc(value) + '">' + content + '</a>'
         : '<span class="meta-chip" title="' + esc(value) + '">' + content + '</span>';
