@@ -70,3 +70,10 @@ _Avoid_: issue (when speaking of the pipeline artifact), card (the board entity)
 A human user of the board (the owner or the partner). Signs in by email; gets tagged in
 Telegram.
 _Avoid_: user (too generic), admin
+
+## Working language
+
+Watchtower is developed in the open. Everything that belongs to the repository — code,
+commits, pull requests, specs, docs, ADRs, worker briefs and reports — is written in
+English. User content passing through the board (pipeline cards, their specs and
+comments) stays in whatever language the team writes it.
