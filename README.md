@@ -5,7 +5,7 @@ A live board for a coding-agent fleet, and a delivery pipeline those agents run.
 The page has two views, served by one process (`bin/watchtower.mjs`):
 
 - **Windows** — the original monitoring board. Every herdr window on a chosen project: what the agent is doing, which build lane is compiling, which pull requests are open and what CI says, and — first column, always — who is waiting for a human.
-- **Pipeline** — persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → development → local check → CI/PR → acceptance, while live data (windows, lanes, branches, PRs) attaches to it.
+- **Pipeline** — persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → acceptance, while live data (windows, lanes, branches, PRs) attaches to it.
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
@@ -17,12 +17,13 @@ This repository grew from the windows board through waves A–G (pipeline store,
 
 A card sits in one stage at a time. The road is one-way:
 
-`spec → grilled → development → local_check → ci_pr → acceptance → accepted`
+`spec → grilled → ticketed → development → local_check → ci_pr → acceptance → accepted`
 
 | Stage | Meaning |
 | --- | --- |
 | `spec` | A founder has written what is wanted; nothing is decided yet |
 | `grilled` | The CTO has interrogated the spec and folded the answers back in |
+| `ticketed` | The CTO is writing the GitHub tickets — one per work unit — before any development starts |
 | `development` | Code is being written on the assigned lane |
 | `local_check` | The local check runs on the same lane |
 | `ci_pr` | A pull request is open and CI runs on an assigned slot |
@@ -30,7 +31,9 @@ A card sits in one stage at a time. The road is one-way:
 | `accepted` | Terminal; the card is finished |
 | `stuck` | Three failures in a row — a human has to look |
 
-`stuck` is not a step of the road. A **failure** (`local`, `ci`, or `acceptance`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `acceptance`). From `spec` or `grilled` it is a 400: nothing has been built yet.
+`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` is free.
+
+`stuck` is not a step of the road. A **failure** (`local`, `ci`, or `acceptance`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `acceptance`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
 
 A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`).
 
@@ -57,7 +60,7 @@ Each piece is a small Node process with no extra packages. Development-launch, l
 | **CI-slot** | `bin/ci-slot.mjs` | For a card in `ci_pr`: claim a **free** slot from the pool, pin that slot's GitHub Actions runner label on the PR, poll `gh pr checks`. Green → squash-merge → move to `acceptance`. Red → fail `{ "kind": "ci" }`. Either way, release the slot. **There is no queue.** If no slot is free, it prints `no free CI slot — add capacity`, assigns nothing, and exits 3. Occupancy is `state/ci-slots.json`; the board only reads it (`GET /api/slots`). |
 | **Watchdog** | `bin/watchdog.mjs` | A separate process from the board. Every `intervalMin` minutes (default 15) it scores each **active** card (`development`, `local_check`, `ci_pr`): lane log tail, CI via `gh` if the card has a PR link, then a cheap language-model command writes Status and a verdict. It never moves a card and never talks to herdr. |
 
-The grill itself (Artifact page, collecting founder answers, writing the GitHub ticket under the CTO's GitHub App) is work the CTO window does. This repository stores the Artifact and ticket as `links` on the card, queues hooks, and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
+The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card, queues hooks, and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
 
 Contracts: [`docs/PROBE.md`](docs/PROBE.md), [`docs/TELEGRAM.md`](docs/TELEGRAM.md), [`docs/DEVLAUNCH.md`](docs/DEVLAUNCH.md), [`docs/EXECUTION.md`](docs/EXECUTION.md), [`docs/WATCHDOG.md`](docs/WATCHDOG.md).
 

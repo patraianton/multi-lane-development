@@ -16,8 +16,8 @@ Terms, from [`CONTEXT.md`](../CONTEXT.md):
 | **Lane** | The remote build slot assigned to the card. |
 
 Active stages (the only cards that are scored): `development`, `local_check`,
-`ci_pr`. A card in `spec`, `grilled`, `acceptance`, `accepted` or `stuck` is
-listed and skipped.
+`ci_pr`. A card in `spec`, `grilled`, `ticketed`, `acceptance`, `accepted` or
+`stuck` is listed and skipped.
 
 The Watchdog never moves a card, never starts a run and never talks to herdr.
 It only reads evidence and POSTs Status.

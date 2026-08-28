@@ -66,7 +66,9 @@ Two artifacts, produced together:
    founders answer the questions by annotating.
 
 The card gets a flat comment naming both, and moves to `grilled` only after the open
-questions have either answers or explicit default decisions.
+questions have either answers or explicit default decisions. From `grilled` the card moves
+to `ticketed`, where the CTO writes the GitHub tickets (one per work unit); the board
+refuses `ticketed → development` until `links.ticket` is set.
 
 ## 3. Requirement: self-hosted Lavish on Cloudflare
 
