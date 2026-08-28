@@ -376,6 +376,19 @@
     position: relative; padding: 4px 6px 4px 17px; border: 1px solid var(--line-soft); border-radius: 5px;
     background: rgba(8, 13, 19, .42);
   }
+  .pcard:not(.open) .status .status-text {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .pcard .sprint-strip { display: flex; gap: 2px; min-width: 0; padding: 2px 8px 5px 9px; }
+  .pcard .sprint-strip i { flex: 1 1 0; min-width: 3px; height: 6px; border-radius: 2px; background: var(--line); }
+  .pcard .sprint-strip i.st-on-lane { background: var(--focus); }
+  .pcard .sprint-strip i.st-lane-idle { background: var(--done); }
+  .pcard .sprint-strip i.st-pr, .pcard .sprint-strip i.st-pr-open { background: var(--violet); }
+  .pcard .sprint-strip i.st-pr-green, .pcard .sprint-strip i.st-merged { background: var(--working); }
+  .pcard .sprint-strip i.st-pr-red { background: var(--blocked); }
+  .pcard .row.sprint-wrap { padding: 0 8px 4px 9px; }
+  .pcard .sprint-table.mini { font-size: 9.5px; }
+  .pcard .sprint-table.mini td { padding: 2px 4px; border-bottom-color: rgba(28, 42, 57, .6); }
   .pcard .status::before {
     content: ""; position: absolute; left: 7px; top: 8px; width: 4px; height: 4px;
     border-radius: 50%; background: var(--ink-dim);
@@ -1148,7 +1161,7 @@ function statusLine(c) {
     + (v === 'moving' || v === 'stalled' || v === 'looping' ? ' ' + v : '')
     + (stale ? ' stale' : '');
   return '<div class="row ' + cls + '"' + (stale ? ' data-stale="yes"' : '') + '>'
-    + (c.status.text ? esc(c.status.text) + ' ' : '')
+    + (c.status.text ? '<span class="status-text">' + esc(c.status.text) + '</span> ' : '')
     + (v ? '<span class="verdict">' + esc(v) + '</span>' : '')
     + (age ? ' <span class="age">' + esc(age) + '</span>' : '')
     + (stale ? ' <span class="stale-mark">stale Status</span>' : '')
@@ -1344,7 +1357,7 @@ function pcard(c) {
     .map(k => {
       const value = LINK_FIELDS.includes(k) ? c.links[k] : c[k];
       const content = '<span class="chip-key">' + esc(k) + '</span><span class="chip-value">'
-        + esc(value) + '</span>';
+        + esc(LINK_FIELDS.includes(k) ? shortLink(k, value) : value) + '</span>';
       return LINK_FIELDS.includes(k)
         ? '<a class="meta-chip" target="_blank" rel="noreferrer" href="' + esc(value)
           + '" title="' + esc(value) + '">' + content + '</a>'
@@ -1353,25 +1366,34 @@ function pcard(c) {
   if (Array.isArray(c.prs)) attached.push(...c.prs.map(pipelinePrChip).filter(Boolean));
   if (attached.length) bits.push('<div class="row mono chip-row">' + attached.join('') + '</div>');
 
-  // The sprint's lanes, always visible: one chip per lane bound to a unit of
-  // this card (host/lane → unit #ticket), then the count of units in flight.
+  // The sprint at a glance: a strip of every unit coloured by its state, the
+  // units in flight as a three-column table (unit · lane · PR), the numbers.
+  // The full table with every unit is on the opened card.
   if (sprint) {
-    const laneChips = sprint.lanes.map(l => '<span class="meta-chip lane-chip ' + (l.busy ? 'busy' : 'idle') + '" title="'
-      + esc((l.branch || '') + (l.since ? ' · since ' + l.since : '') + (l.busy ? '' : ' · lane idle')) + '">'
-      + '<span class="chip-key">' + esc(l.host + '/' + l.lane) + '</span>'
-      + '<span class="chip-value">' + esc((l.unit ? l.unit + ' ' : '') + '#' + l.ticket + (l.busy ? '' : ' · idle')) + '</span></span>');
-    // Units that left their lane for a PR: the PR chip carries the unit, so
-    // the row reads "what is in flight", not only "what is on a lane".
-    for (const u of (sprint.units || [])) {
-      if (!u.pr || u.merged) continue;
-      const ci = u.pr.ci || {};
-      const color = ['green', 'red', 'run'].includes(ci.color) ? ' ci-' + ci.color : '';
-      laneChips.push('<a class="meta-chip pr-chip' + color + '" target="_blank" rel="noreferrer" href="' + esc(u.pr.url || '#')
-        + '" title="' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket + ' → PR #' + u.pr.number + (ci.text ? ' · ' + ci.text : '')) + '">'
-        + '<span class="chip-key">' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket) + '</span>'
-        + '<span class="chip-value">PR #' + esc(String(u.pr.number)) + (ci.text ? ' · ' + esc(ci.text) : '') + '</span></a>');
+    const units = sprint.units || [];
+    if (units.length) {
+      bits.push('<div class="row sprint-strip" title="'
+        + esc(units.map(u => (u.unit || '#' + u.ticket) + ': ' + u.state).join(' · ')) + '">'
+        + units.map(u => '<i class="st-' + esc(String(u.state || 'queued').replace(/\s+/g, '-')) + '"></i>').join('')
+        + '</div>');
     }
-    if (laneChips.length) bits.push('<div class="row mono chip-row">' + laneChips.join('') + '</div>');
+    const flight = units.filter(u => (u.lane || u.pr) && !u.merged);
+    if (flight.length) {
+      bits.push('<div class="row sprint-wrap"><table class="sprint-table mini"><tbody>' + flight.map(u => {
+        const lane = u.lane
+          ? esc(u.lane.host + '/' + u.lane.lane) + (u.lane.busy ? '' : ' <span class="st-lane-idle">idle</span>')
+          : '<span class="st-queued">—</span>';
+        let pr = '<span class="st-queued">—</span>';
+        if (u.pr) {
+          const ci = u.pr.ci || {};
+          const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr';
+          pr = '<a href="' + esc(u.pr.url || '#') + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">#'
+            + esc(String(u.pr.number)) + '</a> <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>';
+        }
+        return '<tr><td class="unit">' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket) + '</td>'
+          + '<td>' + lane + '</td><td>' + pr + '</td></tr>';
+      }).join('') + '</tbody></table></div>');
+    }
     const k = sprint.counts || {};
     const parts = [k.units + ' unit' + (k.units === 1 ? '' : 's'), k.onLane + ' on lanes', k.pr + ' in PR', k.merged + ' merged', k.queued + ' queued'];
     if (sprint.laneCount) parts.push((sprint.free || []).length + ' of ' + sprint.laneCount + ' lanes free');
@@ -1469,6 +1491,21 @@ function pcard(c) {
   const familyStyle = family ? ' style="--sprint: ' + sprintHue(c.parent || c.id) + '"' : '';
   return '<div class="pcard st-' + esc(c.stage) + family + (open ? ' open' : '') + '" data-card="' + esc(c.id) + '"'
     + familyStyle + '>' + bits.join('') + '</div>';
+}
+
+// A link chip shows what the link IS, not its address: #1515 for a ticket or
+// PR, the branch name, a short page key for a review artifact. The address
+// stays in the title and the href.
+function shortLink(kind, url) {
+  const s = String(url || '');
+  const n = /\/(?:issues|pull)\/(\d+)\b/.exec(s);
+  if (n) return '#' + n[1];
+  if (kind === 'artifact') {
+    const k = /\/session\/([0-9a-f]{16})\b/.exec(s);
+    return k ? 'page ' + k[1].slice(0, 6) + '…' : 'page';
+  }
+  if (kind === 'branch') return s.replace(/^refs\/heads\//, '');
+  return s.replace(/^https?:\/\//, '');
 }
 
 // One hue per sprint family, stable across redraws: derived from the id.
