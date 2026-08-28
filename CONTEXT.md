@@ -1,7 +1,7 @@
 # Watchtower
 
 A live board for a coding-agent fleet, evolving into a delivery pipeline: persistent task cards
-move through stages (spec → grilled → ticketed → development → local check → CI/PR → acceptance)
+move through stages (spec → grilled → ticketed → development → local check → CI/PR → done)
 while live data — herdr windows, build lanes, branches, PRs — attaches to them.
 
 ## Language
@@ -14,7 +14,7 @@ _Avoid_: ticket, task (ambiguous), issue
 **Unit card**:
 A card for one unit ticket of a sprint card, spawned by the board when the sprint has left
 `grilled` and its tickets exist. It carries `parent` (the sprint card), `ticket`, `unit` and
-walks `ticketed → development → ci_pr → accepted` by facts alone — the lane that builds it,
+walks `ticketed → development → local_check → ci_pr → done` by facts alone — the lane that builds it,
 the PR that carries it, the merge that finishes it. The sprint card is the roll-up people
 move; the unit cards are the work in the columns.
 _Avoid_: subtask, child ticket
@@ -26,7 +26,7 @@ _Avoid_: card (the pre-pipeline Watchtower used card = window; that meaning is r
 
 **Stage**:
 A pipeline column a card is in: Spec, Grilled, Ticketed, Development, Local check, CI/PR,
-Acceptance — plus Stuck, where a card lands after its third consecutive failure and waits for a
+Done — plus Stuck, where a card lands after its third consecutive failure and waits for a
 founder. Ticketed is the CTO writing the GitHub tickets (one per work unit) after the grill;
 the card leaves it for Development only with a ticket link attached.
 _Avoid_: status (reserved for the watchdog's "what is happening right now" line), column (UI term)

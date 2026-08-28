@@ -4,6 +4,25 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 — the road ends at done; local check is a fact
+
+10. **No acceptance stage; `accepted` is `done` (owner, 2026-08-29 ~00:50).** The
+    acceptance column was designed for the sprint card: the whole sprint handed to the
+    partner for the final say. With unit cards (decision 9) the columns hold tickets, and
+    a ticket has no owner acceptance — its review is the GO its merge required. The road
+    is `spec → grilled → ticketed → development → local_check → ci_pr → done`; a merged
+    PR is `done`; the sprint's derived stage is `done` when every unit is merged or
+    closed. The failure kind `acceptance` is now `review` (counter `reviewFails`); the
+    `accept` action is gone (`ci_pr → done` is a plain move). Stored cards in
+    `acceptance` / `accepted` load as `done`. Where decision 9 and ADR-0006 say
+    "acceptance" / "accepted", read "done".
+    **Local check by fact (owner: "why did nothing land in Local check?").** The column
+    stayed empty because the unit mover knew three facts only — busy lane, PR open, PR
+    merged — and walked a card from `development` straight to `ci_pr`. The lane probes
+    now also report the project's local check running on a lane (`scripts/ci-local.mjs`,
+    usually through `ci-local-and-stamp.sh`, matched by the process's working directory),
+    and that fact moves the unit card to `local_check`.
+
 ## 2026-08-28 (late) — unit cards
 
 9. **After `ticketed`, every unit ticket is its own card (owner, 2026-08-28 22:40).** One

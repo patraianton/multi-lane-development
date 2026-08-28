@@ -50,6 +50,7 @@ function unitState(u) {
     if (u.pr.ci?.color === 'red') return 'pr red';
     return 'pr open';
   }
+  if (u.lane?.check) return 'local check';
   if (u.lane?.busy) return 'on lane';
   if (u.lane) return 'lane idle';
   if (!u.open) return 'closed';
@@ -79,7 +80,9 @@ export function ciSlotSummary(runners = []) {
   return { total: runners.length, online, busy, offline, byHost };
 }
 
-// lanes: [{ host, lane, busy, since, branch, task }] from every host;
+// lanes: [{ host, lane, busy, since, branch, task, check }] from every host —
+//   check = the project's local check running on that lane right now
+//   ({ pid, since, cmd }), else null/absent;
 // ciJobs: Map(PR number -> [{ workflow, job, status, runner, startedAt }]) for PRs whose CI runs;
 // ciRunners: the repo's self-hosted runners [{ name, status, busy, labels }];
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
@@ -123,7 +126,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       if (!u) continue;
       const rec = {
         host: l.host, lane: l.lane, busy: Boolean(l.busy), since: l.since ?? null,
-        branch: branch || null, task: l.task ?? null,
+        branch: branch || null, task: l.task ?? null, check: l.check ?? null,
       };
       // A busy lane beats an idle one still parked on the unit's branch.
       if (!u.lane || (rec.busy && !u.lane.busy)) u.lane = rec;
@@ -168,6 +171,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       counts: {
         units: units.length,
         onLane: units.filter(u => u.state === 'on lane').length,
+        checking: units.filter(u => u.state === 'local check').length,
         pr: units.filter(u => u.pr && !u.merged).length,
         merged: units.filter(u => u.merged).length,
         queued: units.filter(u => u.state === 'queued').length,

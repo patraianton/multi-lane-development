@@ -73,14 +73,14 @@ What is in the board answer:
   problems    board sources that did not answer (ssh, gh). Empty means everything is alive
 
 What is in the pipeline answer:
-  summary     counters: cards, stuck, waiting for acceptance, accepted, failures
+  summary     counters: cards, stuck, done, failures
   cards       one card per line, fields:
                 id      pipeline card id (taken by ${CMD} card <id>)
                 title   the card's title
                 stage   spec, grilled, ticketed, development, local_check, ci_pr,
-                        acceptance, accepted, or stuck
-                clock   delivery time; a card in acceptance shows "(stopped)"
-                fails   local / ci / acceptance counts, or "-"
+                        done, or stuck
+                clock   delivery time; a done card shows "(stopped)"
+                fails   local / ci / review counts, or "-"
                 verdict the watchdog's word: moving, stalled, looping, or "-"
   stuck       cards waiting for a human after three failures in a row
   specs       under --full only, the spec text of every card that has one

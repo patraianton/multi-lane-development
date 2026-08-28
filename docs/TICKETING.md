@@ -2,7 +2,7 @@
 
 The `ticketed` stage sits between the grill and development:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → acceptance → accepted`
+`spec → grilled → ticketed → development → local_check → ci_pr → done`
 
 Purpose: **everything that can stall, derail, or invalidate development is settled inside
 the tickets, before any lane starts.** The 9-sprint benchmark (23–28.08) measured 139 h of
@@ -96,7 +96,7 @@ title, with its own clipping) — the CTO copies the name from a `--dry-run` pla
 ticket rather than reconstructing the slug by hand. The name is what binds PR ↔ ticket ↔
 card automatically.
 Evidence: without a machine-readable binding the board cannot compute scope and the card
-can never reach acceptance automatically (ADR-0006) — S7's 34 PRs ran ahead of any
+can never reach done automatically (ADR-0006) — S7's 34 PRs ran ahead of any
 trackable scope; and an unbound PR cannot have auto-merge armed for it, feeding the 33 h
 of "green waited for the button" and the 47 h of night losses.
 
@@ -172,7 +172,7 @@ killed by the next push to the same branch.
 Done = **green pr-ci on the exact head + a GO review verdict**, and the merge is
 automatic from that moment — auto-merge armed at GO (conveyor rule 6), or the board's
 CI-slot runner where it drives CI/PR ([EXECUTION.md](./EXECUTION.md) merges on green
-itself; the GO gate then lives in acceptance). Under neither mechanism does a finished PR
+itself; the GO review must come before it is pointed at the PR). Under neither mechanism does a finished PR
 wait for a human's morning, and a green PR never waits for a neighbor (rule 5).
 Evidence: nights cost 47 h (#1356 and #1267 alone ~20 h); 23 PRs hung open longer than
 6 h, almost all opened in the evening of 26.08 and merged next morning (9–23 h each);
@@ -210,7 +210,7 @@ Minutes, not hours. All boxes or the card stays in `ticketed`:
 - [ ] Umbrella: unit table, external-dependencies table (or `none`), grill-passed line.
 - [ ] The card's stream-watch entry carries the `units: "issues"` promise — without it
       the unit tickets are invisible to the board and the card can never reach
-      acceptance automatically (ADR-0006).
+      done automatically (ADR-0006).
 
 ## 5. What the board records
 
@@ -221,7 +221,7 @@ Minutes, not hours. All boxes or the card stays in `ticketed`:
   development-launch refuses any card whose stage is set and is not `development`
   ([DEVLAUNCH.md](./DEVLAUNCH.md), Safety).
 - Unit tickets are the board's scope: once ADR-0006's rollout step 3 is enabled, a new
-  open unit ticket after acceptance sends the card back through the `reopen` path — so
+  open unit ticket on a done card sends it back through the `reopen` path — so
   closing tickets is part of finishing a unit, not bookkeeping.
 
 ## 6. Forbidden at this stage

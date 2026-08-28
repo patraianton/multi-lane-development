@@ -285,8 +285,7 @@
     border-radius: 8px; color: var(--ink-dim); background: var(--panel-low);
     font-family: var(--mono); font-size: 9px; letter-spacing: 0;
   }
-  .pcol.acceptance > h2 { color: var(--done); border-color: #6a5122; }
-  .pcol.accepted > h2 { color: var(--working); border-color: #1f6a52; }
+  .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
 
   .pcard {
     --stage: var(--violet);
@@ -316,8 +315,7 @@
     cursor: default; border-color: #35495e; border-left-color: var(--stage);
     box-shadow: 0 13px 32px rgba(0, 0, 0, .46), 0 0 0 1px rgba(var(--stage-rgb), .045);
   }
-  .pcard.st-acceptance { --stage: var(--done); --stage-rgb: 255, 180, 74; }
-  .pcard.st-accepted { --stage: var(--working); --stage-rgb: 53, 214, 160; }
+  .pcard.st-done { --stage: var(--working); --stage-rgb: 53, 214, 160; }
   .pcard.st-stuck { --stage: var(--blocked); --stage-rgb: 255, 92, 95; }
   .pcard .top {
     display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px;
@@ -612,7 +610,7 @@
   <!-- Which view is on. The choice is remembered in this browser, so a refresh
        comes back to the view you were working in. -->
   <button class="hbtn" id="view-windows" title="live herdr windows">windows</button>
-  <button class="hbtn" id="view-pipeline" title="pipeline cards: spec → acceptance">pipeline</button>
+  <button class="hbtn" id="view-pipeline" title="pipeline cards: spec → done">pipeline</button>
   <button class="hbtn plus" id="pipe-add-toggle" title="add a pipeline card">+ Card</button>
   <button class="hbtn plus" id="add-toggle" title="add a card by hand">+</button>
   <button class="hbtn gear" id="settings-toggle" title="settings: project and hidden cards">⚙</button>
@@ -1053,21 +1051,18 @@ const NEXT_STAGE = {
   ticketed: 'development',
   development: 'local_check',
   local_check: 'ci_pr',
-  ci_pr: 'acceptance',
-  acceptance: 'accepted',
+  ci_pr: 'done',
 };
 // The stages a failure can be reported from — the ones where work is actually
 // run. The same list as in pipeline.mjs, which is what refuses the rest.
-const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'acceptance'];
-// Acceptance is the owner's decision and Accepted is the end of the road:
-// neither adds to the card's delivery clock.
-const OFF_THE_CLOCK = new Set(['acceptance', 'accepted']);
+const CAN_FAIL = ['development', 'local_check', 'ci_pr'];
+// Done is the end of the road: it does not add to the card's delivery clock.
+const OFF_THE_CLOCK = new Set(['done']);
 const STAGE_TITLE = {
   spec: 'Spec', grilled: 'Grilled', ticketed: 'Ticketed', development: 'Development',
-  local_check: 'Local check', ci_pr: 'CI/PR', acceptance: 'Acceptance',
-  accepted: 'Accepted', stuck: 'Stuck',
+  local_check: 'Local check', ci_pr: 'CI/PR', done: 'Done', stuck: 'Stuck',
 };
-const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'acceptance', 'accepted'];
+const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'done'];
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
@@ -1184,7 +1179,7 @@ function failLine(c) {
   const bits = [];
   if (n.localFails) bits.push('local <b>' + n.localFails + '</b>');
   if (n.ciFails) bits.push('CI <b>' + n.ciFails + '</b>');
-  if (n.acceptanceFails) bits.push('acceptance <b>' + n.acceptanceFails + '</b>');
+  if (n.reviewFails) bits.push('review <b>' + n.reviewFails + '</b>');
   if (!bits.length) return 'no failures';
   if (c.consecutiveFails) bits.push('<b>' + c.consecutiveFails + '</b> in a row');
   return bits.join(' · ');
@@ -1495,8 +1490,6 @@ function pcard(c) {
   const acts = [];
   if (c.stage === 'stuck') {
     acts.push(actBtn(c.id, 'unstuck', {}, 'return to development', 'go'));
-  } else if (c.stage === 'acceptance') {
-    acts.push(actBtn(c.id, 'accept', {}, 'accept', 'go'));
   } else if (NEXT_STAGE[c.stage]
       && !(usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim())
       // The server refuses ticketed → development without a ticket link, so the
@@ -1509,7 +1502,7 @@ function pcard(c) {
   // grilled or ticketed has nothing to fail yet, and the server refuses it
   // anyway.
   if (CAN_FAIL.indexOf(c.stage) >= 0) {
-    for (const kind of ['local', 'ci', 'acceptance']) {
+    for (const kind of ['local', 'ci', 'review']) {
       acts.push(actBtn(c.id, 'fail', { kind }, 'fail: ' + kind, 'bad'));
     }
   }
@@ -1581,14 +1574,13 @@ function renderPipeline(d) {
   const stuck = cards.filter(c => c.stage === 'stuck');
 
   // The header counts what this view is about: cards on the road, cards that
-  // wait for the owner, and cards that are looping. Stale Status is the
-  // Watchdog falling behind — only shown when at least one card is marked.
-  const moving = cards.filter(c => !['stuck', 'accepted', 'acceptance'].includes(c.stage)).length;
+  // are done, and cards that are looping. Stale Status is the Watchdog
+  // falling behind — only shown when at least one card is marked.
+  const moving = cards.filter(c => !['stuck', 'done'].includes(c.stage)).length;
   const staleN = cards.filter(isStatusStale).length;
   $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
-    + cards.filter(c => c.stage === 'acceptance').length + '</b> waiting for you · <b>'
     + stuck.length + '</b> stuck · <b>'
-    + cards.filter(c => c.stage === 'accepted').length + '</b> accepted'
+    + cards.filter(c => c.stage === 'done').length + '</b> done'
     + (staleN ? ' · <b>' + staleN + '</b> stale Status' : '');
 
   // A sprint that has split into unit cards is shown in the band above the

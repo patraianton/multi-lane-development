@@ -15,6 +15,8 @@ const FACTS = {
     { host: 'radar', lane: 'lane-1', busy: true, since: 'Fri 18:44', branch: 'feat/salon-u02-paid-reader' },
     { host: 'radar', lane: 'lane-2', busy: false, since: null, branch: 'main' },
     { host: 'mac', lane: 'lane-b', busy: true, since: '00:40 ago', branch: 'feat/salon-u05-migration-133', task: 'TASK-1519.md' },
+    // The lane is running the project's local check: that is the local_check fact.
+    { host: 'mac', lane: 'lane-a', busy: true, since: '03:10 ago', branch: 'feat/salon-u06-band', task: 'TASK-1523.md', check: { pid: '4242', since: '02:40 ago', cmd: 'node scripts/ci-local.mjs' } },
   ],
   prs: [{ number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', ci: { color: 'green', text: 'CI green (5)' } }],
   mergedPrs: [{ number: 1530, url: 'https://github.com/acme/web/pull/1530', branch: 'feat/salon-u03-reserve-reader', mergedAt: '2026-08-28T20:00:00Z' }],
@@ -25,6 +27,7 @@ const FACTS = {
       { number: 1516, title: 'SALON-U1: readiness contract', url: 'https://github.com/acme/web/issues/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
       { number: 1518, title: 'SALON-U3: reserve reader', url: 'https://github.com/acme/web/issues/1518', state: 'CLOSED', branch: 'feat/salon-u03-reserve-reader' },
       { number: 1522, title: 'SALON-U4: composition', url: 'https://github.com/acme/web/issues/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
+      { number: 1523, title: 'SALON-U6: sprint band', url: 'https://github.com/acme/web/issues/1523', state: 'OPEN', branch: 'feat/salon-u06-band' },
     ],
   },
   ciJobs: { 1540: [{ workflow: 'pr-ci', job: 'pr-ci', status: 'in_progress', runner: 'radar-runner-3', startedAt: '2026-08-28T20:50:00Z' }] },
@@ -59,14 +62,14 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     await postJson(board.base, '/pipeline/card/update', { id, links: { ticket: UMBRELLA } });
     const early = await until(board.base, d => d.cards.find(c => c.id === id)?.sprint);
     assert.equal(early.cards.filter(c => c.parent === id).length, 0);
-    assert.equal(early.cards.find(c => c.id === id).sprint.counts.units, 5, 'the roll-up exists already');
+    assert.equal(early.cards.find(c => c.id === id).sprint.counts.units, 6, 'the roll-up exists already');
 
     await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' });
-    const data = await untilUnits(board.base, id, 5);
+    const data = await untilUnits(board.base, id, 6);
     const units = data.cards.filter(c => c.parent === id);
-    assert.equal(units.length, 5);
+    assert.equal(units.length, 6);
     const by = Object.fromEntries(units.map(u => [u.unit, u]));
-    assert.deepEqual(Object.keys(by).sort(), ['U1', 'U2', 'U3', 'U4', 'U5']);
+    assert.deepEqual(Object.keys(by).sort(), ['U1', 'U2', 'U3', 'U4', 'U5', 'U6']);
 
     // Titles, bindings, attachments.
     assert.equal(by.U5.title, 'U5 #1519 — migration 133 - daily rotation set');
@@ -77,14 +80,18 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U5.sprintTitle, 'AUTO-SALON sprint');
     assert.equal(by.U5.unitFacts.state, 'on lane');
 
-    // Stages by facts: lane → development, PR → ci_pr, merged → accepted, nothing → ticketed.
+    // Stages by facts: lane → development, the lane running the local check →
+    // local_check, PR → ci_pr, merged → done, nothing → ticketed.
     assert.equal(by.U5.stage, 'development');
     assert.equal(by.U2.stage, 'development');
+    assert.equal(by.U6.stage, 'local_check', 'the lane runs the local check');
+    assert.equal(by.U6.unitFacts.state, 'local check');
+    assert.equal(by.U6.lane, 'mac/lane-a');
     assert.equal(by.U1.stage, 'ci_pr');
     assert.equal(by.U1.links.pr, 'https://github.com/acme/web/pull/1540');
     assert.equal(by.U1.slot, 'radar-runner-3', 'the CI slot is the runner the check is on');
     assert.equal(by.U1.unitFacts.pr.runner.host, 'hetzner');
-    assert.equal(by.U3.stage, 'accepted');
+    assert.equal(by.U3.stage, 'done');
     assert.equal(by.U3.links.pr, 'https://github.com/acme/web/pull/1530');
     assert.equal(by.U4.stage, 'ticketed');
     assert.equal(by.U4.unitFacts.state, 'queued');
@@ -96,18 +103,18 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     // A second sweep changes nothing and spawns nothing twice.
     await settle(700);
     const again = await getJson(board.base, '/pipeline/data');
-    assert.equal(again.body.cards.filter(c => c.parent === id).length, 5);
+    assert.equal(again.body.cards.filter(c => c.parent === id).length, 6);
 
     // The agent views.
     const list = await getJson(board.base, '/api/pipeline?format=json');
-    assert.equal(list.body.summary.units, 5);
+    assert.equal(list.body.summary.units, 6);
     assert.equal(list.body.cards.find(c => c.id === id).sprint.onLane, 2);
     const one = await getJson(board.base, `/api/pipeline/card/${by.U1.id}?format=json`);
     assert.equal(one.body.sprintOf, `${id} — AUTO-SALON sprint`);
     assert.equal(one.body.unit, 'U1');
     const toon = await fetch(`${board.base}/api/pipeline/card/${id}`).then(r => r.text());
-    assert.ok(toon.includes('lanes: radar/lane-1 U2 #1517, mac/lane-b U5 #1519'), toon);
-    assert.ok(/units\[5\]/.test(toon), toon);
+    assert.ok(toon.includes('lanes: radar/lane-1 U2 #1517, mac/lane-b U5 #1519, mac/lane-a U6 #1523'), toon);
+    assert.ok(/units\[6\]/.test(toon), toon);
     assert.ok(toon.includes('ci-slots: 1 of 1 busy (hetzner 1/1)'), toon);
     assert.ok(toon.includes('radar-runner-3 (hetzner)'), toon);
 
@@ -127,16 +134,16 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(u4.stage, 'ticketed', 'stale sources: no move');
     assert.equal(u4.links.pr, 'https://github.com/acme/web/pull/1550');
 
-    // Every unit merged (or closed): the sprint reaches acceptance by itself —
-    // the owner's cue — and no further.
+    // Every unit merged (or closed): the sprint reaches done by itself — and
+    // no further.
     const done = {
       ...FACTS, staleSources: [], prs: [],
       mergedPrs: FACTS.unitIssues[1515].map((u, i) => ({ number: 1600 + i, url: `https://github.com/acme/web/pull/${1600 + i}`, branch: u.branch, mergedAt: '2026-08-29T01:00:00Z' })),
     };
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(done));
-    const finished = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'acceptance');
-    assert.equal(finished.cards.find(c => c.id === id).stage, 'acceptance');
-    assert.ok(finished.cards.filter(c => c.parent === id).every(u => u.stage === 'accepted'));
+    const finished = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'done');
+    assert.equal(finished.cards.find(c => c.id === id).stage, 'done');
+    assert.ok(finished.cards.filter(c => c.parent === id).every(u => u.stage === 'done'));
 
     // Deleting the sprint takes its unit cards with it.
     const del = await postJson(board.base, '/pipeline/card/delete', { id });
