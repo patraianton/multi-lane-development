@@ -33,6 +33,8 @@ A card sits in one stage at a time. The road is one-way:
 
 `ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/GRILL.md`](docs/GRILL.md) §2).
 
+A **sprint** — a card whose `links.ticket` is an umbrella issue — splits into **unit cards** once it has left `grilled` and its unit tickets exist: one card per ticket, bound to the sprint, moved by facts alone (busy lane → `development`, PR open → `ci_pr`, PR merged → `accepted`). The sprint card then leaves the columns for the **sprint band** above them, and its own stage follows the units: `development` once any unit has started, `acceptance` once every unit is merged — the owner's cue to accept the sprint. Details: [`docs/API.md`](docs/API.md) (Unit cards).
+
 `stuck` is not a step of the road. A **failure** (`local`, `ci`, or `acceptance`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `acceptance`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
 
 A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`).

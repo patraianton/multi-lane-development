@@ -1008,6 +1008,18 @@ function unitPlan(cards, sprints) {
         plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, move });
       }
     }
+    // The sprint's own stage follows its units: development once any unit has
+    // started, acceptance once every unit is merged (or closed) — the whole
+    // scope done, which is the owner's cue. Forward only, facts only.
+    const units = s.units ?? [];
+    if (units.length && !s.stale?.length && sprint.stage !== 'stuck') {
+      const allDone = units.every(u => u.merged || !u.open);
+      const anyStarted = units.some(u => u.lane || u.pr || u.merged);
+      let to = null;
+      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = 'acceptance';
+      else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
+      if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
+    }
   }
   return plan;
 }
@@ -1050,6 +1062,12 @@ export async function syncSprintUnits(sprints) {
       }
       const card = state.cards.find(c => c.id === step.id);
       if (!card) continue;
+      if (step.kind === 'sprint-stage') {
+        if (ROAD_ORDER.indexOf(step.to) > ROAD_ORDER.indexOf(card.stage)) {
+          enterStage(card, step.to, now); card.consecutiveFails = 0; moved++;
+        }
+        continue;
+      }
       card.lane = step.lane;
       card.links.pr = step.pr;
       card.links.branch = step.branch;
