@@ -310,6 +310,7 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 | [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Watchdog, Status, lane, spec, grill, Artifact, probe, ticket, founder |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Waves A–G |
 | [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, slots, auth, probe endpoints |
+| [`docs/GRILL.md`](docs/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
 | [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle, snapshot shape, hook delivery |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Bot, the four notifications, assign-subscription |
 | [`docs/DEVLAUNCH.md`](docs/DEVLAUNCH.md) | Development-launch |
