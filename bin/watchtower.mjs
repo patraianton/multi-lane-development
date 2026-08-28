@@ -515,7 +515,7 @@ const MAC_PROBE = [
   'for d in KITCHEN/lane-*; do [ -d "$d" ] || continue;',
   'echo "LANE $(basename "$d") branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"; done;',
   'for p in $(pgrep -f "codex exec" 2>/dev/null); do',
-  'echo "PROC $p|$(ps -o etime= -p $p | tr -d " ")|$(lsof -a -d cwd -p $p -Fn 2>/dev/null | grep "^n" | head -1 | cut -c2-)|$(ps -o command= -p $p | tr "\\n" " " | cut -c1-160)";',
+  'echo "PROC $p|$(ps -o etime= -p $p | tr -d " ")|$(lsof -a -d cwd -p $p -Fn 2>/dev/null | grep "^n" | head -1 | cut -c2-)|$(ps -o command= -p $p | tr "\\n" " " | cut -c1-400)";',
   'done;',
   'echo "UP $(uptime | tr -s " ")"',
 ].join(' ');
@@ -547,8 +547,17 @@ function parseMac(out, hostName, kitchenAbs) {
   return { lanes, extras, kitchen: kitchenAbs };
 }
 
+// How long ssh may wait for the TCP handshake. A host behind a mesh VPN
+// (the Mac over Tailscale) can drop the first SYNs and answer on a retry
+// twenty seconds later; ten seconds there reads as "did not answer" every
+// other sweep. Per host: hosts.<name>.connectTimeoutSec (default 10).
+function connectTimeoutSec(host) {
+  const n = Number(host?.connectTimeoutSec);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 10;
+}
+
 function sshArgs(host, remote) {
-  const args = ['-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new'];
+  const args = ['-o', `ConnectTimeout=${connectTimeoutSec(host)}`, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new'];
   if (host.key) args.push('-i', path.join(HOME, '.ssh', host.key));
   args.push(host.target, remote);
   return args;
@@ -559,7 +568,7 @@ async function probeHost(name, host) {
     ? MAC_PROBE.replaceAll('KITCHEN', host.kitchen ?? '~/kitchens')
     : 'hzlane status 2>&1';
   const started = Date.now();
-  const out = await runText(SSH, sshArgs(host, remote), 45000);
+  const out = await runText(SSH, sshArgs(host, remote), Math.max(45000, (connectTimeoutSec(host) + 35) * 1000));
   if (out === null) {
     return { host: name, target: host.target, ok: false, lanes: [], extras: [], error: 'ssh did not answer', tookMs: Date.now() - started };
   }
