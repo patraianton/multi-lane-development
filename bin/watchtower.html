@@ -1360,6 +1360,17 @@ function pcard(c) {
       + esc((l.branch || '') + (l.since ? ' · since ' + l.since : '') + (l.busy ? '' : ' · lane idle')) + '">'
       + '<span class="chip-key">' + esc(l.host + '/' + l.lane) + '</span>'
       + '<span class="chip-value">' + esc((l.unit ? l.unit + ' ' : '') + '#' + l.ticket + (l.busy ? '' : ' · idle')) + '</span></span>');
+    // Units that left their lane for a PR: the PR chip carries the unit, so
+    // the row reads "what is in flight", not only "what is on a lane".
+    for (const u of (sprint.units || [])) {
+      if (!u.pr || u.merged) continue;
+      const ci = u.pr.ci || {};
+      const color = ['green', 'red', 'run'].includes(ci.color) ? ' ci-' + ci.color : '';
+      laneChips.push('<a class="meta-chip pr-chip' + color + '" target="_blank" rel="noreferrer" href="' + esc(u.pr.url || '#')
+        + '" title="' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket + ' → PR #' + u.pr.number + (ci.text ? ' · ' + ci.text : '')) + '">'
+        + '<span class="chip-key">' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket) + '</span>'
+        + '<span class="chip-value">PR #' + esc(String(u.pr.number)) + (ci.text ? ' · ' + esc(ci.text) : '') + '</span></a>');
+    }
     if (laneChips.length) bits.push('<div class="row mono chip-row">' + laneChips.join('') + '</div>');
     const k = sprint.counts || {};
     const parts = [k.units + ' unit' + (k.units === 1 ? '' : 's'), k.onLane + ' on lanes', k.pr + ' in PR', k.merged + ' merged', k.queued + ' queued'];
