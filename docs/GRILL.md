@@ -6,8 +6,10 @@ would raise as a NO-GO, must be named and settled while the card is still at `sp
 A card moves to `grilled` only when the grill outcome has been folded back into the spec.
 
 Status of this document: the **method** (§1–§2) is in live use, run by the CTO window.
-The **artifact publishing pipeline** (§3–§5) is a requirement to build — nothing in this
-repository implements it yet.
+The **artifact publishing pipeline** (§3–§5) is implemented — the worker under
+`deploy/lavish-worker/`, the `bin/lavish-publish.mjs` and `bin/lavish-deploy.mjs` CLIs,
+and the operator guide in docs/ARTIFACT.md. Deploying awaits the owner's Cloudflare
+credentials (docs/ARTIFACT.md lists the exact token scopes).
 
 ## 1. Method: a panel of independent lenses
 
