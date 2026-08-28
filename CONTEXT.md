@@ -11,6 +11,14 @@ A persistent task born from a spec. It lives in the board's own state, moves thr
 stages, and accumulates attached live data. Not a herdr window.
 _Avoid_: ticket, task (ambiguous), issue
 
+**Unit card**:
+A card for one unit ticket of a sprint card, spawned by the board when the sprint has left
+`grilled` and its tickets exist. It carries `parent` (the sprint card), `ticket`, `unit` and
+walks `ticketed → development → ci_pr → accepted` by facts alone — the lane that builds it,
+the PR that carries it, the merge that finishes it. The sprint card is the roll-up people
+move; the unit cards are the work in the columns.
+_Avoid_: subtask, child ticket
+
 **Window**:
 A live herdr session working on some worktree. Windows attach to cards; they are evidence of
 work, not the work item itself.

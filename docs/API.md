@@ -306,6 +306,29 @@ It answers with plain `field: value` lines (`card`, `title`, `stage`,
 `spec-lines`) plus a `comments` table, a `history` table and a `help` line. An
 unknown id gets 404 and the ids currently in the pipeline.
 
+`lanes` and the `units` table are the **sprint** view: when `links.ticket` is
+an umbrella issue, the unit tickets referencing it (open and closed) are
+listed one per row — `unit` (from the title, e.g. `U5`), `ticket`, `branch`
+(the pinned branch from the ticket body), `lane` (`host/lane`, `(idle)` when
+the lane sits on the branch but nothing runs), `pr` (open PR with its CI, or
+`#N merged`) and `state` (`queued`, `on lane`, `lane idle`, `pr open`, `pr
+green`, `pr red`, `merged`, `closed`). `lanes` is the one-line form. The
+binding is by facts only: a lane's checked-out branch (`hzlane status`, the Mac
+kitchen folders) or the `TASK-<ticket>.md` its codex reads, and a PR's head
+branch — nobody announces it. In JSON the card carries `sprint` (`counts`,
+`lanes`, `free`, `laneCount`, `stale`) and, on the page, the full `units`.
+A card whose ticket link is not an umbrella has `lanes: -` and an empty table.
+
+**Unit cards.** Once a sprint card has left `grilled` and its unit tickets
+exist, the board spawns one card per unit ticket: `parent` (the sprint card's
+id), `ticket`, `unit`, `links.ticket` / `links.branch` from the ticket,
+`links.pr` and `lane` refreshed from the facts every sweep, `sprint-of` in the
+card view. They start at `ticketed` and are walked forward by facts alone —
+busy lane → `development`, PR open → `ci_pr`, PR merged → `accepted` — never
+backwards, never out of `stuck`, and not at all while a source is stale.
+Deleting the sprint card deletes its unit cards. The list view's `summary`
+counts them under `units`.
+
 `artifact` is the state of the linked review artifact: `-` (no link),
 `awaiting answers` (linked, no founder answer seen yet, card on a paper
 stage), or `answered <time> (<N> answers, by <who>)`. In JSON the list view

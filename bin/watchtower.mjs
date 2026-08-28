@@ -29,8 +29,9 @@ import {
 } from './serve.mjs';
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
-  sweepArtifactAnswers,
+  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits,
 } from './pipeline.mjs';
+import { sprintFactsFor, parseUnitBranch } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
@@ -341,6 +342,49 @@ const artifactSource = makeSource('artifact-answers', artifactSweepMs, async () 
 });
 setInterval(() => { artifactSource.tick(); }, artifactSweepMs).unref();
 
+// Sprint cards: units bound to lanes and PRs by the live sources, then the
+// unit cards spawned and walked by those facts. Runs on its own timer (and
+// after every board sweep), so it does not depend on the page being open or a
+// project being chosen. WATCHTOWER_SPRINT_FACTS_FILE (tests) replaces the live
+// sources with a JSON file of the same shape.
+const FRESH_MS = 10 * 60 * 1000;
+function staleSourceNames() {
+  return [streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+    .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
+    .map(s => s.name);
+}
+const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
+const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
+  let facts;
+  if (process.env.WATCHTOWER_SPRINT_FACTS_FILE) {
+    const f = await readJsonSoft(process.env.WATCHTOWER_SPRINT_FACTS_FILE, {});
+    facts = {
+      lanes: f.lanes ?? [], prs: f.prs ?? [], mergedPrs: f.mergedPrs ?? [],
+      unitIssues: new Map(Object.entries(f.unitIssues ?? {}).map(([k, v]) => [Number(k), v])),
+      staleSources: f.staleSources ?? [],
+    };
+  } else {
+    // The pipeline page never runs the windows sweep, so the slow sources are
+    // refreshed here too (each on its own interval) — a board showing only
+    // the pipeline still sees lanes, PRs and tickets move.
+    await Promise.all([streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+      .map(src => src.tick()).filter(Boolean));
+    facts = {
+      lanes: (lanesSource.value ?? []).flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok }))),
+      prs: prSource.value ?? [],
+      mergedPrs: mergedPrSource.value ?? [],
+      unitIssues: unitIssuesSource.value ?? new Map(),
+      staleSources: staleSourceNames(),
+    };
+  }
+  const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
+  setCardSprints(sprints);
+  const sync = await syncSprintUnits(sprints);
+  if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
+  return { sprints: sprints.size, ...sync };
+});
+setInterval(() => { sprintSource.tick(); }, sprintSweepMs).unref();
+
 // Which project the board is showing, and how the filter is expressed.
 //   none    — nothing chosen yet, the page shows onboarding
 //   all     — every herdr window, no filter
@@ -597,8 +641,10 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
   if (!repo) return byUmbrella;
-  const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '200',
-    '--json', 'number,title,body,url,labels,createdAt'], 90000);
+  // Closed units are read too: a sprint card shows a finished unit as done,
+  // not as vanished. Consumers that want the open scope filter on `state`.
+  const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
+    '--json', 'number,title,body,url,labels,createdAt,state,closedAt'], 90000);
   if (out === null) throw new Error('gh issue list (units) did not answer');
   for (const it of JSON.parse(out)) {
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
@@ -608,7 +654,11 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     for (const n of refs) {
       if (n === it.number) continue;
       if (!byUmbrella.has(n)) byUmbrella.set(n, []);
-      byUmbrella.get(n).push({ number: it.number, title: it.title, url: it.url, createdAt: it.createdAt });
+      byUmbrella.get(n).push({
+        number: it.number, title: it.title, url: it.url, createdAt: it.createdAt,
+        state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
+        branch: parseUnitBranch(it.body),
+      });
     }
   }
   return byUmbrella;
@@ -1525,7 +1575,7 @@ async function collect() {
       tabCount,
       _shadow: {
         merged: cardMerged,
-        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []) : [],
+        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []).filter(i => i.state !== 'CLOSED') : [],
         unitsPromised: stream?.units === 'issues',
         hasPrefixes: (stream?.branch_prefix ?? []).length > 0,
       },
@@ -1575,6 +1625,10 @@ async function collect() {
     delete c._shadow;
   }
   setShadowFacts({ facts: shadowFacts, staleSources, at: now });
+
+  // The sprint sweep sees the sources this sweep just refreshed.
+  sprintSource.at = 0;
+  sprintSource.tick();
 
   // Cards added by hand. They are bound to no window, no lane and no PR — only a
   // title, a text and a column — so they are appended last, after PRs have been
@@ -2298,6 +2352,7 @@ configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
 artifactSource.tick();
+sprintSource.tick();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
     console.log(`Watchtower is already running: http://127.0.0.1:${PORT}`);

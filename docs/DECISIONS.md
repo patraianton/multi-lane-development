@@ -4,6 +4,16 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-28 (late) — unit cards
+
+9. **After `ticketed`, every unit ticket is its own card (owner, 2026-08-28 22:40).** One
+   sprint card cannot carry seventeen lanes, PRs and states. The board spawns a **unit
+   card** per ticket referencing the umbrella, bound to the sprint card (`parent`, one
+   colour stripe per family), and moves it by facts only: busy lane → `development`, PR
+   open → `ci_pr`, PR merged → `accepted`. The sprint card stays the roll-up (counts,
+   lanes table) and the thing people move; the units are the work in the columns.
+   Nobody announces "U5 is on lane-b" — the lane's branch or `TASK-<ticket>` file says so.
+
 ## 2026-08-28 — from the five-lens ticket panel and the owner
 
 0. **One sprint in development at a time (owner insight, 2026-08-28).** A single sprint's

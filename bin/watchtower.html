@@ -426,6 +426,43 @@
   .pcard .pr-chip.ci-green { border-color: #1f6a52; color: var(--working); }
   .pcard .pr-chip.ci-red { border-color: #6a2224; color: var(--blocked); }
   .pcard .pr-chip.ci-run { border-color: #6a5122; color: var(--done); }
+  .pcard .lane-chip.busy { border-color: #1f5f7a; color: var(--focus); }
+  .pcard .lane-chip.idle { border-color: #5a4a1f; color: var(--done); }
+  .pcard .lane-chip .chip-key { color: inherit; opacity: .75; }
+  .pcard .sprint-line { color: var(--ink-dim); font-family: var(--ui); font-size: 9.5px; padding: 0 8px 6px 9px; }
+  .pcard .sprint-wrap { min-width: 0; overflow-x: auto; }
+  .pcard .sprint-table {
+    width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--mono); font-size: 10px; line-height: 1.3;
+  }
+  .pcard .sprint-table th {
+    padding: 2px 5px 4px; text-align: left; color: var(--ink-dim); font-family: var(--ui); font-size: 8px;
+    font-weight: 700; letter-spacing: .065em; text-transform: uppercase; border-bottom: 1px solid var(--line);
+  }
+  .pcard .sprint-table td {
+    padding: 3px 5px; vertical-align: top; border-bottom: 1px solid var(--line-soft); color: var(--ink-mid);
+    overflow-wrap: anywhere;
+  }
+  .pcard .sprint-table td.unit { white-space: nowrap; color: var(--ink); font-weight: 700; }
+  .pcard .sprint-table a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  .pcard .sprint-table a:hover { color: var(--focus); }
+  .pcard .sprint-table .st-merged, .pcard .row.st-merged { color: var(--working); }
+  .pcard .sprint-table .st-pr, .pcard .row.st-pr-open { color: var(--violet); }
+  .pcard .sprint-table .st-pr-green, .pcard .row.st-pr-green { color: var(--working); }
+  .pcard .sprint-table .st-pr-red, .pcard .row.st-pr-red { color: var(--blocked); }
+  .pcard .sprint-table .st-on-lane, .pcard .row.st-on-lane { color: var(--focus); }
+  .pcard .sprint-table .st-lane-idle, .pcard .row.st-lane-idle { color: var(--done); }
+  .pcard .sprint-table .st-queued, .pcard .sprint-table .st-closed,
+  .pcard .row.st-queued, .pcard .row.st-closed { color: var(--ink-dim); }
+  .pcard .sprint-foot { margin-top: 6px; color: var(--ink-dim); font-family: var(--ui); font-size: 9.5px; line-height: 1.4; }
+  /* A sprint and its unit cards share one colour stripe, so the family is
+     visible across the columns. */
+  .pcard.sprint, .pcard.unit { border-left: 3px solid var(--sprint, var(--line-hot)); }
+  .pcard .unit-parent {
+    border-color: var(--sprint, var(--line-hot)); color: var(--ink-mid);
+    background: linear-gradient(90deg, rgba(120, 221, 255, .08), transparent);
+  }
+  .pcard .unit-parent .chip-key { color: var(--sprint, var(--ink-dim)); }
+  .pcard .row.unit-state { padding: 0 8px 6px 9px; font-family: var(--mono); font-size: 10px; }
   .pcard .spec {
     min-width: 0; margin: 0; color: #bdcad6; font-size: 11.5px; line-height: 1.48;
     overflow-wrap: anywhere; white-space: pre-wrap;
@@ -1137,6 +1174,43 @@ function actBtn(id, action, body, label, cls) {
 // The pipeline will eventually receive the same PR detail the windows board
 // already knows. Keep it in the card's link rail when it arrives, without
 // drawing an empty placeholder on today's data.
+// The sprint table on an opened card: one row per unit ticket — where it is
+// being built, which PR carries it, and what state that adds up to.
+function sprintTable(s) {
+  const link = (href, text) => href
+    ? '<a href="' + esc(href) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">' + esc(text) + '</a>'
+    : esc(text);
+  const rows = (s.units || []).map(u => {
+    const lane = u.lane
+      ? esc(u.lane.host + '/' + u.lane.lane) + (u.lane.busy ? '' : ' <span class="st-lane-idle">idle</span>')
+        + (u.lane.since && u.lane.busy ? ' <span class="st-queued">' + esc(u.lane.since) + '</span>' : '')
+      : '<span class="st-queued">—</span>';
+    let pr = '<span class="st-queued">—</span>';
+    if (u.merged) pr = link(u.merged.url, '#' + u.merged.number) + ' <span class="st-merged">merged</span>';
+    else if (u.pr) {
+      const ci = u.pr.ci || {};
+      const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr';
+      pr = link(u.pr.url, '#' + u.pr.number) + ' <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>';
+    }
+    const stateCls = 'st-' + String(u.state || 'queued').replace(/\s+/g, '-');
+    return '<tr><td class="unit">' + esc(u.unit || '—') + '</td>'
+      + '<td>' + link(u.url, '#' + u.ticket) + '</td>'
+      + '<td>' + lane + '</td>'
+      + '<td>' + pr + '</td>'
+      + '<td class="' + stateCls + '">' + esc(u.state) + '</td></tr>';
+  });
+  const foot = [];
+  foot.push('free lanes: ' + ((s.free || []).join(', ') || 'none'));
+  if (s.busyElsewhere && s.busyElsewhere.length) foot.push('busy with other work: ' + s.busyElsewhere.join(', '));
+  if (s.stale && s.stale.length) foot.push('sources stale: ' + s.stale.join(', ') + ' — lane and PR facts may be old');
+  return '<section class="card-section sprint-section"><h3>sprint — units, lanes, PRs</h3>'
+    + (rows.length
+      ? '<div class="sprint-wrap"><table class="sprint-table"><thead><tr><th>unit</th><th>ticket</th><th>lane</th><th>PR</th><th>state</th></tr></thead><tbody>'
+        + rows.join('') + '</tbody></table></div>'
+      : '<div class="st-queued">no unit tickets reference umbrella #' + esc(String(s.umbrella)) + ' yet</div>')
+    + '<div class="sprint-foot">' + esc(foot.join(' · ')) + '</div></section>';
+}
+
 function pipelinePrChip(p) {
   if (!p || typeof p !== 'object') return '';
   const ci = p.ci && typeof p.ci === 'object' ? p.ci : {};
@@ -1237,7 +1311,36 @@ function pcard(c) {
 
   // Attachments live in a flexing chip rail: current links and plain metadata
   // share it with the future PR list, so long values never force a column wide.
-  const attached = ATTACH_FIELDS.filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
+  // A sprint card shows its lanes as a table below; the free-text `lane`
+  // field is that table's ancestor and would only repeat it.
+  const sprint = c.sprint && typeof c.sprint === 'object' ? c.sprint : null;
+  // A unit card names its sprint first, then what the facts say about it.
+  if (c.parent) {
+    const uf = c.unitFacts && typeof c.unitFacts === 'object' ? c.unitFacts : null;
+    const parentTitle = c.sprintTitle || c.parent;
+    const pieces = ['<span class="meta-chip unit-parent" title="' + esc('sprint ' + c.parent + ' — ' + parentTitle) + '">'
+      + '<span class="chip-key">&#8627; sprint</span><span class="chip-value">' + esc(parentTitle) + '</span></span>'];
+    if (uf && uf.lane) {
+      pieces.push('<span class="meta-chip lane-chip ' + (uf.lane.busy ? 'busy' : 'idle') + '" title="'
+        + esc((uf.lane.branch || '') + (uf.lane.since ? ' · since ' + uf.lane.since : '')) + '">'
+        + '<span class="chip-key">' + esc(uf.lane.host + '/' + uf.lane.lane) + '</span>'
+        + '<span class="chip-value">' + (uf.lane.busy ? 'building' : 'idle') + '</span></span>');
+    }
+    if (uf && (uf.merged || uf.pr)) {
+      pieces.push(pipelinePrChip(uf.merged
+        ? { number: uf.merged.number, url: uf.merged.url, status: 'merged', ci: { color: 'green', text: 'merged' } }
+        : uf.pr));
+    }
+    bits.push('<div class="row mono chip-row">' + pieces.join('') + '</div>');
+    if (uf && uf.state) {
+      bits.push('<div class="row unit-state st-' + esc(String(uf.state).replace(/\s+/g, '-')) + '">' + esc(uf.state)
+        + (uf.open === false && !uf.merged ? ' · ticket closed' : '') + '</div>');
+    }
+  }
+  const attached = ATTACH_FIELDS
+    .filter(k => !(k === 'lane' && sprint && sprint.lanes.length))
+    .filter(k => !(c.parent && (k === 'lane' || k === 'pr')))
+    .filter(k => (LINK_FIELDS.includes(k) ? c.links?.[k] : c[k]))
     .map(k => {
       const value = LINK_FIELDS.includes(k) ? c.links[k] : c[k];
       const content = '<span class="chip-key">' + esc(k) + '</span><span class="chip-value">'
@@ -1249,6 +1352,23 @@ function pcard(c) {
     });
   if (Array.isArray(c.prs)) attached.push(...c.prs.map(pipelinePrChip).filter(Boolean));
   if (attached.length) bits.push('<div class="row mono chip-row">' + attached.join('') + '</div>');
+
+  // The sprint's lanes, always visible: one chip per lane bound to a unit of
+  // this card (host/lane → unit #ticket), then the count of units in flight.
+  if (sprint) {
+    const laneChips = sprint.lanes.map(l => '<span class="meta-chip lane-chip ' + (l.busy ? 'busy' : 'idle') + '" title="'
+      + esc((l.branch || '') + (l.since ? ' · since ' + l.since : '') + (l.busy ? '' : ' · lane idle')) + '">'
+      + '<span class="chip-key">' + esc(l.host + '/' + l.lane) + '</span>'
+      + '<span class="chip-value">' + esc((l.unit ? l.unit + ' ' : '') + '#' + l.ticket + (l.busy ? '' : ' · idle')) + '</span></span>');
+    if (laneChips.length) bits.push('<div class="row mono chip-row">' + laneChips.join('') + '</div>');
+    const k = sprint.counts || {};
+    const parts = [k.units + ' unit' + (k.units === 1 ? '' : 's'), k.onLane + ' on lanes', k.pr + ' in PR', k.merged + ' merged', k.queued + ' queued'];
+    if (sprint.laneCount) parts.push((sprint.free || []).length + ' of ' + sprint.laneCount + ' lanes free');
+    if (sprint.stale && sprint.stale.length) parts.push('sources stale: ' + sprint.stale.join(', '));
+    bits.push('<div class="row sprint-line" title="' + esc('free: ' + ((sprint.free || []).join(', ') || 'none')
+      + (sprint.busyElsewhere && sprint.busyElsewhere.length ? ' · busy with other work: ' + sprint.busyElsewhere.join(', ') : '')) + '">'
+      + esc(parts.join(' · ')) + '</div>');
+  }
 
   // A published review artifact is, before development, the card's open
   // question. The board marks it answered itself (artifactAnswered: when, how
@@ -1273,6 +1393,7 @@ function pcard(c) {
   // ---- everything below is shown only when the card is opened
   const inner = [];
   const stages = ROAD.concat(['stuck']).filter(s => cl.byStage[s]);
+  if (sprint) inner.push(sprintTable(sprint));
   inner.push('<section class="card-section time-section"><h3>time per stage</h3><div class="stage-times">'
     + stages.map(s => '<span class="stage-time"><span class="stage-name" title="'
         + esc(STAGE_TITLE[s]) + '">' + esc(STAGE_TITLE[s]) + '</span>'
@@ -1333,8 +1454,17 @@ function pcard(c) {
   }
   bits.push('<div class="open-only card-footer"><div class="acts">' + acts.join('') + '</div></div>');
 
-  return '<div class="pcard st-' + esc(c.stage) + (open ? ' open' : '') + '" data-card="' + esc(c.id) + '">'
-    + bits.join('') + '</div>';
+  const family = c.parent ? ' unit' : (sprint ? ' sprint' : '');
+  const familyStyle = family ? ' style="--sprint: ' + sprintHue(c.parent || c.id) + '"' : '';
+  return '<div class="pcard st-' + esc(c.stage) + family + (open ? ' open' : '') + '" data-card="' + esc(c.id) + '"'
+    + familyStyle + '>' + bits.join('') + '</div>';
+}
+
+// One hue per sprint family, stable across redraws: derived from the id.
+function sprintHue(id) {
+  let h = 0;
+  for (const ch of String(id || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return 'hsl(' + (h % 360) + ' 62% 58%)';
 }
 
 // A redraw replaces the whole pipeline, and half-typed text must survive it:
