@@ -250,8 +250,154 @@
   .sprint-band > h2 {
     margin: 0 0 6px; font: 700 10px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-dim);
   }
-  .sprint-band .band-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px; align-items: start; }
-  .sprint-band .pcard { margin: 0; }
+  .sprint-band .band-stack { display: grid; gap: 10px; width: 100%; max-width: 1840px; min-width: 0; }
+  .sprint-band .sprint-panel-wrap { min-width: 0; }
+  .sprint-band .sprint-panel {
+    display: grid; grid-template-columns: minmax(290px, 370px) minmax(0, 1fr); min-width: 0; overflow: hidden;
+    border: 1px solid var(--line); border-left: 3px solid var(--sprint); border-radius: 9px;
+    background:
+      radial-gradient(circle at 0 0, rgba(120, 221, 255, .075), transparent 34%),
+      linear-gradient(145deg, var(--panel-lift), var(--panel) 54%, #0f1924);
+    box-shadow: 0 8px 22px var(--shadow-deep), inset 0 1px rgba(255, 255, 255, .035);
+  }
+  .sprint-band .sprint-summary {
+    display: grid; align-content: start; gap: 11px; min-width: 0; padding: 13px;
+    border-right: 1px solid var(--line); background: rgba(8, 13, 19, .18);
+  }
+  .sprint-band .sprint-identity { min-width: 0; }
+  .sprint-band .sprint-name-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+  .sprint-band .sprint-name {
+    flex: 1 1 auto; min-width: 0; margin: 0; color: var(--ink); font-size: 15px;
+    font-weight: 750; line-height: 1.25; letter-spacing: -.012em; overflow-wrap: anywhere;
+  }
+  .sprint-band .card-toggle {
+    flex: 0 0 auto; padding: 3px 7px; border: 1px solid #31556a; border-radius: 10px;
+    background: rgba(8, 22, 30, .72); color: var(--focus); cursor: pointer;
+    font: 700 9px/1.2 var(--mono); text-transform: lowercase;
+  }
+  .sprint-band .card-toggle:hover, .sprint-band .card-toggle[aria-expanded="true"] {
+    border-color: var(--focus); background: rgba(23, 54, 69, .78);
+  }
+  .sprint-band .identity-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; }
+  .sprint-band .badge, .sprint-band .clock, .sprint-band .mini-link, .sprint-band .source-health {
+    display: inline-flex; align-items: center; min-width: 0; border: 1px solid var(--line);
+    border-radius: 12px; background: rgba(8, 13, 19, .58); white-space: nowrap;
+  }
+  .sprint-band .badge {
+    padding: 3px 7px; border-color: #31556a; color: var(--focus);
+    font: 700 9px/1.2 var(--mono); letter-spacing: .05em; text-transform: uppercase;
+  }
+  .sprint-band .clock { gap: 4px; padding: 3px 7px; border-color: #24475a; color: var(--focus); }
+  .sprint-band .clock small {
+    color: var(--ink-dim); font: 700 8px/1 var(--ui); letter-spacing: .06em; text-transform: uppercase;
+  }
+  .sprint-band .clock .clk { color: var(--focus); font: 700 10px/1.2 var(--mono); }
+  .sprint-band .clock .clk.stopped { color: var(--ink-dim); }
+  .sprint-band .links { display: flex; flex-wrap: wrap; align-content: start; gap: 4px; min-width: 0; }
+  .sprint-band .mini-link {
+    gap: 4px; max-width: 100%; margin: 0; padding: 3px 7px; color: var(--ink-mid);
+    font: 9px/1.2 var(--mono); text-decoration: none;
+  }
+  .sprint-band a.mini-link:hover { border-color: #37657a; background: rgba(18, 38, 49, .74); color: var(--focus); }
+  .sprint-band .mini-link b {
+    color: var(--ink-dim); font: 700 8px/1 var(--ui); letter-spacing: .06em; text-transform: uppercase;
+  }
+  .sprint-band .mini-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .sprint-band .progress-block { min-width: 0; }
+  .sprint-band .progress-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px;
+  }
+  .sprint-band .progress-head b { color: var(--ink); font-size: 11px; }
+  .sprint-band .progress-head span { color: var(--ink-dim); font: 9px var(--mono); }
+  .sprint-band .segment-bar { display: flex; gap: 2px; min-width: 0; }
+  .sprint-band .segment-bar i {
+    display: block; flex: 1 1 0; min-width: 3px; height: 8px; border-radius: 2px; background: var(--unknown);
+  }
+  .sprint-band .segment-bar i.st-on-lane { background: var(--focus); }
+  .sprint-band .segment-bar i.st-lane-idle, .sprint-band .segment-bar i.st-local-check { background: var(--done); }
+  .sprint-band .segment-bar i.st-pr-open { background: var(--violet); }
+  .sprint-band .segment-bar i.st-pr-green, .sprint-band .segment-bar i.st-merged { background: var(--working); }
+  .sprint-band .segment-bar i.st-pr-red { background: var(--blocked); }
+  .sprint-band .legend {
+    display: flex; flex-wrap: wrap; gap: 5px 11px; margin-top: 7px; color: var(--ink-dim); font: 9px/1.2 var(--mono);
+  }
+  .sprint-band .legend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .sprint-band .legend i { width: 6px; height: 6px; border-radius: 2px; background: var(--unknown); }
+  .sprint-band .legend .on-lane i { background: var(--focus); }
+  .sprint-band .legend .checking i { background: var(--done); }
+  .sprint-band .legend .pr i { background: var(--violet); }
+  .sprint-band .legend .merged i { background: var(--working); }
+  .sprint-band .status-line {
+    position: relative; min-width: 0; padding: 6px 8px 6px 20px; border: 1px solid var(--line-soft);
+    border-radius: 6px; background: rgba(8, 13, 19, .45); color: var(--ink-mid); font-size: 10px; line-height: 1.4;
+  }
+  .sprint-band .status-line::before {
+    content: ""; position: absolute; left: 8px; top: 10px; width: 5px; height: 5px;
+    border-radius: 50%; background: var(--ink-dim);
+  }
+  .sprint-band .status-line.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
+  .sprint-band .status-line.stalled::before { background: var(--done); }
+  .sprint-band .status-line.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
+  .sprint-band .status-line.stale { border-color: #6a5122; background: #1a140c; }
+  .sprint-band .status-copy {
+    display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere;
+  }
+  .sprint-band .status-meta { margin-left: 5px; color: var(--ink-dim); font: 9px var(--mono); white-space: nowrap; }
+  .sprint-band .status-meta .verdict { text-transform: uppercase; }
+  .sprint-band .status-line.moving .verdict { color: var(--working); }
+  .sprint-band .status-line.stalled .verdict { color: var(--done); }
+  .sprint-band .status-line.looping .verdict { color: var(--blocked); }
+  .sprint-band .status-line .stale-mark { color: var(--done); }
+  .sprint-band .capacity-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 10px; }
+  .sprint-band .capacity { min-width: 0; }
+  .sprint-band .capacity strong { display: block; color: var(--ink); font-size: 13px; }
+  .sprint-band .capacity .capacity-number { color: var(--working); font: 750 22px/1 var(--mono); }
+  .sprint-band .capacity small, .sprint-band .ci-capacity small {
+    display: block; margin-top: 4px; color: var(--ink-dim); font: 9px/1.35 var(--mono); overflow-wrap: anywhere;
+  }
+  .sprint-band .ci-capacity { min-width: 0; margin-top: 7px; color: var(--ink-mid); font: 10px/1.35 var(--mono); }
+  .sprint-band .ci-capacity b { color: var(--done); }
+  .sprint-band .source-health {
+    gap: 5px; margin-top: 7px; padding: 3px 7px; color: var(--working); font: 9px/1.2 var(--mono);
+  }
+  .sprint-band .source-health::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .sprint-band .source-health.stale { border-color: #6a5122; color: var(--done); white-space: normal; }
+  .sprint-band .table-pane { min-width: 0; padding: 10px 12px 12px; }
+  .sprint-band .pane-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px;
+  }
+  .sprint-band .pane-head h3 { margin: 0; color: var(--ink); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+  .sprint-band .pane-head span { color: var(--ink-dim); font: 9px var(--mono); text-align: right; }
+  .sprint-band .flight-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
+  .sprint-band .flight-table th { padding: 5px 7px; border-bottom: 1px solid var(--line); text-align: left; }
+  .sprint-band .flight-table th button {
+    max-width: 100%; padding: 0; border: 0; background: none; color: var(--ink-dim); cursor: pointer;
+    font: 700 8px var(--ui); letter-spacing: .08em; text-align: left; text-transform: uppercase;
+  }
+  .sprint-band .flight-table th button:hover, .sprint-band .flight-table th button.active { color: var(--focus); }
+  .sprint-band .flight-table td {
+    min-width: 0; padding: 7px; border-bottom: 1px solid var(--line-soft); vertical-align: top;
+    color: var(--ink-mid); overflow-wrap: anywhere;
+  }
+  .sprint-band .flight-table tbody tr:hover { background: rgba(120, 221, 255, .035); }
+  .sprint-band .unit-cell a { color: var(--ink); font: 750 10px var(--mono); text-decoration: none; }
+  .sprint-band .unit-cell a:hover, .sprint-band .flight-table td a:hover { color: var(--focus); }
+  .sprint-band .unit-cell small, .sprint-band .cell-sub {
+    display: block; min-width: 0; margin-top: 2px; overflow: hidden; color: var(--ink-dim);
+    font: 8.5px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sprint-band .flight-table td a { color: inherit; text-decoration: none; }
+  .sprint-band .state-word { font: 700 9px var(--mono); text-transform: uppercase; }
+  .sprint-band .st-queued, .sprint-band .st-closed { color: var(--ink-dim); }
+  .sprint-band .st-on-lane { color: var(--focus); }
+  .sprint-band .st-lane-idle, .sprint-band .st-local-check { color: var(--done); }
+  .sprint-band .st-pr-open { color: var(--violet); }
+  .sprint-band .st-pr-green, .sprint-band .st-merged { color: var(--working); }
+  .sprint-band .st-pr-red { color: var(--blocked); }
+  .sprint-band .empty-note { color: var(--ink-dim); font: 9px var(--mono); }
+  .sprint-band .sprint-card-detail { min-width: 0; }
+  .sprint-band .sprint-card-detail[hidden] { display: none; }
+  .sprint-band .sprint-card-detail .pcard { margin: 7px 0 0; }
   .stuck-zone {
     display: none; margin-bottom: 13px; padding: 9px 10px 10px;
     border: 1px solid #6a2224; border-radius: 9px;
@@ -387,16 +533,6 @@
   .pcard:not(.open) .status .status-text {
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .pcard .sprint-strip { display: flex; gap: 2px; min-width: 0; padding: 2px 8px 5px 9px; }
-  .pcard .sprint-strip i { flex: 1 1 0; min-width: 3px; height: 6px; border-radius: 2px; background: var(--line); }
-  .pcard .sprint-strip i.st-on-lane { background: var(--focus); }
-  .pcard .sprint-strip i.st-lane-idle { background: var(--done); }
-  .pcard .sprint-strip i.st-pr, .pcard .sprint-strip i.st-pr-open { background: var(--violet); }
-  .pcard .sprint-strip i.st-pr-green, .pcard .sprint-strip i.st-merged { background: var(--working); }
-  .pcard .sprint-strip i.st-pr-red { background: var(--blocked); }
-  .pcard .row.sprint-wrap { padding: 0 8px 4px 9px; }
-  .pcard .sprint-table.mini { font-size: 9.5px; }
-  .pcard .sprint-table.mini td { padding: 2px 4px; border-bottom-color: rgba(28, 42, 57, .6); }
   .pcard .status::before {
     content: ""; position: absolute; left: 7px; top: 8px; width: 4px; height: 4px;
     border-radius: 50%; background: var(--ink-dim);
@@ -450,7 +586,6 @@
   .pcard .lane-chip.busy { border-color: #1f5f7a; color: var(--focus); }
   .pcard .lane-chip.idle { border-color: #5a4a1f; color: var(--done); }
   .pcard .lane-chip .chip-key { color: inherit; opacity: .75; }
-  .pcard .sprint-line { color: var(--ink-dim); font-family: var(--ui); font-size: 9.5px; padding: 0 8px 6px 9px; }
   .pcard .sprint-wrap { min-width: 0; overflow-x: auto; }
   .pcard .sprint-table {
     width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--mono); font-size: 10px; line-height: 1.3;
@@ -471,7 +606,8 @@
   .pcard .sprint-table .st-pr-green, .pcard .row.st-pr-green { color: var(--working); }
   .pcard .sprint-table .st-pr-red, .pcard .row.st-pr-red { color: var(--blocked); }
   .pcard .sprint-table .st-on-lane, .pcard .row.st-on-lane { color: var(--focus); }
-  .pcard .sprint-table .st-lane-idle, .pcard .row.st-lane-idle { color: var(--done); }
+  .pcard .sprint-table .st-lane-idle, .pcard .row.st-lane-idle,
+  .pcard .sprint-table .st-local-check, .pcard .row.st-local-check { color: var(--done); }
   .pcard .sprint-table .st-queued, .pcard .sprint-table .st-closed,
   .pcard .row.st-queued, .pcard .row.st-closed { color: var(--ink-dim); }
   .pcard .sprint-foot { margin-top: 6px; color: var(--ink-dim); font-family: var(--ui); font-size: 9.5px; line-height: 1.4; }
@@ -581,9 +717,25 @@
   @media (max-width: 1180px) {
     .pboard { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   }
+  @media (max-width: 900px) {
+    .sprint-band .sprint-panel { grid-template-columns: minmax(0, 1fr); }
+    .sprint-band .sprint-summary { border-right: 0; border-bottom: 1px solid var(--line); }
+  }
   @media (max-width: 680px) {
     .pipeline { padding: 8px 9px 16px; }
     .pboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .sprint-band .capacity-row { grid-template-columns: minmax(0, 1fr); }
+    .sprint-band .flight-table, .sprint-band .flight-table tbody,
+    .sprint-band .flight-table tr, .sprint-band .flight-table td { display: block; width: 100%; }
+    .sprint-band .flight-table thead { display: none; }
+    .sprint-band .flight-table tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+    .sprint-band .flight-table td {
+      display: grid; grid-template-columns: 65px minmax(0, 1fr); padding: 3px 6px; border: 0;
+    }
+    .sprint-band .flight-table td::before {
+      content: attr(data-label); color: var(--ink-dim); font: 700 8px var(--ui);
+      letter-spacing: .08em; text-transform: uppercase;
+    }
   }
   @media (max-width: 390px) {
     .pboard { grid-template-columns: minmax(0, 1fr); }
@@ -1073,6 +1225,9 @@ try { if (localStorage.getItem('watchtower-view') === 'pipeline') view = 'pipeli
 let pipeSeen = '';
 let pipeTimer = null;
 const openCards = new Set();
+// Each sprint owns its table order. Refreshes rebuild the band, so sorting
+// lives outside the DOM and survives the three-second redraw cycle.
+const sprintBandSort = new Map();
 // Whether this board runs the subscription/Telegram flow. Only then does a
 // grilled card wait for a subscription (and lose its plain forward button);
 // a board without the feature keeps its plain grilled -> Ticketed button.
@@ -1231,6 +1386,217 @@ function sprintTable(s) {
     + '<div class="sprint-foot">' + esc(foot.join(' · ')) + '</div></section>';
 }
 
+function sprintBandUnitNumber(unit) {
+  const digits = String(unit || '').replace(/\D/g, '');
+  const n = Number(digits);
+  return digits && Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+}
+
+function sprintBandStateClass(u) {
+  if (u.merged) return 'st-merged';
+  if (u.pr) {
+    const color = u.pr.ci && u.pr.ci.color;
+    if (color === 'green') return 'st-pr-green';
+    if (color === 'red') return 'st-pr-red';
+    return 'st-pr-open';
+  }
+  if (u.lane?.check || u.state === 'local check') return 'st-local-check';
+  if (u.lane) return u.lane.busy ? 'st-on-lane' : 'st-lane-idle';
+  return u.state === 'closed' ? 'st-closed' : 'st-queued';
+}
+
+function sprintBandCounts(s) {
+  const units = s.units || [];
+  const given = s.counts || {};
+  const count = (key, test) => Object.prototype.hasOwnProperty.call(given, key)
+    && Number.isFinite(Number(given[key])) ? Number(given[key]) : units.filter(test).length;
+  return {
+    units: count('units', () => true),
+    queued: count('queued', u => u.state === 'queued'),
+    onLane: count('onLane', u => u.state === 'on lane'),
+    checking: count('checking', u => u.state === 'local check' || Boolean(u.lane?.check)),
+    pr: count('pr', u => Boolean(u.pr) && !u.merged),
+    merged: count('merged', u => Boolean(u.merged)),
+  };
+}
+
+function sprintBandLinks(c) {
+  const links = c.links || {};
+  const chips = [];
+  for (const [key, label] of [['ticket', 'Ticket'], ['artifact', 'Artifact'], ['branch', 'Branch'], ['pr', 'PR']]) {
+    const value = links[key];
+    if (!String(value || '').trim()) continue;
+    const content = '<b>' + label + '</b><span>' + esc(shortLink(key, value)) + '</span>';
+    chips.push(/^https?:[/][/]/.test(String(value))
+      ? '<a class="chip mini-link" href="' + esc(value) + '" target="_blank" rel="noreferrer">' + content + '</a>'
+      : '<span class="chip mini-link" title="' + esc(value) + '">' + content + '</span>');
+  }
+  if ((c.subscription || '').trim()) {
+    chips.push('<span class="chip mini-link"><b>Subscription</b><span>' + esc(c.subscription) + '</span></span>');
+  }
+  return '<div class="links">' + (chips.length ? chips.join('') : '<span class="empty-note">No references attached</span>') + '</div>';
+}
+
+function sprintBandProgress(s) {
+  const counts = sprintBandCounts(s);
+  const units = (s.units || []).slice().sort((a, b) => sprintBandUnitNumber(a.unit) - sprintBandUnitNumber(b.unit));
+  const range = units.length
+    ? 'ordered ' + esc(units[0].unit || '#' + units[0].ticket) + ' → ' + esc(units[units.length - 1].unit || '#' + units[units.length - 1].ticket)
+    : 'waiting for unit tickets';
+  const segments = units.map(u => '<i class="' + sprintBandStateClass(u) + '" title="'
+    + esc((u.unit || 'unit') + ' #' + u.ticket + ' — ' + (u.state || 'queued')) + '"></i>').join('');
+  return '<div class="progress-block"><div class="progress-head"><b>' + counts.units + ' unit'
+    + (counts.units === 1 ? '' : 's') + '</b><span>' + range + '</span></div>'
+    + '<div class="segment-bar" aria-label="Sprint unit progress">' + segments + '</div>'
+    + '<div class="legend"><span><i></i>' + counts.queued + ' queued</span>'
+    + '<span class="on-lane"><i></i>' + counts.onLane + ' on lane</span>'
+    + '<span class="checking"><i></i>' + counts.checking + ' checking</span>'
+    + '<span class="pr"><i></i>' + counts.pr + ' in PR</span>'
+    + '<span class="merged"><i></i>' + counts.merged + ' merged</span></div></div>';
+}
+
+function sprintBandStatus(c) {
+  const status = c.status && typeof c.status === 'object' ? c.status : {};
+  const text = String(status.text || 'No orchestrator status yet').replace(/\uFFFD/g, '—');
+  const verdict = String(status.verdict || 'unknown').toLowerCase();
+  const stale = isStatusStale(c);
+  const tone = ['moving', 'stalled', 'looping'].includes(verdict) ? ' ' + verdict : '';
+  const age = status.at ? ago(status.at) : '';
+  return '<div class="status-line' + tone + (stale ? ' stale' : '') + '" title="' + esc(text) + '">'
+    + '<span class="status-copy">' + esc(text)
+    + '<span class="status-meta"><span class="verdict">' + esc(verdict) + '</span>'
+    + (age ? ' · ' + esc(age) : '')
+    + (stale ? ' · <span class="stale-mark">stale Status</span>' : '')
+    + '</span></span></div>';
+}
+
+function sprintBandCapacity(s) {
+  const free = s.free || [];
+  const busyElsewhere = s.busyElsewhere || [];
+  const stale = s.stale || [];
+  const laneCount = Number(s.laneCount) || 0;
+  const ci = s.ciSlots && typeof s.ciSlots === 'object' ? s.ciSlots : null;
+  let ciLine = '<div class="ci-capacity"><b>CI slots</b> unavailable</div>';
+  if (ci && Number(ci.total) > 0) {
+    const hosts = Object.entries(ci.byHost || {}).map(([host, v]) => host + ' ' + (Number(v.busy) || 0)
+      + '/' + (Number(v.online) || 0)).join(' · ');
+    ciLine = '<div class="ci-capacity"><b>' + (Number(ci.busy) || 0) + '</b> of '
+      + (Number(ci.online) || 0) + ' online CI slots busy'
+      + '<small>' + esc(hosts || 'No host detail') + (Number(ci.offline) ? ' · ' + Number(ci.offline) + ' offline' : '') + '</small></div>';
+  }
+  return '<div class="capacity"><strong><span class="capacity-number">' + free.length + '</span> of '
+    + laneCount + ' lanes free</strong><small>' + esc(free.join(' · ') || 'No free lanes')
+    + (busyElsewhere.length ? '<br>Busy with other work: ' + esc(busyElsewhere.join(' · ')) : '') + '</small>'
+    + ciLine + '<span class="source-health' + (stale.length ? ' stale' : '') + '">'
+    + (stale.length ? 'Stale sources: ' + esc(stale.join(', ')) + ' — lane and PR facts may be old' : 'Sources current')
+    + '</span></div>';
+}
+
+function sprintBandLane(u) {
+  if (!u.lane) return '<span class="empty-note">—</span>';
+  const checking = Boolean(u.lane.check);
+  const cls = checking ? 'st-local-check' : (u.lane.busy ? 'st-on-lane' : 'st-lane-idle');
+  const mode = checking ? 'checking' : (u.lane.busy ? 'busy' : 'idle');
+  const since = checking ? u.lane.check.since : u.lane.since;
+  return '<span class="' + cls + '">' + esc((u.lane.host || '?') + '/' + (u.lane.lane || '?')) + '</span>'
+    + '<span class="cell-sub">' + mode + (since ? ' · ' + esc(since) : '') + '</span>';
+}
+
+function sprintBandPr(u) {
+  if (u.merged) {
+    const content = '#' + esc(u.merged.number) + '<span class="cell-sub st-merged">merged</span>';
+    return u.merged.url ? '<a class="st-merged" href="' + esc(u.merged.url)
+      + '" target="_blank" rel="noreferrer">' + content + '</a>' : '<span class="st-merged">' + content + '</span>';
+  }
+  if (u.pr) {
+    const ci = u.pr.ci || {};
+    const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr-open';
+    const label = '#' + esc(u.pr.number);
+    const runner = u.pr.runner && u.pr.runner.name
+      ? ' · ' + u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '') : '';
+    const detail = '<span class="cell-sub ' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open'))
+      + esc(runner) + '</span>';
+    return u.pr.url ? '<a class="' + cls + '" href="' + esc(u.pr.url)
+      + '" target="_blank" rel="noreferrer">' + label + detail + '</a>' : '<span class="' + cls + '">' + label + detail + '</span>';
+  }
+  if (u.lane?.check) {
+    const check = u.lane.check;
+    const detail = [check.cmd, check.since].filter(Boolean).join(' · ');
+    return '<span class="st-local-check">local check</span>'
+      + (detail ? '<span class="cell-sub" title="' + esc(check.cmd || '') + '">' + esc(detail) + '</span>' : '');
+  }
+  return '<span class="empty-note">—</span>';
+}
+
+function sprintBandSortState(id) {
+  if (!sprintBandSort.has(id)) sprintBandSort.set(id, { key: 'unit', dir: 1 });
+  return sprintBandSort.get(id);
+}
+
+function sprintBandActiveUnits(s, id) {
+  const sort = sprintBandSortState(id);
+  const units = (s.units || []).filter(u => !u.merged && (u.lane || u.pr));
+  const value = u => {
+    if (sort.key === 'unit') return sprintBandUnitNumber(u.unit);
+    if (sort.key === 'lane') return u.lane ? (u.lane.host || '') + '/' + (u.lane.lane || '') : '';
+    if (sort.key === 'pr') return u.pr ? Number(u.pr.number) || 0 : 0;
+    return u.state || '';
+  };
+  return units.sort((a, b) => {
+    const av = value(a);
+    const bv = value(b);
+    const compared = typeof av === 'number' && typeof bv === 'number'
+      ? av - bv : String(av).localeCompare(String(bv), undefined, { numeric: true });
+    return (compared || sprintBandUnitNumber(a.unit) - sprintBandUnitNumber(b.unit)) * sort.dir;
+  });
+}
+
+function sprintBandSortButton(c, key, label) {
+  const sort = sprintBandSortState(c.id);
+  return '<button type="button" class="' + (sort.key === key ? 'active' : '') + '" data-sprint-sort="' + key
+    + '" data-sprint-id="' + esc(c.id) + '">' + label
+    + (sort.key === key ? (sort.dir > 0 ? ' ↑' : ' ↓') : '') + '</button>';
+}
+
+function sprintBandTable(c) {
+  const units = sprintBandActiveUnits(c.sprint, c.id);
+  const rows = units.map(u => {
+    const unitLabel = esc((u.unit || 'unit') + ' #' + u.ticket);
+    const unit = u.url ? '<a href="' + esc(u.url) + '" target="_blank" rel="noreferrer">' + unitLabel + '</a>' : unitLabel;
+    return '<tr><td class="unit-cell" data-label="Unit">' + unit + '<small title="' + esc(u.title || '') + '">'
+      + esc(u.title || 'Untitled unit') + '</small></td><td data-label="Lane">' + sprintBandLane(u) + '</td>'
+      + '<td data-label="PR / CI">' + sprintBandPr(u) + '</td><td data-label="State"><span class="state-word '
+      + sprintBandStateClass(u) + '">' + esc(u.state || 'queued') + '</span></td></tr>';
+  }).join('');
+  return '<section class="table-pane"><div class="pane-head"><h3>In flight now</h3><span>' + units.length
+    + ' active unit' + (units.length === 1 ? '' : 's') + ' · select a heading to sort</span></div>'
+    + '<table class="flight-table"><colgroup><col style="width:24%"><col style="width:25%">'
+    + '<col style="width:33%"><col style="width:18%"></colgroup><thead><tr><th>'
+    + sprintBandSortButton(c, 'unit', 'Unit + ticket') + '</th><th>'
+    + sprintBandSortButton(c, 'lane', 'Lane') + '</th><th>'
+    + sprintBandSortButton(c, 'pr', 'PR + CI') + '</th><th>'
+    + sprintBandSortButton(c, 'state', 'State') + '</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="4"><span class="empty-note">No units are in flight right now</span></td></tr>')
+    + '</tbody></table></section>';
+}
+
+function sprintBandPanel(c) {
+  const s = c.sprint;
+  const cl = calcClocks(c);
+  const open = openCards.has(c.id);
+  return '<div class="sprint-panel-wrap" data-sprint-panel="' + esc(c.id) + '" style="--sprint: ' + sprintHue(c.id) + '">'
+    + '<article class="sprint-panel"><aside class="sprint-summary"><div class="sprint-identity">'
+    + '<div class="sprint-name-row"><h3 class="sprint-name">' + esc(c.title) + '</h3>'
+    + '<button type="button" class="card-toggle" data-sprint-card="' + esc(c.id) + '" aria-expanded="'
+    + (open ? 'true' : 'false') + '" title="Toggle the full sprint card">card</button></div>'
+    + '<div class="identity-meta"><span class="badge">' + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span>'
+    + '<span class="clock"><small>Total</small>' + clockSpan('clk', cl.total, cl.totalFrom) + '</span></div></div>'
+    + sprintBandProgress(s) + sprintBandStatus(c)
+    + '<div class="capacity-row">' + sprintBandCapacity(s) + sprintBandLinks(c) + '</div></aside>'
+    + sprintBandTable(c) + '</article><div class="sprint-card-detail" data-sprint-detail="' + esc(c.id) + '"'
+    + (open ? '' : ' hidden') + '>' + pcard(c) + '</div></div>';
+}
+
 function pipelinePrChip(p) {
   if (!p || typeof p !== 'object') return '';
   const ci = p.ci && typeof p.ci === 'object' ? p.ci : {};
@@ -1381,50 +1747,6 @@ function pcard(c) {
     });
   if (Array.isArray(c.prs)) attached.push(...c.prs.map(pipelinePrChip).filter(Boolean));
   if (attached.length) bits.push('<div class="row mono chip-row">' + attached.join('') + '</div>');
-
-  // The sprint at a glance: a strip of every unit coloured by its state, the
-  // units in flight as a three-column table (unit · lane · PR), the numbers.
-  // The full table with every unit is on the opened card.
-  if (sprint) {
-    const units = sprint.units || [];
-    if (units.length) {
-      bits.push('<div class="row sprint-strip" title="'
-        + esc(units.map(u => (u.unit || '#' + u.ticket) + ': ' + u.state).join(' · ')) + '">'
-        + units.map(u => '<i class="st-' + esc(String(u.state || 'queued').replace(/\s+/g, '-')) + '"></i>').join('')
-        + '</div>');
-    }
-    const flight = units.filter(u => (u.lane || u.pr) && !u.merged);
-    if (flight.length) {
-      bits.push('<div class="row sprint-wrap"><table class="sprint-table mini"><tbody>' + flight.map(u => {
-        const lane = u.lane
-          ? esc(u.lane.host + '/' + u.lane.lane) + (u.lane.busy ? '' : ' <span class="st-lane-idle">idle</span>')
-          : '<span class="st-queued">—</span>';
-        let pr = '<span class="st-queued">—</span>';
-        if (u.pr) {
-          const ci = u.pr.ci || {};
-          const cls = ci.color === 'green' ? 'st-pr-green' : ci.color === 'red' ? 'st-pr-red' : 'st-pr';
-          pr = '<a href="' + esc(u.pr.url || '#') + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">#'
-            + esc(String(u.pr.number)) + '</a> <span class="' + cls + '">' + esc(ci.text || (u.pr.draft ? 'draft' : 'open')) + '</span>'
-            + (u.pr.runner && u.pr.runner.name ? ' <span class="st-queued">· ' + esc(u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '')) + '</span>' : '');
-        }
-        return '<tr><td class="unit">' + esc((u.unit ? u.unit + ' ' : '') + '#' + u.ticket) + '</td>'
-          + '<td>' + lane + '</td><td>' + pr + '</td></tr>';
-      }).join('') + '</tbody></table></div>');
-    }
-    const k = sprint.counts || {};
-    const parts = [k.units + ' unit' + (k.units === 1 ? '' : 's'), k.onLane + ' on lanes', k.pr + ' in PR', k.merged + ' merged', k.queued + ' queued'];
-    if (sprint.laneCount) parts.push((sprint.free || []).length + ' of ' + sprint.laneCount + ' lanes free');
-    if (sprint.ciSlots && sprint.ciSlots.total) {
-      const ci = sprint.ciSlots;
-      parts.push('CI slots ' + ci.busy + ' of ' + ci.online + ' busy'
-        + ' (' + Object.entries(ci.byHost || {}).map(([h, v]) => h + ' ' + v.busy + '/' + v.online).join(', ')
-        + (ci.offline ? '; ' + ci.offline + ' offline' : '') + ')');
-    }
-    if (sprint.stale && sprint.stale.length) parts.push('sources stale: ' + sprint.stale.join(', '));
-    bits.push('<div class="row sprint-line" title="' + esc('free: ' + ((sprint.free || []).join(', ') || 'none')
-      + (sprint.busyElsewhere && sprint.busyElsewhere.length ? ' · busy with other work: ' + sprint.busyElsewhere.join(', ') : '')) + '">'
-      + esc(parts.join(' · ')) + '</div>');
-  }
 
   // A published review artifact is, before development, the card's open
   // question. The board marks it answered itself (artifactAnswered: when, how
@@ -1590,7 +1912,7 @@ function renderPipeline(d) {
   band.classList.toggle('on', bandIds.size > 0);
   band.innerHTML = bandIds.size
     ? '<h2>Sprint' + (bandIds.size === 1 ? '' : 's') + ' — ' + bandIds.size + ' in flight · stage follows the unit cards below</h2>'
-      + '<div class="band-row">' + cards.filter(c => bandIds.has(c.id)).map(pcard).join('') + '</div>'
+      + '<div class="band-stack">' + cards.filter(c => bandIds.has(c.id)).map(sprintBandPanel).join('') + '</div>'
     : '';
 
   const zone = $('stuck-zone');
@@ -1609,11 +1931,35 @@ function renderPipeline(d) {
       + '</div>';
   }).join('');
 
-  wirePipeline();
+  wirePipeline(d);
   restoreInputs(snap);
 }
 
-function wirePipeline() {
+function wirePipeline(data) {
+  for (const b of document.querySelectorAll('#sprint-band [data-sprint-sort]')) {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const sort = sprintBandSortState(b.dataset.sprintId);
+      const key = b.dataset.sprintSort;
+      if (sort.key === key) sort.dir *= -1;
+      else { sort.key = key; sort.dir = 1; }
+      renderPipeline(data);
+    };
+  }
+  for (const b of document.querySelectorAll('#sprint-band [data-sprint-card]')) {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const id = b.dataset.sprintCard;
+      const wrap = b.closest('[data-sprint-panel]');
+      const detail = wrap && wrap.querySelector('[data-sprint-detail]');
+      const card = detail && detail.querySelector('.pcard');
+      const open = !openCards.has(id);
+      if (open) openCards.add(id); else openCards.delete(id);
+      b.setAttribute('aria-expanded', String(open));
+      if (detail) detail.hidden = !open;
+      if (card) card.classList.toggle('open', open);
+    };
+  }
   // A title with a window behind it jumps into that herdr window. The window is
   // found by name in the windows board's latest data; a window that is not
   // there (closed, hidden, another project) is said out loud, not swallowed.
@@ -1632,7 +1978,15 @@ function wirePipeline() {
       if (ev.target.closest('button, input, select, a, form')) return;
       const id = el.dataset.card;
       if (openCards.has(id)) openCards.delete(id); else openCards.add(id);
-      el.classList.toggle('open', openCards.has(id));
+      const open = openCards.has(id);
+      el.classList.toggle('open', open);
+      const detail = el.closest('[data-sprint-detail]');
+      if (detail) {
+        detail.hidden = !open;
+        const wrap = detail.closest('[data-sprint-panel]');
+        const toggle = wrap && wrap.querySelector('[data-sprint-card]');
+        if (toggle) toggle.setAttribute('aria-expanded', String(open));
+      }
     };
   }
   for (const b of document.querySelectorAll('#pipeline [data-act]')) {

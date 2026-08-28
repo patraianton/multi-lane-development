@@ -22,6 +22,15 @@ the record of when and why.
     now also report the project's local check running on a lane (`scripts/ci-local.mjs`,
     usually through `ci-local-and-stamp.sh`, matched by the process's working directory),
     and that fact moves the unit card to `local_check`.
+    **Sprint band (owner, 2026-08-29 ~01:00): variant 2 — the two-pane control panel.** Four
+    standalone variants were drawn by Codex on live data (compact command bar / two-pane
+    panel / kanban swimlane / summary pill + drawer) and put to the owner as one
+    multiple-choice page; the owner picked the two-pane panel (also Codex's recommendation):
+    a bounded summary pane (identity, derived stage, clock, ordered progress with a legend,
+    status clamped to three lines, free lanes, CI slots, source health, small links) and a
+    fixed-layout sortable table of the units in flight. One panel per split sprint, stacked.
+    The full sprint card (spec, comments, actions) opens under the panel from its `card`
+    control. Amber marks a unit in local check.
 
 ## 2026-08-28 (late) — unit cards
 
