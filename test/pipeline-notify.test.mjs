@@ -38,7 +38,7 @@ function countMatches(text, needle) {
 
 test('links.artifact first set on a grilled card sends the doorbell once', async () => {
   const board = await startBoard({
-    port: 14991,
+    port: 14996,
     config: { source: 'probe', telegram: TELEGRAM },
   });
   try {
@@ -89,7 +89,7 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
 });
 
 test('no telegram config means the update still works and nothing is sent', async () => {
-  const board = await startBoard({ port: 14992, config: { source: 'probe' } });
+  const board = await startBoard({ port: 14997, config: { source: 'probe' } });
   try {
     const { body } = await postJson(board.base, '/pipeline/card/create', { title: 'Quiet card' });
     const id = body.card.id;
