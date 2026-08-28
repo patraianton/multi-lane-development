@@ -62,8 +62,10 @@ The small process on the owner's machine that pushes herdr window data to the bo
 delivers queued hooks into agent windows.
 
 **Ticket**:
-The GitHub issue the CTO creates in the product repo after the grill — the durable, public
-record of the finished spec. Written under the CTO's own GitHub App identity.
+A GitHub issue the CTO creates in the product repo after the grill, under the CTO's own
+GitHub App identity. The **umbrella ticket** is the durable, public record of the finished
+spec (`links.ticket` on the card); a **unit ticket** is one grill unit's work order,
+bound to the umbrella (docs/TICKETING.md).
 _Avoid_: issue (when speaking of the pipeline artifact), card (the board entity)
 
 **Founder**:
