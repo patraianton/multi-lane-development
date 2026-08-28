@@ -1,0 +1,12 @@
+{
+  "name": "watchtower",
+  "private": true,
+  "description": "Live board for a coding-agent fleet, evolving into a delivery pipeline.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
