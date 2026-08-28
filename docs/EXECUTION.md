@@ -280,9 +280,11 @@ non-2xx status, a 20-second timeout or a non-JSON body is a failure of that
 call.
 
 `GET {boardUrl}/api/pipeline/card/{id}?format=json` is the same card contract
-as [`DEVLAUNCH.md`](./DEVLAUNCH.md) and [`API.md`](./API.md). Empty optional
-fields may be `""` or `"-"` — both mean "not set". `links` may be an object
-or the board's flattened string.
+as [`DEVLAUNCH.md`](./DEVLAUNCH.md) and [`API.md`](./API.md) — except that
+these two processes do not ask for `spec=1`: they never read the spec text,
+and the default answer (with `spec-lines` instead of `spec`) is enough. Empty
+optional fields may be `""` or `"-"` — both mean "not set". `links` may be an
+object or the board's flattened string.
 
 Local-check POSTs:
 

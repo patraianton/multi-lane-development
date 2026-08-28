@@ -90,6 +90,7 @@ const STALE_MULTIPLIER = 2;
 const LIMIT = {
   title: 200,
   spec: 20000,
+  summary: 1200,     // the short retelling a card shows instead of its spec
   author: 100,
   comment: 4000,
   link: 400,
@@ -187,6 +188,8 @@ function normCard(raw) {
     id,
     title,
     spec: str(src.spec, LIMIT.spec),
+    // Cards written before the summary existed simply have an empty one.
+    summary: str(src.summary, LIMIT.summary).trim(),
     stage,
     createdAt,
     stageHistory,
@@ -542,6 +545,7 @@ async function createCard(body) {
     id: newId(),
     title,
     spec,
+    summary: str(body.summary, LIMIT.summary).trim(),
     stage: 'spec',
     createdAt: now,
     stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
@@ -640,6 +644,17 @@ async function acceptCard(body) {
     enterStage(card, 'accepted', new Date().toISOString());
     card.consecutiveFails = 0;
   });
+}
+
+// The card's short retelling: what the page shows instead of the whole spec.
+// {id, summary} writes or replaces it; an empty string clears it. The spec
+// itself is not touched.
+async function summaryCard(body) {
+  if (typeof body.summary !== 'string') {
+    throw new BadRequest('a summary text is required (send summary: "" to clear it)');
+  }
+  const summary = str(body.summary, LIMIT.summary).trim();
+  return editCard(body.id, card => { card.summary = summary; });
 }
 
 async function commentCard(body) {
@@ -943,7 +958,8 @@ function renderToonPipeline(v) {
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
   const help = [];
   if (!v.full) {
-    help.push('one card in full (spec, comments, history) — /api/pipeline/card/<id>,'
+    help.push('one card in full (summary, comments, history) — /api/pipeline/card/<id>;'
+      + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
   help.push('stages: spec, grilled, development, local_check, ci_pr, acceptance, accepted;'
@@ -957,16 +973,26 @@ function renderToonPipeline(v) {
   return out.join('\n') + '\n';
 }
 
-// One card in full. This is what the agent reads before it touches a card:
-// the spec as written, every comment, and where the time went.
-async function buildAgentCard(card) {
+// How many lines a spec is. The number stands next to the link to the full
+// text, so the reader decides whether to open it before paying for it.
+export function specLineCount(spec) {
+  const t = String(spec ?? '').trim();
+  return t ? t.split(/\r?\n/).length : 0;
+}
+
+// One card in full — except the spec. This is what the agent reads before it
+// touches a card: the summary, every comment, and where the time went. The spec
+// itself is hundreds of lines on a real card, so by default the answer carries
+// only its line count and where to read it (?spec=1 here, or
+// /pipeline/card/<id>/spec as plain text); withSpec adds the text itself.
+async function buildAgentCard(card, withSpec = false) {
   const now = Date.now();
   const cl = clocks(card, now);
   const meta = await loadWatchdogMeta();
   const age = statusAgeMs(card, now);
   const ageWord = age == null ? 'no time' : `${fmtDur(age)} ago`;
   const stale = isStaleStatus(card, meta, now);
-  return {
+  const view = {
     id: card.id,
     title: card.title,
     stage: card.stage,
@@ -985,7 +1011,12 @@ async function buildAgentCard(card) {
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
         + `${stale ? ', stale' : ''})`
       : (stale ? 'stale — watchdog has not written one yet' : '-'),
-    spec: card.spec.trim() ? card.spec.replace(/\s+/g, ' ').trim() : '-',
+    summary: card.summary || '-',
+    specLines: specLineCount(card.spec),
+    // Agents read specs through this endpoint, so the way to the text must be
+    // in the answer itself, not only in the docs.
+    specHint: `the spec as written — /pipeline/card/${card.id}/spec (plain text);`
+      + ' in this answer — ?spec=1',
     comments: card.comments.map(c => ({ author: c.author, at: c.at, text: c.text.replace(/\s+/g, ' ').trim() })),
     history: card.stageHistory.map(h => ({
       stage: h.stage,
@@ -994,10 +1025,12 @@ async function buildAgentCard(card) {
       took: fmtDur(spanMs(h, now)),
     })),
   };
+  if (withSpec) view.spec = card.spec;
+  return view;
 }
 
 function renderToonCard(c) {
-  return [
+  const out = [
     `card: ${c.id}`,
     `title: ${c.title}`,
     `stage: ${c.stage}`,
@@ -1012,10 +1045,20 @@ function renderToonCard(c) {
     `window: ${c.window}`,
     `links: ${c.links}`,
     `status: ${c.status}`,
-    `spec: ${c.spec}`,
+    // Folded like the spec below: TOON is line-based, and the API accepts a
+    // summary with newlines in it.
+    `summary: ${c.summary.replace(/\s+/g, ' ').trim() || '-'}`,
+    `spec-lines: ${c.specLines}`,
+  ];
+  // The whole spec on one line, whitespace folded: TOON is line-based. The text
+  // as written is behind /pipeline/card/<id>/spec.
+  if (c.spec !== undefined) out.push(`spec: ${c.spec.replace(/\s+/g, ' ').trim() || '-'}`);
+  out.push(
     toonTable('comments', c.comments, ['author', 'at', 'text'], 'nobody has commented'),
     toonTable('history', c.history, ['stage', 'entered', 'left', 'took'], 'no history'),
-  ].join('\n') + '\n';
+    `help: ${c.specHint}`,
+  );
+  return out.join('\n') + '\n';
 }
 
 // --------------------------------------------------------------- routing
@@ -1027,6 +1070,7 @@ const ACTIONS = {
   unstuck: unstuckCard,
   accept: acceptCard,
   comment: commentCard,
+  summary: summaryCard,
   update: updateCard,
 };
 
@@ -1051,7 +1095,7 @@ export async function handlePipeline(req, res, url, port) {
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/api/pipeline/card/')) {
-    const p = agentParams(url, false);
+    const p = agentParams(url, false, true);
     if (p.error) { sendText(res, 400, p.error); return true; }
     let wanted;
     try { wanted = decodeURIComponent(url.pathname.slice('/api/pipeline/card/'.length)); }
@@ -1074,9 +1118,32 @@ export async function handlePipeline(req, res, url, port) {
       }
       return true;
     }
-    const view = await buildAgentCard(card);
+    const view = await buildAgentCard(card, p.spec);
     if (p.format === 'json') send(res, 200, JSON.stringify(view, null, 2));
     else sendText(res, 200, renderToonCard(view));
+    return true;
+  }
+
+  // The spec as written: a plain-text page anyone with access to the board can
+  // open in a browser. This is where the "spec (N lines)" link on a card leads,
+  // and where an agent reads the text the API answer only counts.
+  if (req.method === 'GET' && url.pathname.startsWith('/pipeline/card/')
+      && url.pathname.endsWith('/spec')) {
+    const raw = url.pathname.slice('/pipeline/card/'.length, -'/spec'.length);
+    let id;
+    try { id = decodeURIComponent(raw).trim(); }
+    catch { id = String(raw || '').trim(); }
+    if (!id || id.includes('/')) {
+      sendText(res, 400, 'error: a card id is required\nhelp: /pipeline/card/<id>/spec');
+      return true;
+    }
+    const st = await load();
+    const card = st.cards.find(c => c.id === id);
+    if (!card) {
+      sendText(res, 404, `error: there is no card "${id}" in the pipeline`);
+      return true;
+    }
+    sendText(res, 200, card.spec.trim() ? card.spec : '(the card has no spec)');
     return true;
   }
 
