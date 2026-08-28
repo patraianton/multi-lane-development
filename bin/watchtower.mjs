@@ -384,20 +384,27 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     facts = {
       lanes: f.lanes ?? [], prs: f.prs ?? [], mergedPrs: f.mergedPrs ?? [],
       unitIssues: new Map(Object.entries(f.unitIssues ?? {}).map(([k, v]) => [Number(k), v])),
+      ciJobs: new Map(Object.entries(f.ciJobs ?? {}).map(([k, v]) => [Number(k), v])),
+      ciRunners: f.ciRunners ?? [],
       staleSources: f.staleSources ?? [],
     };
   } else {
     // The pipeline page never runs the windows sweep, so the slow sources are
     // refreshed here too (each on its own interval) — a board showing only
     // the pipeline still sees lanes, PRs and tickets move.
-    await Promise.all([streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+    await Promise.all([streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource, ciRunnersSource]
       .map(src => src.tick()).filter(Boolean));
+    // CI jobs read the PR list this sweep just refreshed; a failure here is
+    // information missing, never a reason to hold a card.
+    await ciJobsSource.tick();
     const staleSources = staleSourceNames();
     facts = {
       lanes: lanesWithMemory(lanesSource.value, staleSources),
       prs: prSource.value ?? [],
       mergedPrs: mergedPrSource.value ?? [],
       unitIssues: unitIssuesSource.value ?? new Map(),
+      ciJobs: ciJobsSource.value ?? new Map(),
+      ciRunners: ciRunnersSource.value ?? [],
       staleSources,
     };
   }
@@ -634,13 +641,14 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
-    '--json', 'number,title,headRefName,isDraft,url,createdAt,updatedAt,statusCheckRollup,author'], 90000);
+    '--json', 'number,title,headRefName,headRefOid,isDraft,url,createdAt,updatedAt,statusCheckRollup,author'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
   const list = JSON.parse(out);
   return list.map(p => ({
     number: p.number,
     title: p.title,
     branch: p.headRefName,
+    headSha: p.headRefOid ?? null,
     draft: p.isDraft,
     url: p.url,
     createdAt: p.createdAt,
@@ -648,6 +656,47 @@ const prSource = makeSource('pull-requests', 60000, async () => {
     author: p.author?.login ?? null,
     ci: ciColor(p.statusCheckRollup),
   }));
+});
+
+// The CI slot pool: the repo's self-hosted runners — who is online, who is
+// busy, which server each belongs to (its labels). One call a minute.
+const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
+  const repo = streamsSource.value?.repo ?? config.repo;
+  if (!repo) return [];
+  const out = await runText(GH, ['api', `repos/${repo}/actions/runners?per_page=100`,
+    '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
+  if (out === null) throw new Error('gh api actions/runners did not answer');
+  return JSON.parse(out);
+});
+
+// Where each open PR's checks run: for PRs whose CI is queued or in progress,
+// the workflow runs on the head SHA and their jobs — job status, runner name,
+// start time. At most eight PRs a sweep; the rest wait for the next one.
+const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
+  const repo = streamsSource.value?.repo ?? config.repo;
+  const byPr = new Map();
+  if (!repo) return byPr;
+  const live = (prSource.value ?? []).filter(p => p.headSha && p.ci?.color === 'run').slice(0, 8);
+  for (const pr of live) {
+    const runsOut = await runText(GH, ['api', `repos/${repo}/actions/runs?head_sha=${pr.headSha}&per_page=5`,
+      '--jq', '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting") | {id, name, status}]'], 60000);
+    if (runsOut === null) continue;
+    let runs;
+    try { runs = JSON.parse(runsOut); } catch { continue; }
+    const jobs = [];
+    for (const run of runs.slice(0, 3)) {
+      const jobsOut = await runText(GH, ['api', `repos/${repo}/actions/runs/${run.id}/jobs?per_page=30`,
+        '--jq', '[.jobs[] | {name, status, runner_name, started_at}]'], 60000);
+      if (jobsOut === null) continue;
+      let list;
+      try { list = JSON.parse(jobsOut); } catch { continue; }
+      for (const j of list) {
+        jobs.push({ workflow: run.name, job: j.name, status: j.status, runner: j.runner_name ?? '', startedAt: j.started_at ?? null });
+      }
+    }
+    byPr.set(pr.number, jobs);
+  }
+  return byPr;
 });
 
 // Merged PRs: the only observable proof that a window actually delivered

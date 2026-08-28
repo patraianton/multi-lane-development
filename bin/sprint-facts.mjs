@@ -56,12 +56,38 @@ function unitState(u) {
   return 'queued';
 }
 
+// Which server a CI runner belongs to: its GitHub labels name the host
+// (hetzner, hostinger); otherwise the runner name without its number.
+export function runnerHost(name, runners = []) {
+  const r = runners.find(x => x.name === name);
+  const labels = (r?.labels ?? []).map(l => String(l).toLowerCase());
+  for (const h of ['hetzner', 'hostinger', 'mac']) if (labels.includes(h)) return h;
+  return String(name ?? '').replace(/-\d+$/, '') || '';
+}
+
+// The CI slot pool in numbers: [{ name, status, busy, labels }] → totals per host.
+export function ciSlotSummary(runners = []) {
+  const byHost = {};
+  let online = 0, busy = 0, offline = 0;
+  for (const r of runners) {
+    const host = runnerHost(r.name, runners) || 'ci';
+    const h = byHost[host] ?? (byHost[host] = { total: 0, online: 0, busy: 0 });
+    h.total += 1;
+    if (r.status === 'online') { h.online += 1; online += 1; if (r.busy) { h.busy += 1; busy += 1; } }
+    else offline += 1;
+  }
+  return { total: runners.length, online, busy, offline, byHost };
+}
+
 // lanes: [{ host, lane, busy, since, branch, task }] from every host;
+// ciJobs: Map(PR number -> [{ workflow, job, status, runner, startedAt }]) for PRs whose CI runs;
+// ciRunners: the repo's self-hosted runners [{ name, status, busy, labels }];
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
 // unitIssues: Map(umbrella number -> [{ number, title, url, state, branch }]).
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
-export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), staleSources = [], at = null } = {}) {
+export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], staleSources = [], at = null } = {}) {
   const out = new Map();
+  const ciSlots = ciSlotSummary(ciRunners);
   for (const card of cards ?? []) {
     // A unit card links its own ticket, which other units may reference
     // ("depends on #1517") — that is not an umbrella.
@@ -106,7 +132,22 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     for (const u of units) {
       if (u.branch) {
         const open = prs.find(p => sameBranch(p.branch, u.branch));
-        if (open) u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft) };
+        if (open) {
+          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft) };
+          // Where the check runs: the first job in progress (else queued) names
+          // its runner — the CI slot — and the server behind it.
+          const jobs = ciJobs.get(open.number) ?? [];
+          const live = jobs.find(j => j.status === 'in_progress') ?? jobs.find(j => j.status === 'queued') ?? null;
+          if (live) {
+            u.pr.runner = {
+              name: live.runner || '',
+              host: live.runner ? runnerHost(live.runner, ciRunners) : '',
+              status: live.status,
+              since: live.startedAt ?? null,
+              job: live.job ?? '',
+            };
+          }
+        }
         const merged = mergedPrs.find(p => sameBranch(p.branch, u.branch));
         if (merged) u.merged = { number: merged.number, url: merged.url ?? '', mergedAt: merged.mergedAt ?? null };
       }
@@ -123,6 +164,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       laneCount: lanes.length,
       free: lanes.filter(l => !l.busy && !isBound(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
+      ciSlots,
       counts: {
         units: units.length,
         onLane: units.filter(u => u.state === 'on lane').length,

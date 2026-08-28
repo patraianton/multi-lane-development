@@ -27,6 +27,8 @@ const FACTS = {
       { number: 1522, title: 'SALON-U4: composition', url: 'https://github.com/acme/web/issues/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
     ],
   },
+  ciJobs: { 1540: [{ workflow: 'pr-ci', job: 'pr-ci', status: 'in_progress', runner: 'radar-runner-3', startedAt: '2026-08-28T20:50:00Z' }] },
+  ciRunners: [{ name: 'radar-runner-3', status: 'online', busy: true, labels: ['self-hosted', 'hetzner'] }],
   staleSources: [],
 };
 
@@ -80,6 +82,8 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U2.stage, 'development');
     assert.equal(by.U1.stage, 'ci_pr');
     assert.equal(by.U1.links.pr, 'https://github.com/acme/web/pull/1540');
+    assert.equal(by.U1.slot, 'radar-runner-3', 'the CI slot is the runner the check is on');
+    assert.equal(by.U1.unitFacts.pr.runner.host, 'hetzner');
     assert.equal(by.U3.stage, 'accepted');
     assert.equal(by.U3.links.pr, 'https://github.com/acme/web/pull/1530');
     assert.equal(by.U4.stage, 'ticketed');
@@ -104,6 +108,8 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     const toon = await fetch(`${board.base}/api/pipeline/card/${id}`).then(r => r.text());
     assert.ok(toon.includes('lanes: radar/lane-1 U2 #1517, mac/lane-b U5 #1519'), toon);
     assert.ok(/units\[5\]/.test(toon), toon);
+    assert.ok(toon.includes('ci-slots: 1 of 1 busy (hetzner 1/1)'), toon);
+    assert.ok(toon.includes('radar-runner-3 (hetzner)'), toon);
 
     // Facts never walk a card backwards: a lane that went quiet leaves U5 in development.
     const quiet = { ...FACTS, lanes: FACTS.lanes.filter(l => l.lane !== 'lane-b') };
