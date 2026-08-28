@@ -3,11 +3,12 @@
 // what delivers and consumes the answers; this module only looks.
 //
 // Two homes for a session, both addressed by the 16-hex key in the link:
-//   - the desktop lavish-axi keeps every session in one state.json
-//     (`~/.lavish-axi/state.json`, or `LAVISH_AXI_STATE_DIR`). Founder messages
-//     land in `chat` as role "user"; prompts not yet delivered to the agent
-//     wait in `prompts`. A tunnel URL still names a local session, so the key
-//     is the identity, not the host;
+//   - the desktop lavish-axi (the owner's fork) keeps every session in one
+//     state.json (`~/.lavish-axi/state.json`, or `LAVISH_AXI_STATE_DIR`) and
+//     counts every prompt the founders queue in `answers_total` /
+//     `last_answer_at` at queue time — a poll drains the prompts, never the
+//     count. A tunnel URL still names a local session, so the key is the
+//     identity, not the host;
 //   - the Cloudflare instance answers `GET /api/state?key=…` with a running
 //     count of everything the founders ever queued (docs/ARTIFACT.md).
 
@@ -33,11 +34,15 @@ export async function readLocalAnswers(key, file = localLavishStateFile()) {
   const raw = await readJsonSoft(file, null);
   const session = raw?.sessions?.[key];
   if (!session || typeof session !== 'object') return null;
+  // The fork's running count (answers_total / last_answer_at, written when
+  // prompts are queued and never reset by a poll) is the truth. Older state
+  // files have only what a poll leaves behind: chat messages and prompts not
+  // yet delivered — form answers a poll already drained are invisible there.
   const chat = Array.isArray(session.chat) ? session.chat : [];
   const users = chat.filter(c => c && c.role === 'user');
   const pending = Array.isArray(session.prompts) ? session.prompts.length : 0;
-  const answers = users.length + pending;
-  let lastAt = null;
+  const answers = Math.max(Number(session.answers_total) || 0, users.length + pending);
+  let lastAt = typeof session.last_answer_at === 'string' ? session.last_answer_at : null;
   for (const c of users) {
     if (typeof c.at === 'string' && (!lastAt || c.at > lastAt)) lastAt = c.at;
   }
