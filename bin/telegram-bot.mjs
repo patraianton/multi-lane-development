@@ -331,7 +331,7 @@ function assignSubscriptionText(cfg, card) {
   return lines([
     tagOf(ownerOf(cfg)),
     '',
-    `Assign a subscription for "${cardTitleOf(card)}" so the card can enter Development.`,
+    `Assign a subscription for "${cardTitleOf(card)}" so the card can move on to Ticketed.`,
     '',
     `Card: ${cardUrl(cfg, card)}`,
   ]);
