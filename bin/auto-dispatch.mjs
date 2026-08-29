@@ -15,7 +15,7 @@
 
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { startable } from './idle-lanes.mjs';
+import { startableOnBoard } from './idle-lanes.mjs';
 
 const ACTIVE = new Set(['development', 'local_check', 'ci_pr']);
 // A failed or held launch is not tried again sooner than this.
@@ -112,7 +112,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     if (!s) continue;
     if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not free
     const cardRef = { id: card.id, title: String(card.title ?? '') };
-    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(startable);
+    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(u => startableOnBoard(u, card.id, cards));
     if (!waiting.length) continue;
     const free = Array.isArray(s.free) ? s.free : [];
     const lanes = [];
