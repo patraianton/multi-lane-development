@@ -119,10 +119,12 @@ subscription is assigned, and the dependency order is written down.
 
 1. Every review finding not taken into the unit's round becomes its own backlog ticket
    THE MOMENT it is found. Tail bundles filed after handover are a violation.
-2. After the sprint's LAST card reaches this stage: the QA stage opens — two agents on
-   two free Mac lanes, in parallel and independently, walk PRODUCTION in a real browser
-   along the sprint's briefs (the user's path, all locales, console clean). Their
-   findings become tickets.
+2. **QA runs once per sprint, never per unit.** It opens only after the sprint's LAST
+   unit is on production — a unit card in `qa` means "merged, waiting for the sprint's
+   QA", not "check this unit". Then two Codex computer-use agents on two free Mac lanes,
+   in parallel and independently, walk PRODUCTION in a real browser along the sprint's
+   briefs (the user's path, all locales, console clean). Their findings become tickets.
+   A lane's own browser proof on Preview is part of its unit, not QA.
 3. Only after both QA agents report and findings are triaged is the sprint handed to
    acceptance — the notification is sent by the CTO/owner, tagging the acceptor.
 
