@@ -866,7 +866,7 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
-    '--json', 'number,title,headRefName,headRefOid,isDraft,url,createdAt,updatedAt,statusCheckRollup,author'], 90000);
+    '--json', 'number,title,headRefName,headRefOid,isDraft,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
   const list = JSON.parse(out);
   return list.map(p => ({
@@ -880,8 +880,22 @@ const prSource = makeSource('pull-requests', 60000, async () => {
     updatedAt: p.updatedAt,
     author: p.author?.login ?? null,
     ci: ciColor(p.statusCheckRollup),
+    verdict: prVerdict(p.comments),
   }));
 });
+
+// The review verdict is the first line of a PR comment, plain text:
+// "R1 — GO" / "R2 — NO-GO" (PROGRAM-ORCHESTRATION §6). The last one stands.
+export function prVerdict(comments) {
+  let v = null;
+  for (const c of comments ?? []) {
+    const first = String(c?.body ?? '').split(/\r?\n/)[0].trim();
+    const m = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(first);
+    if (!m) continue;
+    v = { round: Number(m[1]), go: m[2].toUpperCase() === 'GO', at: c.createdAt ?? null };
+  }
+  return v;
+}
 
 // The CI slot pool: the repo's self-hosted runners — who is online, who is
 // busy, which server each belongs to (its labels). One call a minute.

@@ -106,13 +106,13 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.deepEqual(by.U2.unitFacts.deps, []);
 
     // Stages by facts: lane → development, the lane running the local check →
-    // local_check, PR → ci_pr, merged → done, nothing → ticketed.
+    // local_check, PR with green CI → review (decision 17), merged → done, nothing → ticketed.
     assert.equal(by.U5.stage, 'development');
     assert.equal(by.U2.stage, 'development');
     assert.equal(by.U6.stage, 'local_check', 'the lane runs the local check');
     assert.equal(by.U6.unitFacts.state, 'local check');
     assert.equal(by.U6.lane, 'mac/lane-a');
-    assert.equal(by.U1.stage, 'ci_pr');
+    assert.equal(by.U1.stage, 'review', 'PR open and CI green: waiting for its reader');
     assert.equal(by.U1.links.pr, 'https://github.com/acme/web/pull/1540');
     assert.equal(by.U1.slot, 'radar-runner-3', 'the CI slot is the runner the check is on');
     assert.equal(by.U1.unitFacts.pr.runner.host, 'hetzner');
@@ -121,7 +121,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U4.stage, 'ticketed');
     assert.equal(by.U4.unitFacts.state, 'queued');
     // The clock of a spawned card starts at the stage the facts put it in.
-    assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'ci_pr']);
+    assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'review']);
     // The sprint's own stage followed its units: work has started.
     assert.equal(data.cards.find(c => c.id === id).stage, 'development');
 
