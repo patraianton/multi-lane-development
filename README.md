@@ -12,6 +12,8 @@ This repository grew from the windows board through waves A–G (pipeline store,
 
 ## Pipeline stages
 
+The step-by-step instruction for every stage is one file: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
 A card sits in one stage at a time. The road is one-way:
 
 `spec → grilled → ticketed → development → local_check → ci_pr → qa → done`
