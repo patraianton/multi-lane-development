@@ -74,3 +74,14 @@ test('the ledger remembers first and last sight, marks what went back on the boa
   assert.equal(r.fresh.length, 1);
   assert.equal(r.ledger.seen['pr:1591'].resolved, null);
 });
+
+test('a ticket in work on the board with no pinned branch is off the board: the card can never move', () => {
+  const issues = [
+    { number: 1516, title: 'SALON-U1: readiness', branch: 'feat/salon-u01-readiness', refs: [1515] },
+    { number: 1516, title: 'duplicate row with branch is fine', branch: 'feat/salon-u01-readiness', refs: [1515] },
+  ];
+  assert.deepEqual(offBoardFindings({ cards, issues }).map(x => x.key), []);
+  const f = offBoardFindings({ cards, issues: [{ number: 1516, title: 'SALON-U1: readiness', branch: '', deps: [1515], refs: [1515] }] });
+  assert.deepEqual(f.map(x => [x.key, x.detail]), [['issue-branch:1516', 'no pinned branch']]);
+  assert.match(f[0].fix, /Branch:/);
+});
