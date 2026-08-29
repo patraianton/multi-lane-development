@@ -6,7 +6,7 @@ stage may not be skipped, however polished the input looks.
 
 The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → review → merged → done` (+ `stuck`)
+`spec → grilled → ticketed → development → local_check → ci_pr → merged → done` (+ `stuck`)
 
 The page draws the two paper stages as one column, Grill (decision 19); QA is not a stage — it is
 one run per sprint before `done` (§7).
@@ -111,25 +111,35 @@ writes a mandate of their own.
 
 1. Open the PR; CI runs on an assigned slot (no-queue alarm if slots are saturated).
 2. Green CI must be on the exact head SHA — a green branch is not a green main.
-3. Review: verdict comment's FIRST line is plain text `R1 — GO` / `R1 — NO-GO` (bold
-   markup breaks the watchers). NO-GO → back to the same lane.
+3. Review runs **alongside CI, on the pushed head — not after green** (decision 20): the
+   reviewer starts the moment the PR is open; if the head changes, only the difference
+   is re-read. The window that starts a reader turns the card's review badge on
+   (`POST /pipeline/card/update { id, review: { running: true, round: N, by } }`); the
+   board turns it off when the verdict lands on the PR. Verdict comment's FIRST line is
+   plain text `R1 — GO` / `R1 — NO-GO` (bold markup breaks the watchers). NO-GO → back
+   to the same lane.
 4. Merge on green + GO. Deploy follows the ordinary train; the probe
    ([PROBE.md](./PROBE.md)) confirms the deployed surface by CONTENT.
 
 **Exit:** merged, deployed, probe green on the exact revision.
 
-## 6a. Review — `ci_pr → review`
+## 6a. Review — inside `ci_pr`
 
-**Who:** the board moves the card; the stream window runs the reviewers.
+**Who:** the stream window runs the reviewers; the board reads the verdict.
 
-The unit card enters `review` by fact: its PR is open and its CI is green. The column
-shows how long the code has waited for a reader and then for its merge — the owner reads
-that time off the board. The verdict is the first line of a PR comment, plain text:
+Review is not a column (decision 20 folded decision 17's column back): a review that
+waits for green CI adds the CI time to every PR for nothing. The reviewer reads the pushed
+head while CI runs; the card stays in `ci_pr` from the PR opening to the merge, and the
+column's header shows the average review round next to the average stay. While a reader
+is on the head the card carries a live badge — `review running · R1 · 12m` — set by the
+window that started the reader and cleared by the board when a verdict newer than the
+badge lands on the PR. The verdict is the first line of a PR comment, plain text:
 `R1 — GO` / `R1 — NO-GO`. A NO-GO is a review failure: the board sends the card back to
 `development` for the fix round (the third in a row → `stuck`); the fix is just another
-brief for a lane. A GO is followed by the merge; the merged card moves on to `merged` —
-on main, waiting for the rest of the sprint, the sprint's QA run and its own acceptance —
-and to `done` when its ticket is closed by a person after the merge (decisions 13, 19).
+brief for a lane. Green CI on the exact head + GO = merge; the merged card moves on to
+`merged` — on main, waiting for the rest of the sprint, the sprint's QA run and its own
+acceptance — and to `done` when its ticket is closed by a person after the merge
+(decisions 13, 19).
 
 ## 7. QA — one run per sprint, before `done`; not a stage
 

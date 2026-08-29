@@ -47,7 +47,12 @@ subscription:  <assigned on the card, once per sprint>
    full ticket text and the playbook §4 paragraphs verbatim; the spec bundle — text AND
    images — ships with it.
 6. **Review verdict** is the first line of the comment, plain text: `R1 — GO` / `R1 — NO-GO`.
-   A finding not taken into the round becomes its own ticket the moment it is found.
+   The review starts when the PR opens, alongside CI — not after green. The window that
+   starts a reader turns the card's badge on the same second
+   (`POST /pipeline/card/update { id, review: { running: true, round: N, by: "<who>" } }`)
+   and may turn it off with the verdict (`{ running: false }`); the board turns it off by
+   itself when the verdict lands on the PR. A finding not taken into the round becomes its
+   own ticket the moment it is found.
 7. **Reports go to the umbrella only.** Not to the owner, not to the acceptor. Questions:
    one comment with the `ВОПРОС CTO` label, then continue on another unit.
 8. **The board moves by fact.** The unit card advances the moment the step is done

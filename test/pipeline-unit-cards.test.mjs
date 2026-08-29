@@ -112,7 +112,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U6.stage, 'local_check', 'the lane runs the local check');
     assert.equal(by.U6.unitFacts.state, 'local check');
     assert.equal(by.U6.lane, 'mac/lane-a');
-    assert.equal(by.U1.stage, 'review', 'PR open and CI green: waiting for its reader');
+    assert.equal(by.U1.stage, 'ci_pr', 'PR open: CI and the reader on the same head, then the merge (decision 20)');
     assert.equal(by.U1.links.pr, 'https://github.com/acme/web/pull/1540');
     assert.equal(by.U1.slot, 'radar-runner-3', 'the CI slot is the runner the check is on');
     assert.equal(by.U1.unitFacts.pr.runner.host, 'hetzner');
@@ -121,7 +121,31 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U4.stage, 'ticketed');
     assert.equal(by.U4.unitFacts.state, 'queued');
     // The clock of a spawned card starts at the stage the facts put it in.
-    assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'review']);
+    assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'ci_pr']);
+
+    // The live review badge (decision 20): the stream window says a reader is
+    // on U1's head; the board shows it and clears it when a verdict newer than
+    // the badge lands on the PR, filing the round.
+    const lit = await postJson(board.base, '/pipeline/card/update', { id: by.U1.id, review: { running: true, round: 1, by: 'opus' } });
+    assert.equal(lit.status, 200);
+    assert.equal(lit.body.card.review.running, true);
+    assert.equal(lit.body.card.review.round, 1);
+    assert.ok(lit.body.card.review.since);
+    const listed = await getJson(board.base, '/api/pipeline?format=json');
+    assert.deepEqual(listed.body.cards.find(c => c.id === by.U1.id).review.round, 1);
+    const judged = {
+      ...FACTS,
+      prs: FACTS.prs.map(p => p.number === 1540 ? { ...p, verdict: { round: 1, go: true, at: '2030-01-01T00:00:00Z' } } : p),
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(judged));
+    const dark = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.review?.running === false);
+    const u1Read = dark.cards.find(c => c.id === by.U1.id);
+    assert.equal(u1Read.review.running, false, 'the verdict clears the badge');
+    assert.equal(u1Read.reviews.length, 1);
+    assert.equal(u1Read.reviews[0].round, 1);
+    assert.equal(u1Read.reviews[0].until, '2030-01-01T00:00:00.000Z', 'the round ends when the verdict was written');
+    assert.equal(u1Read.stage, 'ci_pr', 'a GO does not move the card: the merge does');
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(FACTS));
     // The sprint's own stage followed its units: work has started.
     assert.equal(data.cards.find(c => c.id === id).stage, 'development');
 

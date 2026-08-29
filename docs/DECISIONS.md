@@ -4,6 +4,26 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (evening) — review is not a column: it runs alongside CI, and the board shows it running
+
+20. **The Review column (decision 17) is folded back into CI/PR; the reviewer reads the
+    pushed head while CI runs; a live badge says a reader is on it (owner, 2026-08-29
+    ~18:15–18:30: "the review section is not needed — when it comes to CI/PR we do CI/PR
+    and the review together"; "I need an active review-running badge, read from the
+    orchestrator's session").** Both stream windows had been calling the reviewer only
+    after green CI, so every PR paid the CI time twice: once for the run, once waiting for
+    a reader who could have read the same head from the first minute. The column measured
+    that wait instead of removing it. Now a card is in `ci_pr` (titled "CI/PR + review")
+    from the PR opening to the merge; the verdict lands on the head whenever it is ready;
+    green CI on the exact head + GO = merge. A NO-GO on a card in `ci_pr` is still a review
+    failure — back to `development`, counted on the card. The card carries `review:
+    { running, round, since, by }`: the window that starts a reader posts
+    `POST /pipeline/card/update { id, review: { running: true, round: N, by } }`, the
+    board clears the badge when a verdict newer than `since` appears on the PR (or on
+    `{ running: false }`) and files the round in `reviews`; the page shows a pulsing
+    `review running · R1 · 12m` on the card and the average review round in the CI/PR
+    column header. Cards stored in `review` load as `ci_pr`.
+
 ## 2026-08-29 (evening) — no QA column, no Spec column
 
 19. **QA is not a stage of the road; the page starts at Grill (owner, 2026-08-29 ~18:35:
