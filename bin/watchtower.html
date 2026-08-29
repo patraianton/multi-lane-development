@@ -327,6 +327,14 @@
   .sprint-band .legend .checking i { background: var(--done); }
   .sprint-band .legend .pr i { background: var(--violet); }
   .sprint-band .legend .merged i { background: var(--working); }
+  /* QA tickets: the findings the sprint's reviews left behind — not scope, so
+     not in the bar; the sprint waits in QA while one is open. */
+  .sprint-band .qa-line { margin-top: 6px; min-width: 0; overflow-wrap: anywhere; font: 10px var(--mono); color: var(--ink-mid); }
+  .sprint-band .qa-line b { color: var(--done); font-family: var(--ui); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+  .sprint-band .qa-line a { color: var(--done); text-decoration: none; }
+  .sprint-band .qa-line a:hover { text-decoration: underline; }
+  .sprint-band .qa-line a.closed { color: var(--working); }
+  .sprint-band .qa-line.clean b { color: var(--working); }
   .sprint-band .status-line {
     position: relative; min-width: 0; padding: 6px 8px 6px 20px; border: 1px solid var(--line-soft);
     border-radius: 6px; background: rgba(8, 13, 19, .45); color: var(--ink-mid); font-size: 10px; line-height: 1.4;
@@ -434,6 +442,7 @@
     font-family: var(--mono); font-size: 9px; letter-spacing: 0;
   }
   .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
+  .pcol.qa > h2 { color: var(--done); border-color: #6a5122; }
 
   .pcard {
     --stage: var(--violet);
@@ -1217,18 +1226,19 @@ const NEXT_STAGE = {
   ticketed: 'development',
   development: 'local_check',
   local_check: 'ci_pr',
-  ci_pr: 'done',
+  ci_pr: 'qa',
+  qa: 'done',
 };
 // The stages a failure can be reported from — the ones where work is actually
 // run. The same list as in pipeline.mjs, which is what refuses the rest.
-const CAN_FAIL = ['development', 'local_check', 'ci_pr'];
+const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'qa'];
 // Done is the end of the road: it does not add to the card's delivery clock.
 const OFF_THE_CLOCK = new Set(['done']);
 const STAGE_TITLE = {
   spec: 'Spec', grilled: 'Grilled', ticketed: 'Ticketed', development: 'Development',
-  local_check: 'Local check', ci_pr: 'CI/PR', done: 'Done', stuck: 'Stuck',
+  local_check: 'Local check', ci_pr: 'CI/PR', qa: 'QA', done: 'Done', stuck: 'Stuck',
 };
-const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'done'];
+const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'qa', 'done'];
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
@@ -1466,7 +1476,19 @@ function sprintBandProgress(s) {
     + '<span class="on-lane"><i></i>' + counts.onLane + ' on lane</span>'
     + '<span class="checking"><i></i>' + counts.checking + ' checking</span>'
     + '<span class="pr"><i></i>' + counts.pr + ' in PR</span>'
-    + '<span class="merged"><i></i>' + counts.merged + ' merged</span></div></div>';
+    + '<span class="merged"><i></i>' + counts.merged + ' merged</span></div>'
+    + sprintBandQaLine(s) + '</div>';
+}
+
+// The QA tickets of a sprint (label qa on GitHub), each a link coloured by
+// whether it is still open. Nothing to show while none is written.
+function sprintBandQaLine(s) {
+  const qa = Array.isArray(s.qaTickets) ? s.qaTickets : [];
+  if (!qa.length) return '';
+  const open = qa.filter(u => u.open && !u.merged).length;
+  const links = qa.map(u => '<a class="' + (u.open && !u.merged ? 'open' : 'closed') + '" target="_blank" rel="noreferrer" href="'
+    + esc(u.url || '#') + '" title="' + esc((u.title || '') + ' — ' + (u.state || '')) + '">#' + esc(String(u.ticket)) + '</a>').join(' ');
+  return '<div class="qa-line' + (open ? '' : ' clean') + '"><b>QA</b> ' + open + ' open of ' + qa.length + ' · ' + links + '</div>';
 }
 
 function sprintBandStatus(c) {

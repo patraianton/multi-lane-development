@@ -38,6 +38,8 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
     { number: 1521, title: 'SALON-U0: free-promo checkout', url: 'u/1521', state: 'OPEN', branch: '' },
     { number: 1522, title: 'SALON-U4: composition', url: 'u/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
     { number: 1518, title: 'SALON-U3: reserve reader', url: 'u/1518', state: 'CLOSED', branch: 'feat/salon-u03-reserve-reader' },
+    // The reviews' leftovers, labelled qa: a QA ticket, not a unit.
+    { number: 1525, title: 'SALON tails carried out of the sprint', url: 'u/1525', state: 'OPEN', branch: '', qa: true },
   ]]]);
   const lanes = [
     { host: 'radar', lane: 'lane-1', busy: true, since: 'Fri 18:44', branch: 'feat/salon-u02-paid-reader' },
@@ -71,7 +73,8 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(facts.has('plain'), false, 'a card without an umbrella link is not a sprint');
   const s = facts.get('csprint');
   assert.equal(s.umbrella, 1515);
-  assert.deepEqual(s.units.map(u => u.unit), ['U0', 'U1', 'U2', 'U3', 'U4', 'U5'], 'sorted by unit number');
+  assert.deepEqual(s.units.map(u => u.unit), ['U0', 'U1', 'U2', 'U3', 'U4', 'U5'], 'sorted by unit number; the QA ticket is not a unit');
+  assert.deepEqual(s.qaTickets.map(u => [u.unit, u.ticket, u.state, u.open]), [['QA', 1525, 'open', true]]);
 
   const by = Object.fromEntries(s.units.map(u => [u.unit, u]));
   // Branch binding, busy lane, PR running → the PR wins the state.
@@ -112,7 +115,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.free, ['radar/lane-2', 'lanes-01/lane-5']);
   assert.deepEqual(s.busyElsewhere, ['hostinger/lane-6']);
   assert.equal(s.laneCount, 7);
-  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, queued: 1 });
+  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, queued: 1, qa: 1, qaOpen: 1 });
   assert.deepEqual(s.stale, ['umbrella']);
   assert.equal(lanesLine(s), 'mac/lane-a U0 #1521, lanes-01/lane-3 U1 #1516, radar/lane-1 U2 #1517, mac/lane-b U5 #1519');
 });

@@ -178,6 +178,20 @@ Evidence: nights cost 47 h (#1356 and #1267 alone ~20 h); 23 PRs hung open longe
 6 h, almost all opened in the evening of 26.08 and merged next morning (9–23 h each);
 finished-and-green #1481 lay ready for 8.5 h.
 
+### 2.11 QA tickets — where the reviews' leftovers go
+
+A finding from a unit's review that is judged not worth a round **now** does not go into a
+"tails" note and does not stay in the sprint log: it goes into a **QA ticket** — an issue
+labelled `qa` that references the umbrella. One QA ticket per finding worth fixing
+(a fix is a PR like any other, bound by branch); findings that are cosmetics may share
+one ticket, closed when the decision to drop them is written. The board puts a QA ticket
+in the `qa` column the day it is written and holds the sprint in `qa` after its last unit
+merges until every QA ticket is closed (decision 11). A leftover with no `qa` label is a
+unit ticket in the board's eyes and lands in `ticketed` as work that never starts.
+Evidence: the AUTO-SALON close-out (#1562, 29.08) bundled six findings — one of them the
+two live readers that lost their schema guard — into one unlabelled note referencing the
+umbrella; the board spawned it as a queued unit of a sprint already marked done.
+
 ## 3. Required content of the umbrella ticket
 
 - The unit table: every unit ticket number, its one-line goal, its dependency, in

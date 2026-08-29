@@ -1,6 +1,7 @@
 // Decision 10: the road ends at done. A state file from before it — cards in
 // "acceptance" or "accepted", an "acceptanceFails" counter — loads as done
-// cards with a review counter; ci_pr → done is a plain move; "accept" is gone.
+// cards with a review counter; "accept" is gone. Decision 11 put QA before
+// done: ci_pr → qa → done are plain moves, ci_pr → done is not.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,7 +32,7 @@ const OLD = {
   ],
 };
 
-test('acceptance and accepted from an older state file load as done; ci_pr moves straight to done', async () => {
+test('acceptance and accepted from an older state file load as done; ci_pr moves to done through qa', async () => {
   const board = await startBoard({ port: 14975, config: { source: 'probe' }, files: { 'pipeline-cards.json': OLD } });
   try {
     const data = await getJson(board.base, '/pipeline/data');
@@ -50,10 +51,17 @@ test('acceptance and accepted from an older state file load as done; ci_pr moves
     assert.equal(list.body.summary.failures, 3);
     assert.ok(list.body.cards.find(c => c.id === 'c-old-finished').clock.endsWith('(stopped)'));
     const toon = await fetch(`${board.base}/api/pipeline`).then(r => r.text());
-    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, done;'), toon);
+    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, qa, done;'), toon);
     assert.ok(!/acceptance|accepted/.test(toon), toon);
 
-    // ci_pr → done is a plain move; accept is not an action any more.
+    // ci_pr → qa → done are plain moves, ci_pr → done is not; accept is not
+    // an action any more.
+    const skip = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'done' });
+    assert.equal(skip.status, 400);
+    assert.match(JSON.stringify(skip.body), /can only move to qa/);
+    const qa = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'qa' });
+    assert.equal(qa.status, 200);
+    assert.equal(qa.body.card.stage, 'qa');
     const moved = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'done' });
     assert.equal(moved.status, 200);
     assert.equal(moved.body.card.stage, 'done');
@@ -76,6 +84,12 @@ test('acceptance and accepted from an older state file load as done; ci_pr moves
     assert.equal(nogo.status, 200);
     assert.equal(nogo.body.card.stage, 'development');
     assert.equal(nogo.body.card.counters.reviewFails, 1);
+    // A review can also say no in QA: back to development, same counter.
+    for (const to of ['local_check', 'ci_pr', 'qa']) await postJson(board.base, '/pipeline/card/move', { id, to });
+    const qaNogo = await postJson(board.base, '/pipeline/card/fail', { id, kind: 'review' });
+    assert.equal(qaNogo.status, 200);
+    assert.equal(qaNogo.body.card.stage, 'development');
+    assert.equal(qaNogo.body.card.counters.reviewFails, 2);
   } finally {
     await board.stop();
   }

@@ -4,6 +4,19 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (midday) — QA before done
+
+11. **A QA stage before done (owner, 2026-08-29 ~11:30).** The road is `… → ci_pr → qa →
+    done`. The findings a sprint's reviews leave behind are written as **QA tickets** —
+    issues labelled `qa` that reference the umbrella — and land in the QA column the day
+    they are written; the sprint goes to `qa` when its last unit merges and reaches `done`
+    only when its QA tickets are closed (with none written, a human declares the pass).
+    Why: the AUTO-SALON close-out put six leftover findings into one unlabelled "tails"
+    issue after the sprint was already `done`; the board read it as a queued unit of a
+    finished sprint. The owner's word: such tickets must fall onto QA before done, not
+    after it. This is not the acceptance column of decision 10 coming back: acceptance
+    waited for a GO on every unit; QA is the sprint's own leftovers, and the facts move it.
+
 ## 2026-08-29 — the road ends at done; local check is a fact
 
 10. **No acceptance stage; `accepted` is `done` (owner, 2026-08-29 ~00:50).** The

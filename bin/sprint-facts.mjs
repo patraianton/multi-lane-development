@@ -67,7 +67,7 @@ function unitState(u) {
   if (u.lane?.busy) return 'on lane';
   if (u.lane) return 'lane idle';
   if (!u.open) return 'closed';
-  return 'queued';
+  return u.qa ? 'open' : 'queued';
 }
 
 // Which server a CI runner belongs to: its GitHub labels name the host
@@ -99,8 +99,10 @@ export function ciSlotSummary(runners = []) {
 // ciJobs: Map(PR number -> [{ workflow, job, status, runner, startedAt }]) for PRs whose CI runs;
 // ciRunners: the repo's self-hosted runners [{ name, status, busy, labels }];
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
-// unitIssues: Map(umbrella number -> [{ number, title, url, state, branch, deps }]) —
-//   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps).
+// unitIssues: Map(umbrella number -> [{ number, title, url, state, branch, deps, qa }]) —
+//   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps);
+//   qa = the issue carries the `qa` label: a QA ticket (the findings a sprint's
+//   reviews left behind), listed apart from the work units as `qaTickets`.
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
 export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], staleSources = [], at = null } = {}) {
   const out = new Map();
@@ -112,7 +114,8 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     const umbrella = umbrellaOf(card?.links?.ticket);
     if (!umbrella) continue;
     const units = (unitIssues.get(umbrella) ?? []).map(i => ({
-      unit: unitLabel(i.title),
+      unit: i.qa ? 'QA' : unitLabel(i.title),
+      qa: Boolean(i.qa),
       ticket: i.number,
       title: i.title ?? '',
       url: i.url ?? '',
@@ -188,21 +191,28 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     const bound = units.filter(u => u.lane).map(u => ({ ...u.lane, ticket: u.ticket, unit: u.unit }));
     const isBound = l => bound.some(x => x.host === l.host && x.lane === l.lane);
     const name = l => `${l.host}/${l.lane}`;
+    // QA tickets are not scope: they stand apart from the units and their
+    // progress bar, and hold the sprint in QA while one is open.
+    const qaTickets = units.filter(u => u.qa);
+    const work = units.filter(u => !u.qa);
     out.set(card.id, {
       umbrella,
-      units,
+      units: work,
+      qaTickets,
       lanes: bound,
       laneCount: lanes.length,
       free: lanes.filter(l => !l.busy && !isBound(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
       ciSlots,
       counts: {
-        units: units.length,
-        onLane: units.filter(u => u.state === 'on lane').length,
-        checking: units.filter(u => u.state === 'local check').length,
-        pr: units.filter(u => u.pr && !u.merged).length,
-        merged: units.filter(u => u.merged).length,
-        queued: units.filter(u => u.state === 'queued').length,
+        units: work.length,
+        onLane: work.filter(u => u.state === 'on lane').length,
+        checking: work.filter(u => u.state === 'local check').length,
+        pr: work.filter(u => u.pr && !u.merged).length,
+        merged: work.filter(u => u.merged).length,
+        queued: work.filter(u => u.state === 'queued').length,
+        qa: qaTickets.length,
+        qaOpen: qaTickets.filter(u => u.open && !u.merged).length,
       },
       stale: [...staleSources],
       at,

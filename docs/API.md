@@ -227,11 +227,12 @@ A card sits in one stage at a time:
 | `development` | code is being written on the assigned lane |
 | `local_check` | the local check runs on the same lane |
 | `ci_pr` | a PR is open and CI runs on the assigned slot |
+| `qa` | the findings the reviews left behind are dealt with — nothing is done while a QA ticket is open |
 | `done` | terminal; the PR is merged, the card is finished |
 | `stuck` | three failures in a row — the loop itself is the problem, a human has to look |
 
 The road is one-way: `spec → grilled → ticketed → development → local_check →
-ci_pr → done`. Nothing else is a move. `ticketed` records the
+ci_pr → qa → done`. Nothing else is a move. `ticketed` records the
 phase between the grill and the code: after the grill the CTO writes the GitHub
 tickets (one per work unit) there, and the board refuses `ticketed →
 development` until the card carries a `links.ticket` — entering `ticketed` from
@@ -239,7 +240,7 @@ development` until the card carries a `links.ticket` — entering `ticketed` fro
 `review`) puts the card back into `development` and raises both its own
 counter and `consecutiveFails`; the third consecutive failure sends it to `stuck`
 instead. A failure can only be reported from a stage where something was actually
-run — `development`, `local_check`, `ci_pr`. From `spec`,
+run — `development`, `local_check`, `ci_pr`, `qa`. From `spec`,
 `grilled` or `ticketed` it is a 400: nothing has been built yet, and answering it
 would carry the card into `development` around the grill and the tickets. Any stage passed successfully resets `consecutiveFails` to zero, and so
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
@@ -328,6 +329,15 @@ card view. They start at `ticketed` and are walked forward by facts alone —
 busy lane → `development`, the lane running the project's local check →
 `local_check`, PR open → `ci_pr`, PR merged → `done` — never
 backwards, never out of `stuck`, and not at all while a source is stale.
+
+**QA tickets (decision 11).** An issue labelled `qa` that references the
+umbrella is not scope: it is where the findings a sprint's reviews left behind
+are written (TICKETING.md §2.11). The board lists it apart from the units as
+`qaTickets` (`sprint.qa` / `sprint.qaOpen` in the counts, the `qa` table in the
+card view), spawns it as a card titled `QA #N — …` straight into `qa`, and moves
+it to `done` when the ticket is closed. The sprint itself goes `qa` once every
+unit is merged or closed, and `done` by facts only once its QA tickets are all
+closed — with none written it waits in `qa` for a human move (`qa → done`).
 Deleting the sprint card deletes its unit cards. The list view's `summary`
 counts them under `units`.
 
