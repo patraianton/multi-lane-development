@@ -33,7 +33,7 @@ import {
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane, fleetSlot } from './sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
@@ -895,7 +895,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     if (issueState.get(it.number) === 'OPEN') {
       work.push({
         number: it.number, title: it.title, url: it.url, labels,
-        branch: parseUnitBranch(it.body), deps: parseUnitDeps(it.body), qa: labels.includes('qa'),
+        branch: parseUnitBranch(it.body), deps: parseUnitDeps(it.body), depsMerged: parseUnitDepsMerged(it.body), qa: labels.includes('qa'),
         dependsLine: /\bdepends?\s+on\b/i.test(String(it.body ?? '')),
         refs: [...refs],
       });
@@ -907,7 +907,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
         number: it.number, title: it.title, url: it.url, createdAt: it.createdAt,
         state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
         branch: parseUnitBranch(it.body),
-        deps: parseUnitDeps(it.body),
+        deps: parseUnitDeps(it.body), depsMerged: parseUnitDepsMerged(it.body),
         qa: labels.includes('qa'),
       });
     }

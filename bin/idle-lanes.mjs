@@ -21,6 +21,7 @@ export function startable(unit) {
   for (const d of unit.deps ?? []) {
     if (d.met) continue;
     if (d.met === null) return false;
+    if (unit.depsMerged) return false; // "depends on (merged)": a PR head is not enough
     if (typeof d.state === 'string' && d.state.startsWith('pr')) continue;
     return false;
   }
