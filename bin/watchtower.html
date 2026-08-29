@@ -407,6 +407,15 @@
   .offboard-zone .ob-why { margin-top: 3px; color: var(--ink-dim); font: 10px var(--mono); }
   .offboard-zone .ob-fix { margin-top: 2px; color: var(--done); font-size: 10.5px; }
   header .num .ob-count { color: var(--done); }
+  /* Auto-dispatch (decision 16): what the board sends to free lanes, or would. */
+  .dispatch-zone { display: none; margin-bottom: 13px; padding: 7px 10px 8px; border: 1px solid var(--line-soft); border-radius: 9px; background: rgba(8, 13, 19, .35); }
+  .dispatch-zone.on { display: block; }
+  .dispatch-zone > h2 { margin: 0 0 6px; font-size: 10px; line-height: 1.35; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim); }
+  .dispatch-zone > h2 b { color: var(--ink-mid); }
+  .dispatch-zone .dz-row { font: 11px var(--mono); line-height: 1.5; color: var(--ink-mid); overflow-wrap: anywhere; }
+  .dispatch-zone .dz-state { color: var(--ink-dim); }
+  .dispatch-zone .dz-state.sent { color: var(--done); }
+  .dispatch-zone .dz-state.bad { color: #e0806a; }
 
   /* One column per stage on the road — the page sets --pcols from ROAD, so a
      stage that leaves the road (acceptance, 29.08) leaves no empty column. */
@@ -781,6 +790,7 @@
   <div class="sprint-band" id="sprint-band"></div>
   <div class="stuck-zone" id="stuck-zone"></div>
   <div class="offboard-zone" id="offboard-zone"></div>
+  <div class="dispatch-zone" id="dispatch-zone"></div>
   <div class="pboard" id="pboard"></div>
 </div>
 
@@ -1819,6 +1829,22 @@ function renderPipeline(d) {
         + ' <span class="ob-title">' + esc(f.title || '') + (f.detail ? ' · ' + esc(f.detail) : '') + '</span>'
         + '<div class="ob-why">' + esc(f.reason) + '</div><div class="ob-fix">fix: ' + esc(f.fix) + '</div></div>').join('')
       + '</div>'
+    : '';
+
+  // Auto-dispatch: one line per pair — what goes to which lane from which
+  // base, and the journal's word on it (dry-run while the switch is off).
+  const ad = d.autoDispatch && typeof d.autoDispatch === 'object' ? d.autoDispatch : {};
+  const adRows = Array.isArray(ad.rows) ? ad.rows : [];
+  const dzZone = $('dispatch-zone');
+  dzZone.classList.toggle('on', adRows.length > 0);
+  dzZone.innerHTML = adRows.length
+    ? '<h2>Auto-dispatch — ' + (ad.on ? '<b>on</b>' : 'off, dry-run') + ' · ' + adRows.length + ' line' + (adRows.length === 1 ? '' : 's') + '</h2>'
+      + adRows.map(r => {
+        const st = String(r.state || '');
+        const cls = /^launched|^dispatched/.test(st) ? 'sent' : (/^failed/.test(st) ? 'bad' : '');
+        return '<div class="dz-row"><b>' + esc(r.unit || '-') + '</b> → ' + esc(r.lane || '-') + ' from ' + esc(r.base || '-')
+          + ' · ' + esc(r.card || '') + ' · <span class="dz-state ' + cls + '">' + esc(st) + '</span></div>';
+      }).join('')
     : '';
 
   $('pboard').style.setProperty('--pcols', String(ROAD.length));

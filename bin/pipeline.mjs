@@ -153,6 +153,18 @@ export function setIdleLanes(next) {
   };
 }
 
+// Auto-dispatch (decision 16): what the board is about to send to a free
+// lane — or would send, while WATCHTOWER_AUTO_DISPATCH is off — and what the
+// journal says happened lately. rows: [{ card, unit, lane, base, state }].
+let AUTO_DISPATCH = { at: null, on: false, rows: [] };
+export function setAutoDispatch(next) {
+  AUTO_DISPATCH = {
+    at: next?.at ?? null,
+    on: Boolean(next?.on),
+    rows: Array.isArray(next?.rows) ? next.rows : [],
+  };
+}
+
 export function configurePipeline(stateDir) {
   FILE = path.join(stateDir, 'pipeline-cards.json');
   state = null;
@@ -951,6 +963,7 @@ async function pageData() {
     watchdogConfigured: meta.configured,
     offBoard: OFF_BOARD,
     idleLanes: IDLE_LANES,
+    autoDispatch: AUTO_DISPATCH,
     cards: st.cards.map(c => cardExtras(c, st.cards)),
   };
 }
@@ -1258,6 +1271,8 @@ async function buildAgentPipeline(cards, full, port) {
       units: cards.filter(c => c.parent).length,
       offBoard: OFF_BOARD.findings.length,
       idleLanes: IDLE_LANES.findings.length,
+      autoDispatch: AUTO_DISPATCH.rows.length,
+      autoDispatchOn: AUTO_DISPATCH.on,
     },
     cards: rows,
     stuck: stuck.map(c => ({
@@ -1284,6 +1299,9 @@ async function buildAgentPipeline(cards, full, port) {
       queued: (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', '),
       since: fmtDur(f.ageMs ?? 0),
     })),
+    autoDispatch: AUTO_DISPATCH.rows.map(r => ({
+      card: clipText(r.card || '-', full), unit: r.unit || '-', lane: r.lane || '-', base: r.base || '-', state: clipText(r.state || '-', full),
+    })),
   };
   if (full) {
     view.specs = cards.filter(c => c.spec.trim())
@@ -1309,6 +1327,8 @@ function renderToonPipeline(v) {
       v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
     toonTable('idle-lanes', v.idleLanes, ['card', 'free', 'queued', 'since'],
       'no assigned lane sits free while a unit waits'),
+    toonTable('auto-dispatch', v.autoDispatch, ['card', 'unit', 'lane', 'base', 'state'],
+      `nothing to dispatch (auto-dispatch ${s.autoDispatchOn ? 'on' : 'off — dry-run'})`),
   ];
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
   const help = [];
@@ -1332,6 +1352,10 @@ function renderToonPipeline(v) {
   help.push('idle-lanes: a lane assigned to a sprint is free while a unit of that sprint is'
     + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
     + ' after a short grace the board alarms the owner and the CTO window');
+  help.push('auto-dispatch: the board itself sends a startable unit to a free assigned lane'
+    + ' (task file = ticket + common brief + base, spec bundle shipped, launcher from the fleet)'
+    + ' — state "would dispatch" while WATCHTOWER_AUTO_DISPATCH is off, else dispatched/failed/held'
+    + ' from the journal state/auto-dispatch.json');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
   return out.join('\n') + '\n';
