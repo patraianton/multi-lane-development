@@ -198,7 +198,8 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       if (u.branch) {
         const open = prs.find(p => sameBranch(p.branch, u.branch));
         if (open) {
-          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft) };
+          // headSha: the commit a dependent unit starts from (auto-dispatch).
+          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft), headSha: open.headSha ?? null };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.
           const jobs = ciJobs.get(open.number) ?? [];

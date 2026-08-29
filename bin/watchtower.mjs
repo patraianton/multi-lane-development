@@ -18,7 +18,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFile, mkdir, stat, readdir, open, appendFile } from 'node:fs/promises';
+import { readFile, mkdir, stat, readdir, open, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
@@ -29,10 +29,13 @@ import {
 } from './serve.mjs';
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
-  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes,
+  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
+import {
+  planDispatchFull, recordDispatch, dispatchRows, baseLine, taskText, specDirFor, loadBrief, launchPlan, runLaunch,
+} from './auto-dispatch.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -444,6 +447,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
   await offBoardSweep(facts);
   await idleLaneSweep(sprints, facts);
+  await autoDispatchSweep(sprints, facts);
   return { sprints: sprints.size, ...sync };
 });
 
@@ -484,6 +488,89 @@ async function idleLaneSweep(sprints, facts) {
     }
     console.log(`idle lanes: ALARM ${f.card.title}: ${idleLine(f)}${cto ? ' (hook -> ' + cto + ')' : ''}`);
   }
+}
+
+// ------------------------------------------------------ auto-dispatch
+//
+// Decision 16: the board itself sends a startable unit to a free assigned
+// lane — the task file (ticket + common brief + base), the spec bundle, the
+// launcher from the fleet registry. Off by default: without
+// WATCHTOWER_AUTO_DISPATCH=1 the sweep only says what it would do (the log,
+// the auto-dispatch table). The journal state/auto-dispatch.json keeps a unit
+// from being sent twice and holds a failed launch for ten minutes.
+const DISPATCH_JSON = path.join(STATE_DIR, 'auto-dispatch.json');
+const DISPATCH_DIR = path.join(STATE_DIR, 'auto-dispatch'); // this machine's copy of every task file sent
+const FLEET_LAUNCH_FILE = process.env.WATCHTOWER_FLEET_LAUNCH_FILE || path.join(STATE_DIR, 'fleet-launch.json');
+const AUTO_DISPATCH_ON = process.env.WATCHTOWER_AUTO_DISPATCH === '1';
+const SCP = process.env.WATCHTOWER_SCP || (process.platform === 'win32' ? path.join(path.dirname(SSH), 'scp.exe') : 'scp');
+const dispatchNotices = new Set();
+function dispatchNote(line) {
+  if (dispatchNotices.has(line)) return;
+  dispatchNotices.add(line);
+  console.log(line);
+}
+// A command with its exit code and everything it printed — a launcher's
+// "busy" is exit 2 with a line, and the plan reads both. Never throws.
+function execCmd(bin, args, timeout = 60000) {
+  return new Promise((resolve) => {
+    execFile(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
+      (err, stdout, stderr) => {
+        const out = `${stdout ?? ''}${stderr ? '\n' + stderr : ''}`.trim();
+        if (!err) return resolve({ code: 0, out });
+        resolve({ code: typeof err.code === 'number' ? err.code : -1, out: out || err.message });
+      });
+  });
+}
+const bins = { ssh: SSH, scp: SCP, gh: GH };
+async function dispatchOne(pair, { fleet, repo, at }) {
+  // The ticket, verbatim, from GitHub; the sprint's brief from its spec folder.
+  let ticket = null;
+  if (repo) {
+    const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url'], 60000);
+    try { ticket = raw === null ? null : JSON.parse(raw); } catch { ticket = null; }
+  }
+  if (!ticket?.body) return { result: 'failed', error: 'the ticket body could not be read (gh issue view)', ran: [] };
+  const specDir = specDirFor({ card: (await listPipelineCards()).find(c => c.id === pair.card.id), umbrella: pair.umbrella, programs: programsSource.value, specsDir: config.specsDir });
+  let localSpec = null;
+  if (specDir) { try { if ((await stat(specDir)).isDirectory()) localSpec = specDir; } catch { localSpec = null; } }
+  const brief = await loadBrief(localSpec);
+  const plan0 = launchPlan(pair, { fleet, hosts: config.hosts ?? {}, localTask: '', localSpec, home: HOME, repo });
+  const text = taskText({ pair, ticket, brief, kitchen: plan0.kitchen, taskFile: plan0.taskFile, specRemote: plan0.bundle, repo, at });
+  await mkdir(DISPATCH_DIR, { recursive: true });
+  const localTask = path.join(DISPATCH_DIR, `TASK-${pair.unit.ticket}.md`);
+  await writeFile(localTask, text);
+  const plan = launchPlan(pair, { fleet, hosts: config.hosts ?? {}, localTask, localSpec, home: HOME, repo });
+  const outcome = await runLaunch(plan, (bin, args, timeout) => execCmd(bins[bin] ?? bin, args, timeout));
+  return { ...outcome, taskFile: plan.taskFile, brief: brief?.file ?? null, specDir: localSpec };
+}
+async function autoDispatchSweep(sprints) {
+  const at = new Date().toISOString();
+  const cards = await listPipelineCards();
+  const ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+  const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
+  const { pairs, holds } = planDispatchFull(cards, sprints, { ledger, at, fleet });
+  if (!AUTO_DISPATCH_ON) {
+    for (const p of pairs) dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)} (WATCHTOWER_AUTO_DISPATCH=1 to send)`);
+    setAutoDispatch({ at, on: false, rows: dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' }) });
+    return;
+  }
+  if (!fleet) {
+    dispatchNote(`auto-dispatch: on, but ${FLEET_LAUNCH_FILE} is missing — nothing is sent (docs/fleet-launch.example.json)`);
+    setAutoDispatch({ at, on: true, rows: dispatchRows({ pairs, holds, ledger, at, state: 'held: no fleet-launch.json' }) });
+    return;
+  }
+  const repo = streamsSource.value?.repo ?? config.repo;
+  let next = ledger;
+  for (const p of pairs) {
+    const label = `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
+    let outcome;
+    try { outcome = await dispatchOne(p, { fleet, repo, at }); }
+    catch (e) { outcome = { result: 'failed', error: String(e?.message || e), ran: [] }; }
+    next = recordDispatch(next, p, outcome, at);
+    await writeJsonAtomic(DISPATCH_JSON, next);
+    console.log(`auto-dispatch: ${outcome.result.toUpperCase()} ${label}${outcome.error ? ' — ' + outcome.error : ''}`);
+  }
+  setAutoDispatch({ at, on: true, rows: dispatchRows({ pairs: [], holds, ledger: next, at }) });
 }
 
 // ------------------------------------------------------ off the board
@@ -2605,6 +2692,9 @@ configureHooks(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
+console.log(AUTO_DISPATCH_ON
+  ? `auto-dispatch: ON — free lanes are charged from the board (launchers: ${FLEET_LAUNCH_FILE})`
+  : 'auto-dispatch: off (dry-run) — the board only says what it would send; WATCHTOWER_AUTO_DISPATCH=1 to send');
 artifactSource.tick();
 sprintSource.tick();
 server.on('error', (e) => {
