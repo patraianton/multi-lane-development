@@ -28,23 +28,21 @@ checks are mostly single-core-bound, so per-core speed decides, not core
 count — that is why gates on autopase-ci took 49 min vs 13 min on
 ci-runners-01.
 
-## Development lanes — as they are today (8)
+## Development lanes (8)
 
-| Lane today | Server | Notes |
-|---|---|---|
-| `lane-3` | Hetzner / codex-dev | 3 cores / 6 GB |
-| `lane-4` | Hetzner / codex-dev | 3 cores / 6 GB |
-| `lane-5` | Hetzner / codex-dev | 3 cores / 6 GB |
-| `lane-5` | Hostinger / srv1487642 | fastest cores; production shares the box |
-| `lane-6` | Hostinger / srv1487642 | fastest cores; production shares the box |
-| `lane-a` | Mac mini | 16 GB shared, max 3 running |
-| `lane-b` | Mac mini | 16 GB shared, max 3 running |
-| `lane-c` | Mac mini | 16 GB shared, max 3 running |
+| Lane | Server | Folder on the server today | Notes |
+|---|---|---|---|
+| lane-1 | Hetzner / codex-dev | `lane-3` | 3 cores / 6 GB |
+| lane-2 | Hetzner / codex-dev | `lane-4` | 3 cores / 6 GB |
+| lane-3 | Hetzner / codex-dev | `lane-5` | 3 cores / 6 GB |
+| lane-4 | Hostinger / srv1487642 | `lane-5` | fastest cores; production shares the box |
+| lane-5 | Hostinger / srv1487642 | `lane-6` | fastest cores; production shares the box |
+| lane-6 | Mac mini | `lane-a` | 16 GB shared, max 3 running |
+| lane-7 | Mac mini | `lane-b` | 16 GB shared, max 3 running |
+| lane-8 | Mac mini | `lane-c` | 16 GB shared, max 3 running |
 
-After the current sprint lands, folders are renamed to one global sequence
-(duplicate numbers and letters disappear): codex-dev → lane-1…3,
-Hostinger → lane-4…5, Mac → lane-6…8. A running task's lane is never
-renamed under it.
+Folders are renamed to match the Lane column right after the current sprint
+lands (a running task's lane is never renamed under it).
 
 - Linux lanes are driven by `hzlane` (`hzlane status` shows busy/free); a Mac
   lane is a plain folder, busy = an agent process working in it (the board
@@ -56,13 +54,13 @@ renamed under it.
 
 ## CI slots (PR checks)
 
-| Runner | Server | Labels | Notes |
-|---|---|---|---|
-| hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | `pr-ci` targets `ci-fast` |
-| hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| ci-slot-4 | Hetzner / autopase-ci | to register | — |
-| ci-slot-5 | Hetzner / autopase-ci | to register | — |
+| Slot | Runner today | Server | Labels | Notes |
+|---|---|---|---|---|
+| ci-slot-1 | hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | `pr-ci` targets `ci-fast` |
+| ci-slot-2 | hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
+| ci-slot-3 | hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
+| ci-slot-4 | being registered | Hetzner / autopase-ci | `vps1`, `hetzner` | — |
+| ci-slot-5 | being registered | Hetzner / autopase-ci | `vps1`, `hetzner` | — |
 
 - CI never lands on a production machine. The Hostinger runners were removed
   2026-08-27 after gates next to production ran 15–18× slower and failed
