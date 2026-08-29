@@ -35,7 +35,7 @@ subscription:  <assigned on the card, once per sprint>
 2. **Width = the number of lanes assigned.** Every assigned lane carries a unit whenever a
    brief is ready. A unit starts from the head of its dependency's OPEN PR once that PR's
    local gate is PASS, rebasing after the merge — it never waits for the dependency to land.
-3. **A free lane + a ready brief = dispatch, before anything else.** Work on someone else's
+3. **Lanes are for writing code and nothing else holds them.** A unit leaves its lane the moment its PR is open; the PR then waits in the CI/PR queue for review and merge, and that queue never holds a lane. A fix round after NO-GO is just another brief for a lane, on equal footing with new units. **A free lane + a ready brief = dispatch, before anything else.** Work on someone else's
    PR (merging main into it, rewriting its body, re-arming its CI watcher) comes after every
    assigned lane is busy.
 4. **No self-invented checks.** The stream runs the nine steps of the unit round
