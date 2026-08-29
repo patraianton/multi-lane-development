@@ -108,6 +108,8 @@ function unitState(u) {
   if (u.accepted) return 'accepted';
   if (u.merged) return 'merged';
   if (u.pr) {
+    if (u.pr.verdict?.go === false) return 'pr no-go';
+    if (u.pr.verdict?.go === true) return 'pr go';
     if (u.pr.ci?.color === 'green') return 'pr green';
     if (u.pr.ci?.color === 'red') return 'pr red';
     return 'pr open';
@@ -218,7 +220,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         const open = prs.find(p => sameBranch(p.branch, u.branch));
         if (open) {
           // headSha: the commit a dependent unit starts from (auto-dispatch).
-          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft), headSha: open.headSha ?? null };
+          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft), headSha: open.headSha ?? null, verdict: open.verdict ?? null };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.
           const jobs = ciJobs.get(open.number) ?? [];

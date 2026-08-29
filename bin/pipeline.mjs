@@ -31,6 +31,7 @@ export const STAGES = [
   { key: 'development', title: 'Development' },
   { key: 'local_check', title: 'Local check' },
   { key: 'ci_pr', title: 'CI/PR' },
+  { key: 'review', title: 'Review' },
   { key: 'qa', title: 'QA' },
   { key: 'done', title: 'Done' },
   { key: 'stuck', title: 'Stuck' },
@@ -55,7 +56,8 @@ const MOVES = {
   ticketed: ['development'],
   development: ['local_check'],
   local_check: ['ci_pr'],
-  ci_pr: ['qa'],
+  ci_pr: ['review'],
+  review: ['qa'],
   qa: ['done'],
   done: [],
   stuck: [],
@@ -84,7 +86,7 @@ const STUCK_AFTER = 3;
 // failed" there is not a late report, it is a wrong request — and answering it
 // would walk the card forward into Development around the grill and the
 // tickets, which no move is allowed to do.
-const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'qa']);
+const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'review', 'qa']);
 
 // What the watchdog may write into a card's status line (Wave G writes it; the
 // value is validated here so a wrong word never reaches the board).
@@ -92,7 +94,7 @@ const VERDICTS = ['moving', 'stalled', 'looping'];
 
 // Stages the Watchdog scores. A missing or old Status on one of these is a
 // signal: the checker is meant to refresh every intervalMin minutes.
-const ACTIVE_STATUS_STAGES = new Set(['development', 'local_check', 'ci_pr']);
+const ACTIVE_STATUS_STAGES = new Set(['development', 'local_check', 'ci_pr', 'review']);
 const DEFAULT_WATCHDOG_INTERVAL_MIN = 15;
 const STALE_MULTIPLIER = 2;
 
@@ -982,7 +984,7 @@ async function pageData() {
 //   - a stream whose sprint scope is not machine-readable (no units:"issues"
 //     promise in stream-watch, no branch prefixes, no umbrella) can never reach
 //     done — the card says what is missing instead.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'qa', 'done']);
+const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'review', 'qa', 'done']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
@@ -1039,7 +1041,10 @@ function unitTargetStage(u) {
   // not count. For a rollout unit that close follows the production probe.
   if (u.accepted) return 'done';
   if (u.merged) return 'qa';
-  if (u.pr) return 'ci_pr';
+  // Review (decision 17): the PR is open and its CI is green — the code waits
+  // for a reader, then for the merge. A red or running CI, or a NO-GO whose
+  // fix is being written, is CI/PR.
+  if (u.pr) return (u.pr.ci?.color === 'green' && u.pr.verdict?.go !== false) ? 'review' : 'ci_pr';
   if (u.lane?.check) return 'local_check';
   if (u.lane?.busy) return 'development';
   return null;
@@ -1065,6 +1070,15 @@ function unitPlan(cards, sprints) {
       const unit = str(u.unit ?? '', LIMIT.slotish);
       const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       const move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
+      // A NO-GO on a card in review is a review failure: back to development
+      // for the fix round (the third in a row → stuck), counted on the card.
+      // Only a verdict newer than the card's entry into review counts once.
+      const noGo = card?.stage === 'review' && u.pr?.verdict?.go === false ? u.pr.verdict : null;
+      const enteredReview = card ? [...(card.stageHistory ?? [])].reverse().find(h => h.stage === 'review')?.enteredAt : null;
+      if (noGo && (!noGo.at || !enteredReview || Date.parse(noGo.at) > Date.parse(enteredReview))) {
+        plan.push({ kind: 'review-fail', id: card.id, lane, pr, branch, slot, unit, verdict: noGo });
+        continue;
+      }
       if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
       else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)) {
         plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, unit, move });
@@ -1085,7 +1099,7 @@ function unitPlan(cards, sprints) {
       const finished = allMerged && allAccepted && qaDone && s.umbrellaOpen === false;
       const anyStarted = units.some(u => u.lane || u.pr || u.merged);
       let to = null;
-      if (allMerged && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = finished ? 'done' : 'qa';
+      if (allMerged && ['ticketed', 'development', 'local_check', 'ci_pr', 'review'].includes(sprint.stage)) to = finished ? 'done' : 'qa';
       else if (finished && sprint.stage === 'qa') to = 'done';
       else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
       if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
@@ -1136,6 +1150,14 @@ export async function syncSprintUnits(sprints) {
         if (ROAD_ORDER.indexOf(step.to) > ROAD_ORDER.indexOf(card.stage)) {
           enterStage(card, step.to, now); card.consecutiveFails = 0; moved++;
         }
+        continue;
+      }
+      if (step.kind === 'review-fail') {
+        card.counters.reviewFails += 1;
+        card.consecutiveFails += 1;
+        enterStage(card, card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development', now);
+        card.lane = step.lane; card.links.pr = step.pr; card.links.branch = step.branch; card.slot = step.slot;
+        moved++;
         continue;
       }
       card.lane = step.lane;
@@ -1337,14 +1359,15 @@ function renderToonPipeline(v) {
       + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
-  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, qa, done;'
+  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, qa, done;'
+    + ' review — the PR is open and CI is green: the code waits for its reader (verdict R<n> — GO / NO-GO as the first line of a PR comment) and then for the merge; a NO-GO sends the card back to development for the fix round;'
     + ' stuck — three failures in a row, waiting for a human; qa — merged, the ticket not yet'
     + ' closed after the merge (the PR\'s own auto-close does not count): a unit is done once'
     + ' it is, a sprint once every unit is, its qa-labelled tickets are closed and the umbrella'
     + ' is closed');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
-  help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
+  help.push('stale status: an active card (development, local_check, ci_pr, review) whose Status is'
     + ' missing or older than twice the Watchdog interval');
   help.push('off-board: what is being built without a card — open PRs no card carries, tickets'
     + ' in work that name no umbrella, busy lanes on unknown branches; the ledger of such cases'

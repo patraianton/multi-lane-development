@@ -6,7 +6,7 @@ stage may not be skipped, however polished the input looks.
 
 The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → qa → done` (+ `stuck`)
+`spec → grilled → ticketed → development → local_check → ci_pr → review → qa → done` (+ `stuck`)
 
 ---
 
@@ -114,6 +114,17 @@ writes a mandate of their own.
    ([PROBE.md](./PROBE.md)) confirms the deployed surface by CONTENT.
 
 **Exit:** merged, deployed, probe green on the exact revision.
+
+## 6a. Review — `ci_pr → review`
+
+**Who:** the board moves the card; the stream window runs the reviewers.
+
+The unit card enters `review` by fact: its PR is open and its CI is green. The column
+shows how long the code has waited for a reader and then for its merge — the owner reads
+that time off the board. The verdict is the first line of a PR comment, plain text:
+`R1 — GO` / `R1 — NO-GO`. A NO-GO is a review failure: the board sends the card back to
+`development` for the fix round (the third in a row → `stuck`); the fix is just another
+brief for a lane. A GO is followed by the merge; the merged card moves on to `qa`.
 
 ## 7. QA — `ci_pr → qa → done`
 

@@ -29,6 +29,18 @@ the record of when and why.
     rulebook already said "free lane + ready brief = dispatch". A rule the board enforces by
     doing is the first one that holds. DEVLAUNCH.md "Auto-dispatch (decision 16)".
 
+## 2026-08-29 (evening) — review is a stage on the board
+
+17. **Review is a column between CI/PR and QA, entered by fact (owner, 2026-08-29 ~16:20:
+    "make it a stage on the board after CI/PR — I must see how long it lies there").**
+    A unit card is in `review` when its PR is open and its CI is green: the code waits for a
+    reader, then for its merge, and the clock shows how long. The verdict is read from the
+    PR itself — the first line of a comment, `R<n> — GO` / `R<n> — NO-GO`. NO-GO = a review
+    failure: back to `development` for the fix round (third in a row → `stuck`), counted on
+    the card. Green CI is not the check: it proves the old is not broken, review proves the
+    ticket was built — the surname leak, the empty register guard and the removed
+    price-overflow guard were all found at green CI today.
+
 ## 2026-08-29 (late afternoon) — the board alarms on idle lanes
 
 15. **A free assigned lane while a unit waits is an alarm, raised by the board itself
