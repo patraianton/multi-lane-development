@@ -204,8 +204,11 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
           const jobs = ciJobs.get(open.number) ?? [];
           const live = jobs.find(j => j.status === 'in_progress') ?? jobs.find(j => j.status === 'queued') ?? null;
           if (live) {
+            const reg = ciRunners.find(r => r.name === live.runner);
             u.pr.runner = {
               name: live.runner || '',
+              slot: reg?.slot || live.runner || '',
+              server: reg?.server || '',
               host: live.runner ? runnerHost(live.runner, ciRunners) : '',
               status: live.status,
               since: live.startedAt ?? null,
