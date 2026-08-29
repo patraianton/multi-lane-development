@@ -9,62 +9,66 @@ keys live in the private ops annex.
 **Keep it true:** any change to lanes, runners, or servers lands here in the
 same commit or the same day.
 
-Last verified against the live servers: **2026-08-29** (cores measured).
+Last verified: **2026-08-29** — cores counted AND single-core speed measured
+(openssl sha256, same test everywhere).
 
-## Servers — one machine, one role, fully used
+## Servers
 
-| Server | Cores / RAM | Role |
-|---|---|---|
-| Hetzner / autopase-ci | 16 / 30 GB | development — 5 lanes × 3 cores / 6 GB (15 of 16 cores allocated) |
-| Hetzner / ci-runners-01 | 8 / 15 GB | PR checks — 3 slots (hzci-1…3) |
-| Hetzner / autopase-scraper | — | production scraper |
-| Hostinger / srv1487642 | 8 / 32 GB | production services (scraper jobs, copilot gateway, sister project). After production moves to the new hosting, this box becomes the CI machine and ci-runners-01 is cancelled |
-| Hetzner / codex-dev | 4 / 7 GB | finishes the current sprint, then the server is cancelled (it was a stop-gap bought while the 16-core box was clogged with CI runners) |
-| Mac mini | 16 GB RAM | development — 3 lanes |
-
-No "reserve" machines: every box has a paying job.
-
-## Development lanes (target: 8)
-
-One global sequence — "lane 4" means exactly one place. "Folder today" is the
-current name on disk; folders are renamed/created in one batch right after the
-current sprint lands (a running task's lane is never touched).
-
-| Lane | Server | Folder today | Per lane |
+| Server | Cores | Single-core speed | Role |
 |---|---|---|---|
-| lane-1 | Hetzner / autopase-ci | `lane-1` | 3 cores / 6 GB |
-| lane-2 | Hetzner / autopase-ci | `lane-2` | 3 cores / 6 GB |
-| lane-3 | Hetzner / autopase-ci | created in the batch | 3 cores / 6 GB |
-| lane-4 | Hetzner / autopase-ci | created in the batch | 3 cores / 6 GB |
-| lane-5 | Hetzner / autopase-ci | created in the batch | 3 cores / 6 GB |
-| lane-6 | Mac mini | `lane-a` | shares 16 GB, max 3 running |
-| lane-7 | Mac mini | `lane-b` | shares 16 GB, max 3 running |
-| lane-8 | Mac mini | `lane-c` | shares 16 GB, max 3 running |
+| Hostinger / srv1487642 | 8 | 1 796 (fastest) | production services + 2 development lanes |
+| Hetzner / codex-dev | 4 | 1 771 | development — 3 lanes |
+| Hetzner / ci-runners-01 | 8 | 1 657 | PR checks — 3 slots (hzci-1…3) |
+| Hetzner / autopase-ci | 16 | **212 — 8× slower per core** (16 cores ≈ 2 real ones) | 2 lanes + 4 fallback runners today; **proposed for cancellation** (~€50/mo for ≈2 cores of real power) — owner's money call |
+| Hetzner / autopase-scraper | — | — | production scraper |
+| Mac mini | — | — | development — 3 lanes |
 
-Removed in the same batch: the 3 folders on codex-dev (server cancelled after
-the sprint) and the 2 lanes on Hostinger (that server does production, not
-development).
+Speed is thousands of sha256 bytes/s on one core, bigger = faster. Builds and
+checks are mostly single-core-bound, so per-core speed decides, not core
+count — that is why gates on autopase-ci took 49 min vs 13 min on
+ci-runners-01.
+
+## Development lanes — as they are today (10)
+
+| Lane today | Server | Notes |
+|---|---|---|
+| `lane-3` | Hetzner / codex-dev | 3 cores / 6 GB |
+| `lane-4` | Hetzner / codex-dev | 3 cores / 6 GB |
+| `lane-5` | Hetzner / codex-dev | 3 cores / 6 GB |
+| `lane-1` | Hetzner / autopase-ci | slow cores; goes away if the server is cancelled |
+| `lane-2` | Hetzner / autopase-ci | slow cores; goes away if the server is cancelled |
+| `lane-5` | Hostinger / srv1487642 | fastest cores; production shares the box |
+| `lane-6` | Hostinger / srv1487642 | fastest cores; production shares the box |
+| `lane-a` | Mac mini | 16 GB shared, max 3 running |
+| `lane-b` | Mac mini | 16 GB shared, max 3 running |
+| `lane-c` | Mac mini | 16 GB shared, max 3 running |
+
+After the current sprint lands, folders are renamed to one global sequence
+(duplicate numbers and letters disappear): codex-dev → lane-1…3,
+Hostinger → lane-4…5, Mac → lane-6…8; autopase-ci lanes exist only until the
+owner decides on cancelling that server. A running task's lane is never
+renamed under it.
 
 - Linux lanes are driven by `hzlane` (`hzlane status` shows busy/free); a Mac
   lane is a plain folder, busy = an agent process working in it (the board
   probes exactly this way).
-- Reservation of a lane: a `<lane>.reserved` file next to the lane folder;
-  only the CTO writes it.
+- Lane reservation: a `<lane>.reserved` file next to the lane folder; only the
+  CTO writes it.
 - When a lane is freed, its copy returns to `main` and the finished branch is
   deleted if already pushed.
 
 ## CI slots (PR checks)
 
-| Runner | Server | Labels | Role |
+| Runner | Server | Labels | Notes |
 |---|---|---|---|
 | hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | `pr-ci` targets `ci-fast` |
 | hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
 | hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| radar-runner-1…4 | Hetzner / autopase-ci | `vps1`, `hetzner` | removed in the after-sprint batch (the box becomes dev-only) |
+| radar-runner-1…4 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; go away with the server's cancellation |
 
-- CI never lands on a build or production machine. The Hostinger runners were
-  removed 2026-08-27 after gates ran 15–18× slower next to production and
-  failed random PRs; registrations deleted 2026-08-29.
+- CI never lands on a production machine. The Hostinger runners were removed
+  2026-08-27 after gates next to production ran 15–18× slower and failed
+  random PRs; registrations deleted 2026-08-29.
 - If the CI server dies it is rebuilt from a snapshot.
 - Old PR branches may still pin `runs-on: [self-hosted, vps1]` — that label
   stays on every live runner.
