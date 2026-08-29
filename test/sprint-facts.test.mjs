@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane, fleetSlot } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane, fleetSlot, parseUnitDepsMerged } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -201,4 +201,10 @@ test('an umbrella with no unit tickets yet is a sprint with an empty table', () 
   assert.deepEqual(s.lanes, []);
   assert.deepEqual(s.free, ['h/lane-1']);
   assert.equal(lanesLine(s), 'none of 1 lanes');
+});
+
+test('"depends on (merged)" marks a unit that needs its dependencies merged, not just on a PR', () => {
+  assert.equal(parseUnitDepsMerged('**Depends on:** #1575, #1576'), false);
+  assert.equal(parseUnitDepsMerged('**Depends on (merged):** #1575, #1576 — runs on the merged build'), true);
+  assert.equal(parseUnitDepsMerged('nothing here'), false);
 });

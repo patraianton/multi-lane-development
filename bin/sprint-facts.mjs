@@ -42,6 +42,16 @@ export function parseUnitDeps(body) {
   return [...out].sort((a, b) => a - b);
 }
 
+// A "depends on (merged)" line says an open PR head is not enough: the unit
+// starts only once every dependency is merged or closed (the final browser
+// sweep runs on the merged build).
+export function parseUnitDepsMerged(body) {
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    if (/\bdepends?\s+on\b/i.test(line) && /\(\s*merged\s*\)/i.test(line)) return true;
+  }
+  return false;
+}
+
 // The fleet registry (docs/FLEET.md): lanes are named lane-1…lane-N across
 // every server while the folders on the servers may still carry older names.
 // registry: { "host/folder": { name, server } }. A probed lane keeps its
@@ -164,6 +174,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
       closedAt: i.closedAt ?? null,
       depTickets: (Array.isArray(i.deps) ? i.deps : []).map(Number).filter(Number.isFinite),
+      depsMerged: Boolean(i.depsMerged),
       deps: [],
       lane: null,
       pr: null,

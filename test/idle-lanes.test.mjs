@@ -31,6 +31,8 @@ test('startable: queued with every dependency merged, closed, or at least on an 
   assert.equal(startable({ state: 'queued', deps: [{ met: false, state: 'pr red' }] }), true, 'an open PR is a head to start from');
   assert.equal(startable({ state: 'queued', deps: [{ met: false, state: 'on lane' }] }), false, 'a dependency still on a lane holds it');
   assert.equal(startable({ state: 'queued', deps: [{ met: null, state: 'outside the sprint' }] }), false);
+  assert.equal(startable({ state: 'queued', depsMerged: true, deps: [{ met: false, state: 'pr green' }] }), false, '"depends on (merged)": a PR head is not enough');
+  assert.equal(startable({ state: 'queued', depsMerged: true, deps: [{ met: true }] }), true);
   assert.equal(startable({ state: 'on lane', deps: [] }), false);
   assert.equal(startable({ qa: true, open: true, deps: [] }), true);
   assert.equal(startable({ qa: true, open: true, pr: { number: 1 }, deps: [] }), false);
