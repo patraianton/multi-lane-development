@@ -18,9 +18,11 @@ import {
 
 // ------------------------------------------------------------------- stages
 
-// The stage a card sits in. Six working stages, one terminal stage and Stuck,
+// The stage a card sits in. Seven working stages, one terminal stage and Stuck,
 // which is not a step of the road but where a card lands after its third
-// consecutive failure and waits for a human.
+// consecutive failure and waits for a human. QA (decision 11, 2026-08-29) sits
+// before done: the findings a sprint's reviews left behind land there as QA
+// tickets, and nothing is done while one of them is open.
 export const STAGES = [
   { key: 'spec', title: 'Spec' },
   { key: 'grilled', title: 'Grilled' },
@@ -28,6 +30,7 @@ export const STAGES = [
   { key: 'development', title: 'Development' },
   { key: 'local_check', title: 'Local check' },
   { key: 'ci_pr', title: 'CI/PR' },
+  { key: 'qa', title: 'QA' },
   { key: 'done', title: 'Done' },
   { key: 'stuck', title: 'Stuck' },
 ];
@@ -51,7 +54,8 @@ const MOVES = {
   ticketed: ['development'],
   development: ['local_check'],
   local_check: ['ci_pr'],
-  ci_pr: ['done'],
+  ci_pr: ['qa'],
+  qa: ['done'],
   done: [],
   stuck: [],
 };
@@ -79,7 +83,7 @@ const STUCK_AFTER = 3;
 // failed" there is not a late report, it is a wrong request — and answering it
 // would walk the card forward into Development around the grill and the
 // tickets, which no move is allowed to do.
-const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr']);
+const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'qa']);
 
 // What the watchdog may write into a card's status line (Wave G writes it; the
 // value is validated here so a wrong word never reaches the board).
@@ -939,7 +943,7 @@ async function pageData() {
 //   - a stream whose sprint scope is not machine-readable (no units:"issues"
 //     promise in stream-watch, no branch prefixes, no umbrella) can never reach
 //     done — the card says what is missing instead.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'done']);
+const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'qa', 'done']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
@@ -964,8 +968,9 @@ function cardExtras(c, all = []) {
   if (c.parent) {
     const parent = all.find(p => p.id === c.parent);
     if (parent) extra.sprintTitle = parent.title;
-    const u = (sprintMap.get(c.parent)?.units ?? []).find(x => x.ticket === c.ticket);
-    if (u) extra.unitFacts = { lane: u.lane, pr: u.pr, merged: u.merged, state: u.state, open: u.open, deps: u.deps ?? [] };
+    const sp = sprintMap.get(c.parent);
+    const u = [...(sp?.units ?? []), ...(sp?.qaTickets ?? [])].find(x => x.ticket === c.ticket);
+    if (u) extra.unitFacts = { lane: u.lane, pr: u.pr, merged: u.merged, state: u.state, open: u.open, deps: u.deps ?? [], qa: Boolean(u.qa) };
   }
   return Object.keys(extra).length ? { ...c, ...extra } : c;
 }
@@ -988,6 +993,9 @@ function unitTitle(u) {
 
 function unitTargetStage(u) {
   if (u.merged) return 'done';
+  // A QA ticket sits in QA from the day it is written, fix PR or not; closing
+  // it is what finishes it.
+  if (u.qa) return u.open ? 'qa' : 'done';
   if (u.pr) return 'ci_pr';
   if (u.lane?.check) return 'local_check';
   if (u.lane?.busy) return 'development';
@@ -1001,7 +1009,7 @@ function unitPlan(cards, sprints) {
   for (const [sprintId, s] of sprints) {
     const sprint = cards.find(c => c.id === sprintId);
     if (!sprint || sprint.parent || ['spec', 'grilled'].includes(sprint.stage)) continue;
-    for (const u of s.units ?? []) {
+    for (const u of [...(s.units ?? []), ...(s.qaTickets ?? [])]) {
       const card = cards.find(c => c.parent === sprintId && c.ticket === u.ticket);
       const lane = u.lane ? `${u.lane.host}/${u.lane.lane}` : '';
       const pr = str(u.merged?.url || u.pr?.url || card?.links.pr || '', LIMIT.link);
@@ -1009,22 +1017,31 @@ function unitPlan(cards, sprints) {
       // The CI slot: the runner the PR's check is on right now (ADR-0005's
       // slot, read from GitHub rather than assigned).
       const slot = str(u.pr?.runner?.name ?? '', LIMIT.slotish);
+      // A ticket that gained the qa label after its card was spawned becomes a
+      // QA card: the label is the fact, the card follows it.
+      const unit = str(u.unit ?? '', LIMIT.slotish);
       const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       const move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
       if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
-      else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot) {
-        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, move });
+      else if (move || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)) {
+        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, unit, move });
       }
     }
     // The sprint's own stage follows its units: development once any unit has
-    // started, done once every unit is merged (or closed) — the whole scope
-    // delivered. Forward only, facts only.
+    // started; QA once every unit is merged (or closed) — the scope is
+    // delivered and the findings its reviews left behind are what remains
+    // (decision 11); done once its QA tickets are all closed too. With no QA
+    // ticket written the sprint waits in QA for a human to declare the pass.
+    // Forward only, facts only.
     const units = s.units ?? [];
+    const qa = s.qaTickets ?? [];
     if (units.length && !s.stale?.length && sprint.stage !== 'stuck') {
       const allDone = units.every(u => u.merged || !u.open);
+      const qaDone = qa.length > 0 && qa.every(u => u.merged || !u.open);
       const anyStarted = units.some(u => u.lane || u.pr || u.merged);
       let to = null;
-      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = 'done';
+      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = qaDone ? 'done' : 'qa';
+      else if (allDone && qaDone && sprint.stage === 'qa') to = 'done';
       else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
       if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
     }
@@ -1080,6 +1097,10 @@ export async function syncSprintUnits(sprints) {
       card.links.pr = step.pr;
       card.links.branch = step.branch;
       card.slot = step.slot;
+      if (step.unit && card.unit !== step.unit) {
+        card.unit = step.unit;
+        if (step.unit === 'QA' && !/^QA /.test(card.title)) card.title = str(`QA ${card.title}`, LIMIT.title);
+      }
       if (step.move) { enterStage(card, step.move, now); card.consecutiveFails = 0; moved++; }
     }
     return { spawned, moved };
@@ -1248,8 +1269,9 @@ function renderToonPipeline(v) {
       + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
-  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, done;'
-    + ' stuck — three failures in a row, waiting for a human');
+  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, qa, done;'
+    + ' stuck — three failures in a row, waiting for a human; qa — the findings a sprint\'s'
+    + ' reviews left behind (tickets labelled qa) are closed before done');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
   help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
@@ -1313,6 +1335,12 @@ async function buildAgentCard(card, withSpec = false) {
       state: u.state,
       deps: (u.deps ?? []).map(d => `#${d.ticket}${d.unit ? ' ' + d.unit : ''} ${d.state}`).join(', ') || 'none',
     })),
+    qa: (sprintMap.get(card.id)?.qaTickets ?? []).map(u => ({
+      ticket: `#${u.ticket}`,
+      title: u.title || '-',
+      pr: u.merged ? `#${u.merged.number} merged` : u.pr ? `#${u.pr.number} ${u.pr.ci?.text ?? ''}`.trim() : '-',
+      state: u.state,
+    })),
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
         + `${stale ? ', stale' : ''})`
@@ -1364,8 +1392,10 @@ function renderToonCard(c) {
   // as written is behind /pipeline/card/<id>/spec.
   if (c.spec !== undefined) out.push(`spec: ${c.spec.replace(/\s+/g, ' ').trim() || '-'}`);
   out.push(
-    toonTable('units', c.units, ['unit', 'ticket', 'branch', 'lane', 'pr', 'state'],
+    toonTable('units', c.units, ['unit', 'ticket', 'branch', 'lane', 'pr', 'state', 'deps'],
       c.sprint ? 'no unit tickets reference the umbrella yet' : 'not a sprint card — links.ticket is not an umbrella issue'),
+    toonTable('qa', c.qa, ['ticket', 'title', 'pr', 'state'],
+      c.sprint ? 'no QA tickets — an issue labelled qa that references the umbrella' : 'not a sprint card'),
     toonTable('comments', c.comments, ['author', 'at', 'text'], 'nobody has commented'),
     toonTable('history', c.history, ['stage', 'entered', 'left', 'took'], 'no history'),
     `help: ${c.specHint}`,

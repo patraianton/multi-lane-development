@@ -773,6 +773,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
         state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
         branch: parseUnitBranch(it.body),
         deps: parseUnitDeps(it.body),
+        qa: labels.includes('qa'),
       });
     }
   }
