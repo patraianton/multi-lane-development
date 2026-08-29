@@ -2,8 +2,7 @@
 
 One card = one work package. This file gives the exact steps for every stage, in order.
 Per-stage contracts live in the linked docs; **the sequence here is authoritative** — a
-stage may not be skipped, however polished the input looks. (Owner's decision 2026-08-29,
-after a ready-made spec was cut into tickets with no grill.)
+stage may not be skipped, however polished the input looks.
 
 The road is one-way:
 
@@ -26,7 +25,7 @@ The road is one-way:
 
 **Who:** the CTO window, via a panel of independent lens agents. Contract: [GRILL.md](./GRILL.md).
 
-1. Run the five lenses in parallel (complexity/slicing, acceptance subjects, external
+1. Run the five Fable lens agents in parallel (complexity/slicing, acceptance subjects, external
    dependencies and money, landmines from the lessons memory, user path and proof).
    Every finding cites real code (`file:line` on main) and carries a proposed resolution.
 2. Merge findings: fold blockers into the spec as amendments; take `default-decision`
@@ -121,8 +120,6 @@ that point — a human decides. Leaving `stuck` requires naming what changed.
 
 ## Cross-references
 
-- The CTO intake reglament (`autopase-ops/CTO-REGLAMENT.md` §1) defers to this file and
-  to GRILL.md — a spec never goes to `ticketed` without the grill.
 - The owner zone (what only the owner decides) is defined once, in GRILL.md §2a.
 - Artifact publishing for founder review: [ARTIFACT.md](./ARTIFACT.md); Telegram
   doorbells: [TELEGRAM.md](./TELEGRAM.md).
