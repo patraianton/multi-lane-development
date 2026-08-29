@@ -5,6 +5,12 @@ every question that would later stop a lane mid-work, and every finding an accep
 would raise as a NO-GO, must be named and settled while the card is still at `spec`.
 A card moves to `grilled` only when the grill outcome has been folded back into the spec.
 
+**No spec reaches `ticketed` without passing the grill — no exceptions for polish.** A spec
+that arrives fully written and owner-approved (e.g. a partner's prepared package) is grilled
+exactly like a draft; approval of the product behavior is not approval of the technical cut.
+The CTO intake reglament (`autopase-ops/CTO-REGLAMENT.md` §1) defers to this document —
+owner's decision 2026-08-29, after AUTO-DETAIL-FINANCE-CARDS-R1 was cut without a grill.
+
 Status of this document: the **method** (§1–§2) is in live use, run by the CTO window.
 The **artifact publishing pipeline** (§3–§5) is implemented — the worker under
 `deploy/lavish-worker/`, the `bin/lavish-publish.mjs` and `bin/lavish-deploy.mjs` CLIs,
