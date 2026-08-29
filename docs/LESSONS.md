@@ -6,6 +6,39 @@ could not have caught it, and the rule that closes the gap. When the rule gradua
 a contract doc (RUNBOOK/TICKETING/GRILL), it gets a "folded into" note but stays here as
 the record. Newest first.
 
+## 2026-08-29 — three rounds on one module, and nobody had looked at the picture
+
+**Sprint:** AUTO-SALON-PAID-ROTATION-001 (home salon module), acceptance fixes #1572/#1573 and then
+#1586/#1587. Full report (Russian): `_conveyor/autopase.lv/reports/SALON-SPEC-DRIFT-2026-08-29.md`.
+
+**What happened.** The acceptor's "it was in the spec and in the visual" is true: the approved
+mock (`AV-01`) in the earlier salon spec fixed the heading, the marker text, its position between
+the facts line and the price, and the tight gaps. The module still went to production three times
+not matching it.
+
+**Why.** (1) The picture never reached anyone who cut, coded or reviewed. The spec bundle was
+copied without its `assets/` folder — text and an HTML twin only; the next spec declared "no new
+mocks needed" and restated the look in words; the tickets carried neither the mock's path nor the
+spec's wording; every level (lane → review → deploy probe) compared the code to the ticket text,
+and by the ticket text it was right. The first person to compare with the picture was the
+acceptor. (2) Product wording was reinterpreted inside the pipeline "in the spirit" of the spec:
+a round-3 fix renamed the heading against the letter of the spec, and the acceptor's «Проверено
+AutoPase» was read as "the data-driven history mark" instead of "change the text" — both without a
+ticket and without asking the acceptor. "Ask no questions" had become "interpret ourselves".
+
+**Rule.** (1) A ticket with a visible result carries the picture: the path to the approved mock
+and the verbatim spec line about the look (text, line order, position); with no mock, a screenshot
+of production "as is" marked "change only X". The lane's task file ships the picture next to the
+ticket, and the spec bundle is copied whole — images included — never text only. Acceptance of
+such a ticket includes "screenshot at the design width matches the mock in text and line order".
+(2) Nobody in the pipeline — lane, reviewer, orchestrator, CTO — changes visible text or layout
+outside the ticket. A deviation that "seems more right" is a separate ticket with a question to
+the acceptor; the current round follows the letter. The acceptor's words are read literally.
+(3) Before handover, the sprint QA puts a production screenshot next to the mock and lists the
+differences — a green deploy probe is a counter, not eyes.
+
+**Folded into:** (pending — TICKETING §2, RUNBOOK stage 7).
+
 ## 2026-08-29 — a foundation unit turned a ten-unit sprint into a queue of one
 
 **Sprint:** AUTO-DETAIL-FINANCE-CARDS-R1 (umbrella #1569).
