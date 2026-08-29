@@ -15,20 +15,23 @@ registry.
 
 Last verified against the live servers: **2026-08-29**.
 
-## Development lanes (10)
+## Development lanes
 
-One global sequence — "lane 4" means exactly one place. Folders on the servers
-still carry the old per-server names; they are renamed to the global numbers
-right after the current sprint lands (a running task's lane is never renamed
-under it).
+One global sequence — "lane 4" means exactly one place. One server = one role:
+a server either builds or runs PR checks, never both. The two lanes on
+Hetzner / autopase-ci violate this (leftover from before the dedicated CI
+server existed) and are RETIRING: right after the current sprint lands they
+are removed and that server becomes CI-only. Final layout — 8 lanes: codex-dev
+1–3, Hostinger 4–5, Mac 6–8; folders are renamed to the global numbers in the
+same batch (a running task's lane is never renamed under it).
 
 | Lane | Server | Folder on the server today | Limits |
 |---|---|---|---|
 | lane-1 | Hetzner / codex-dev | `lane-3` | 3 cores / 6 GB |
 | lane-2 | Hetzner / codex-dev | `lane-4` | 3 cores / 6 GB |
 | lane-3 | Hetzner / codex-dev | `lane-5` | 3 cores / 6 GB |
-| lane-4 | Hetzner / autopase-ci | `lane-1` | 3 cores / 6 GB |
-| lane-5 | Hetzner / autopase-ci | `lane-2` | 3 cores / 6 GB |
+| lane-4 | Hetzner / autopase-ci | `lane-1` | RETIRING after the sprint (server becomes CI-only) |
+| lane-5 | Hetzner / autopase-ci | `lane-2` | RETIRING after the sprint (server becomes CI-only) |
 | lane-6 | Hostinger / srv1487642 | `lane-5` | shares the server with production |
 | lane-7 | Hostinger / srv1487642 | `lane-6` | shares the server with production |
 | lane-8 | Mac mini | `lane-a` | 16 GB shared, max 3 agents |
@@ -69,7 +72,7 @@ under it).
 | Server | Role |
 |---|---|
 | Hetzner / codex-dev | development lanes |
-| Hetzner / autopase-ci | development lanes + reserve CI runners |
+| Hetzner / autopase-ci | reserve CI runners (2 dev lanes retiring after the sprint) |
 | Hetzner / ci-runners-01 | PR checks only |
 | Hetzner / autopase-scraper | production scraper — no lanes, no CI |
 | Hostinger / srv1487642 | production services + 2 reserve lanes |
