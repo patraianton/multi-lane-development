@@ -60,9 +60,16 @@ artifact is unanswered.
    migration, env var, rebuild/redeploy) is its own CTO-owned ticket: its PRs never carry
    `Closes #`, and it is closed only by hand after the result is visible on production —
    content, not status 200.
-4. Set `links.ticket` on the card. The board refuses `ticketed → development` without it.
+4. **The cut is reviewed before it runs.** A panel of independent Opus reviewers reads
+   the whole ticket set against the spec and the real code: sizes within budget, one
+   protected area each, dependencies explicit and acyclic, acceptance provable, defaults
+   embedded — and specifically that no ticket will force the lane to split it, re-cut it,
+   or ask a human mid-work. Findings are fixed here, at `ticketed`; a lane never re-cuts
+   a ticket.
+5. Set `links.ticket` on the card. The board refuses `ticketed → development` without it.
 
-**Exit:** every unit has a ticket; the dependency order is written down.
+**Exit:** every unit has a ticket, the cut-review panel found nothing left to fix, and
+the dependency order is written down.
 
 ## 4. Development — `ticketed → development`
 
