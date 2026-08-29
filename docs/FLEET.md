@@ -16,12 +16,23 @@ Last verified against the live hosts: **2026-08-29**.
 
 ## Development lanes (10)
 
-| Lane | Host | Tooling | Caps |
-|---|---|---|---|
-| lane-3, lane-4, lane-5 | builder-1 | `hzlane` | 3 cores / 6 GB each |
-| lane-1, lane-2 | builder-2 | `hzlane` | 3 cores / 6 GB each |
-| lane-5, lane-6 | apps-1 | `hzlane` | shares host with production |
-| lane-a, lane-b, lane-c | mac | kitchen `~/kitchens/autopase.lv` | 16 GB total, max 3 agents |
+One global sequence — "lane 4" means exactly one place. The "on disk today"
+column shows the legacy folder name until the renumbering batch lands (queued
+for right after the current sprint; a running task's lane is never renamed
+under it).
+
+| Lane | Host | On disk today | Tooling | Caps |
+|---|---|---|---|---|
+| lane-1 | builder-1 | `lane-3` | `hzlane` | 3 cores / 6 GB |
+| lane-2 | builder-1 | `lane-4` | `hzlane` | 3 cores / 6 GB |
+| lane-3 | builder-1 | `lane-5` | `hzlane` | 3 cores / 6 GB |
+| lane-4 | builder-2 | `lane-1` | `hzlane` | 3 cores / 6 GB |
+| lane-5 | builder-2 | `lane-2` | `hzlane` | 3 cores / 6 GB |
+| lane-6 | apps-1 | `lane-5` | `hzlane` | shares host with production |
+| lane-7 | apps-1 | `lane-6` | `hzlane` | shares host with production |
+| lane-8 | mac | `lane-a` | kitchen `~/kitchens/autopase.lv` | 16 GB shared, max 3 agents |
+| lane-9 | mac | `lane-b` | kitchen | 16 GB shared, max 3 agents |
+| lane-10 | mac | `lane-c` | kitchen | 16 GB shared, max 3 agents |
 
 - `hzlane` hosts: status via `hzlane status` on the host. The Mac has no
   `hzlane`: a lane is a folder, busy = a `codex exec`/`claude` process working
@@ -31,36 +42,40 @@ Last verified against the live hosts: **2026-08-29**.
 - **apps-1 lanes are reserve capacity.** That host runs production (scraper,
   copilot gateway, sister-project services) — use its lanes last, never for
   anything CPU-hungry alongside a scraper run.
+- When a lane is freed, its copy returns to `main` and the finished branch is
+  deleted if already pushed (rule announced in the sprint umbrella 2026-08-29;
+  automation lands with the renumbering batch).
 
 ## CI slots (PR checks, 7)
 
-| Runner | Host | Labels | Role |
-|---|---|---|---|
-| hzci-1..3 | cipr-1 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` (PR #1543) |
-| radar-runner-1..4 | builder-2 | `vps1`, `hetzner` | reserve pool |
+| Slot | Runner | Host | Labels | Role |
+|---|---|---|---|---|
+| cipr-1 | hzci-1 | cipr-1 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` (PR #1543) |
+| cipr-2 | hzci-2 | cipr-1 | `ci-fast`, `vps1` | primary |
+| cipr-3 | hzci-3 | cipr-1 | `ci-fast`, `vps1` | primary |
+| reserve-1 | radar-runner-1 | builder-2 | `vps1`, `hetzner` | reserve pool |
+| reserve-2 | radar-runner-2 | builder-2 | `vps1`, `hetzner` | reserve pool |
+| reserve-3 | radar-runner-3 | builder-2 | `vps1`, `hetzner` | reserve pool |
+| reserve-4 | radar-runner-4 | builder-2 | `vps1`, `hetzner` | reserve pool |
 
+- The "Runner" column is the registered GitHub runner name today; runners get
+  re-registered under their slot names (`cipr-N`, `reserve-N`) in the
+  renumbering batch.
 - **No CI on apps-1, ever.** Its runners were removed 2026-08-27 after they ran
   gates 15–18× slower (production owns the cores) and failed random PRs; the
   dead runner registrations were deleted 2026-08-29.
 - Old PR branches may still pin `runs-on: [self-hosted, vps1]` — that label
   stays on every live runner.
 
-## Naming (owner's scheme, 2026-08-29)
+## Hosts
 
-Builders are called builder, PR-check machines cipr, numbered; lanes get one
-global sequence so "lane 4" means exactly one place. The table above already
-uses the target host names; console renames are cosmetic and done by the owner
-in the provider panels. Lane renumbering happens after the current sprint
-lands:
+| Host | Provider console name today | Role |
+|---|---|---|
+| builder-1 | codex-dev | development lanes |
+| builder-2 | autopase-ci | development lanes + reserve CI |
+| cipr-1 | ci-runners-01 | PR checks only |
+| apps-1 | (Hostinger VPS) | production services + 2 reserve lanes |
+| mac | Mac mini | development lanes (Codex bridge) |
 
-| Host | Lanes after renumbering |
-|---|---|
-| builder-1 | lane-1, lane-2, lane-3 |
-| builder-2 | lane-4, lane-5 |
-| apps-1 | lane-6, lane-7 |
-| mac | lane-8, lane-9, lane-10 |
-| cipr-1 | — (CI only) |
-
-Also queued for the same batch (announced in the sprint umbrella, 2026-08-29):
-when a lane is freed, its copy returns to `main` and the finished branch is
-deleted if already pushed — a leftover branch on a free lane reads as work.
+Console renames are cosmetic (everything connects by address, kept in the
+private annex) and are done by the owner in the provider panels.
