@@ -51,19 +51,18 @@ test('acceptance and accepted from an older state file load as done; ci_pr moves
     assert.equal(list.body.summary.failures, 3);
     assert.ok(list.body.cards.find(c => c.id === 'c-old-finished').clock.endsWith('(stopped)'));
     const toon = await fetch(`${board.base}/api/pipeline`).then(r => r.text());
-    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, merged, done;'), toon);
+    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, merged, done;'), toon);
     assert.ok(!/acceptance|accepted/.test(toon), toon);
     assert.ok(!/\bqa —/.test(toon), 'QA is not a stage any more (decision 19)');
 
-    // ci_pr → review → merged → done are plain moves, ci_pr → done is not; accept is not
-    // an action any more.
+    // ci_pr → merged → done are plain moves, ci_pr → done is not; accept is not
+    // an action any more. Review is not a column (decision 20): the reviewer
+    // reads while CI runs, both inside CI/PR.
     const skip = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'done' });
     assert.equal(skip.status, 400);
-    assert.match(JSON.stringify(skip.body), /can only move to review/);
+    assert.match(JSON.stringify(skip.body), /can only move to merged/);
     const rv = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'review' });
-    assert.equal(rv.body.card.stage, 'review');
-    const early = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'done' });
-    assert.equal(early.status, 400, 'review goes to merged first');
+    assert.equal(rv.status, 400, 'review is not a stage any more');
     const noQa = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'qa' });
     assert.equal(noQa.status, 400, 'there is no QA stage');
     const mg = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'merged' });
@@ -90,14 +89,14 @@ test('acceptance and accepted from an older state file load as done; ci_pr moves
     assert.equal(nogo.status, 200);
     assert.equal(nogo.body.card.stage, 'development');
     assert.equal(nogo.body.card.counters.reviewFails, 1);
-    // A review can also say no in review itself: back to development, same
-    // counter. Merged is past the reviews: no failure is reported from there.
-    for (const to of ['local_check', 'ci_pr', 'review']) await postJson(board.base, '/pipeline/card/move', { id, to });
+    // A second NO-GO on the next round: back to development, same counter.
+    // Merged is past the reviews: no failure is reported from there.
+    for (const to of ['local_check', 'ci_pr']) await postJson(board.base, '/pipeline/card/move', { id, to });
     const rvNogo = await postJson(board.base, '/pipeline/card/fail', { id, kind: 'review' });
     assert.equal(rvNogo.status, 200);
     assert.equal(rvNogo.body.card.stage, 'development');
     assert.equal(rvNogo.body.card.counters.reviewFails, 2);
-    for (const to of ['local_check', 'ci_pr', 'review', 'merged']) await postJson(board.base, '/pipeline/card/move', { id, to });
+    for (const to of ['local_check', 'ci_pr', 'merged']) await postJson(board.base, '/pipeline/card/move', { id, to });
     const past = await postJson(board.base, '/pipeline/card/fail', { id, kind: 'review' });
     assert.equal(past.status, 400, 'merged cannot fail');
   } finally {

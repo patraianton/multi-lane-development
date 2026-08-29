@@ -348,10 +348,12 @@ repo), never here.
 
 ## Merge rule
 
-**Merge = green `pr-ci` on the exact head SHA + a review trace.** The order is
-fixed: local check → push → green `pr-ci` → review → merge. Nobody reviews a
-red PR — a review fleet on a PR that has not gone green is the most expensive
-way to find a type error CI reports in minutes.
+**Merge = green `pr-ci` on the exact head SHA + a review trace.** The review
+runs alongside CI on the pushed head, from the first minute (decision 20): the
+reviewer reads while `pr-ci` runs, and the window that starts a reader turns the
+card's review badge on. The merge still needs both ingredients on the same
+head — a green `pr-ci` and a GO; a NO-GO while CI is still running is a fix
+round like any other.
 
 - The first verdict must be countable: the first review or acceptance comment
   starts with `R1 — GO` or `R1 — NO-GO` (later rounds `R2 — …`). A verdict

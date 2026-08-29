@@ -80,7 +80,7 @@ test('the line and the alarm name the lanes, the wait, and the units', () => {
 test('the board remembers: a unit whose card left ticketed or carries a PR is never startable again (merge lag)', () => {
   const withCards = [
     ...cards,
-    { id: 'u3b', title: 'U3b #1583', stage: 'review', parent: 'cs', ticket: 1583, links: { pr: 'https://github.com/acme/web/pull/1605' } },
+    { id: 'u3b', title: 'U3b #1583', stage: 'ci_pr', parent: 'cs', ticket: 1583, links: { pr: 'https://github.com/acme/web/pull/1605' } },
     { id: 'q1599', title: 'QA #1599', stage: 'qa', parent: 'cs', ticket: 1599, links: { pr: '' }, lane: '' },
   ];
   // Facts lag: U3b looks queued (open PR gone, merge not yet seen) — the card says it has started.

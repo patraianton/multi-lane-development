@@ -441,7 +441,6 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
-  .pcol.review > h2 { color: var(--violet); border-color: #4d3a7a; }
   .pcol.merged > h2 { color: var(--working); border-color: #1f6a52; }
 
   .pcard {
@@ -646,6 +645,11 @@
   }
   .pcard .unit-parent .chip-key { color: var(--sprint, var(--ink-dim)); }
   .pcard .row.unit-state { padding: 0 8px 6px 9px; font-family: var(--mono); font-size: 10px; }
+  /* The live review badge: a reader is on the PR head right now. */
+  .pcard .row.review-live { padding: 0 8px 6px 9px; font: 700 10px var(--mono); color: var(--violet); letter-spacing: .04em; }
+  .pcard .row.review-live i.pulse { display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 50%; background: var(--violet); animation: review-pulse 1.1s ease-in-out infinite; }
+  .pcard .row.review-live .clk { color: var(--violet); }
+  @keyframes review-pulse { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
   .pcard .spec {
     min-width: 0; margin: 0; color: #bdcad6; font-size: 11.5px; line-height: 1.48;
     overflow-wrap: anywhere; white-space: pre-wrap;
@@ -957,24 +961,23 @@ const NEXT_STAGE = {
   ticketed: 'development',
   development: 'local_check',
   local_check: 'ci_pr',
-  ci_pr: 'review',
-  review: 'merged',
+  ci_pr: 'merged',
   merged: 'done',
 };
 // The stages a failure can be reported from — the ones where work is actually
 // run. The same list as in pipeline.mjs, which is what refuses the rest.
-const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'review'];
+const CAN_FAIL = ['development', 'local_check', 'ci_pr'];
 // Done is the end of the road: it does not add to the card's delivery clock.
 const OFF_THE_CLOCK = new Set(['done']);
 const STAGE_TITLE = {
   spec: 'Spec', grilled: 'Grill', ticketed: 'Ticketed', development: 'Development',
-  local_check: 'Local check', ci_pr: 'CI/PR', review: 'Review', merged: 'Merged', done: 'Done', stuck: 'Stuck',
+  local_check: 'Local check', ci_pr: 'CI/PR + review', merged: 'Merged', done: 'Done', stuck: 'Stuck',
 };
 // The columns. The two paper stages before the tickets are one column, Grill
 // (owner, 29.08: "remove the Spec column"): a card is born there with its spec
 // and leaves it ticketed; the grill's GO is the move between the two stages
 // the server still keeps, and the card's chip says which one it is on.
-const ROAD = ['grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'review', 'merged', 'done'];
+const ROAD = ['grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'merged', 'done'];
 const COLUMN_STAGES = { grilled: ['spec', 'grilled'] };
 const columnOf = stage => (stage === 'spec' ? 'grilled' : stage);
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
@@ -1042,6 +1045,24 @@ function stageDwell(cards, keys, now) {
   }
   if (!spans.length) return null;
   return { n: spans.length, open, avg: spans.reduce((a, b) => a + b, 0) / spans.length, max: Math.max(...spans) };
+}
+
+// How long a review round takes: every round filed on a card (`reviews`) and
+// the ones running now, counted up to now. Shown on the CI/PR column.
+function reviewDwell(cards, now) {
+  const spans = [];
+  for (const c of cards) {
+    for (const r of (Array.isArray(c.reviews) ? c.reviews : [])) {
+      const a = Date.parse(r.since), b = Date.parse(r.until);
+      if (Number.isFinite(a) && Number.isFinite(b) && b > a) spans.push(b - a);
+    }
+    if (c.review && c.review.running && c.review.since) {
+      const a = Date.parse(c.review.since);
+      if (Number.isFinite(a) && now > a) spans.push(now - a);
+    }
+  }
+  if (!spans.length) return null;
+  return { n: spans.length, avg: spans.reduce((a, b) => a + b, 0) / spans.length };
 }
 
 // A clock is drawn as "what has already been counted" plus "since when it is
@@ -1656,6 +1677,16 @@ function pcard(c) {
         + (uf.open === false && !uf.merged ? ' · ticket closed' : '') + '</div>');
     }
   }
+  // The live review badge (decision 20): a reader is on the PR head right now —
+  // the stream window said so when it started one; the verdict clears it.
+  if (c.review && c.review.running) {
+    const from = Date.parse(c.review.since || '') || Date.now();
+    bits.push('<div class="row review-live" title="a reviewer is reading the PR head — set by the stream window when it starts a reader, cleared by the verdict on the PR">'
+      + '<i class="pulse" aria-hidden="true"></i>review running'
+      + (c.review.round ? ' · R' + esc(String(c.review.round)) : '')
+      + (c.review.by ? ' · ' + esc(c.review.by) : '')
+      + ' · ' + clockSpan('clk', 0, from) + '</div>');
+  }
   const attached = ATTACH_FIELDS
     .filter(k => !(k === 'lane' && sprint && sprint.lanes.length))
     .filter(k => !(c.parent && (k === 'lane' || k === 'pr')))
@@ -1886,13 +1917,16 @@ function renderPipeline(d) {
   $('pboard').style.setProperty('--pcols', String(ROAD.length));
   const dwellNow = Date.now();
   const dwellCards = cards.filter(c => !bandIds.has(c.id));
+  const reviewAvg = reviewDwell(dwellCards, dwellNow);
   $('pboard').innerHTML = ROAD.map(key => {
     const list = cards.filter(c => columnOf(c.stage) === key && !bandIds.has(c.id));
     const dwell = key === 'done' ? null : stageDwell(dwellCards, COLUMN_STAGES[key] ?? [key], dwellNow);
+    const rv = key === 'ci_pr' ? reviewAvg : null;
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
       + (dwell ? ' <em class="col-avg" title="' + esc('average time a card spends here: ' + dwell.n + ' visit'
-        + (dwell.n === 1 ? '' : 's') + ', longest ' + fmtDur(dwell.max) + (dwell.open ? ', ' + dwell.open + ' still here' : ''))
-        + '">avg ' + esc(fmtDur(dwell.avg)) + '</em>' : '')
+        + (dwell.n === 1 ? '' : 's') + ', longest ' + fmtDur(dwell.max) + (dwell.open ? ', ' + dwell.open + ' still here' : '')
+        + (rv ? '; a review round: avg ' + fmtDur(rv.avg) + ' over ' + rv.n + ' round' + (rv.n === 1 ? '' : 's') : ''))
+        + '">avg ' + esc(fmtDur(dwell.avg)) + (rv ? ' · review ' + esc(fmtDur(rv.avg)) : '') + '</em>' : '')
       + ' <span>' + list.length + '</span></h2>'
       + (list.length ? list.map(pcard).join('') : '<div class="empty">empty</div>')
       + '</div>';
