@@ -66,10 +66,14 @@ artifact is unanswered.
    embedded — and specifically that no ticket will force the lane to split it, re-cut it,
    or ask a human mid-work. Findings are fixed here, at `ticketed`; a lane never re-cuts
    a ticket.
-5. Set `links.ticket` on the card. The board refuses `ticketed → development` without it.
+5. **Ask the owner for the subscription — once per sprint.** Before any card leaves
+   `ticketed`, the owner assigns the subscription the sprint's development runs on
+   (the board's subscription mechanism). One answer covers the whole sprint — the
+   question is never repeated per ticket.
+6. Set `links.ticket` on the card. The board refuses `ticketed → development` without it.
 
-**Exit:** every unit has a ticket, the cut-review panel found nothing left to fix, and
-the dependency order is written down.
+**Exit:** every unit has a ticket, the cut-review panel found nothing left to fix, the
+subscription is assigned, and the dependency order is written down.
 
 ## 4. Development — `ticketed → development`
 
