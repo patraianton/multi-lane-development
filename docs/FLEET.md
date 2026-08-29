@@ -21,7 +21,7 @@ column shows the legacy folder name until the renumbering batch lands (queued
 for right after the current sprint; a running task's lane is never renamed
 under it).
 
-| Lane | Host | On disk today | Tooling | Caps |
+| Lane | Server | Folder name today (legacy) | Managed by | Limits |
 |---|---|---|---|---|
 | lane-1 | builder-1 | `lane-3` | `hzlane` | 3 cores / 6 GB |
 | lane-2 | builder-1 | `lane-4` | `hzlane` | 3 cores / 6 GB |
@@ -48,7 +48,7 @@ under it).
 
 ## CI slots (PR checks, 7)
 
-| Slot | Runner | Host | Labels | Role |
+| Slot | GitHub runner name today | Server | Labels | Role |
 |---|---|---|---|---|
 | cipr-1 | hzci-1 | cipr-1 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` (PR #1543) |
 | cipr-2 | hzci-2 | cipr-1 | `ci-fast`, `vps1` | primary |
@@ -67,9 +67,9 @@ under it).
 - Old PR branches may still pin `runs-on: [self-hosted, vps1]` — that label
   stays on every live runner.
 
-## Hosts
+## Servers
 
-| Host | Provider console name today | Role |
+| Server | Name in the provider panel today | Role |
 |---|---|---|
 | builder-1 | codex-dev | development lanes |
 | builder-2 | autopase-ci | development lanes + reserve CI |
