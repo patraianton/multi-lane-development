@@ -1,0 +1,29 @@
+{
+  "_": "Copy to state/fleet-launch.json (not in git). Lanes and launchers per docs/FLEET.md; host keys are the board's own host names from `hosts` in state/autopase-board.json, where the ssh target and key live — `ssh`/`key` here only override them. {n} = the lane number, {prompt} = the prompt with {taskFile} = <kitchen>/TASK-<ticket>.md. A `~/` kitchen becomes $HOME/ in the prompt and a home-relative path for scp.",
+  "prompt": "Прочитай {taskFile} и выполни целиком",
+  "hosts": {
+    "lanes-01": {
+      "kitchen": "/root/kitchens/autopase.lv",
+      "launch": "hzlane {n} \"{prompt}\""
+    },
+    "hostinger": {
+      "kitchen": "/root/kitchens/autopase.lv",
+      "launch": "hzlane {n} \"{prompt}\""
+    },
+    "mac": {
+      "kitchen": "~/kitchens/autopase.lv",
+      "shell": "export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH;",
+      "launch": "maclane {n} \"{prompt}\""
+    }
+  },
+  "lanes": {
+    "lane-1": { "host": "lanes-01", "n": 1 },
+    "lane-2": { "host": "lanes-01", "n": 2 },
+    "lane-3": { "host": "lanes-01", "n": 3, "noBuilds": true },
+    "lane-4": { "host": "hostinger", "n": 4 },
+    "lane-5": { "host": "hostinger", "n": 5 },
+    "lane-6": { "host": "mac", "n": 6 },
+    "lane-7": { "host": "mac", "n": 7 },
+    "lane-8": { "host": "mac", "n": 8 }
+  }
+}
