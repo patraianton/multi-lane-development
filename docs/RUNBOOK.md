@@ -33,7 +33,10 @@ The road is one-way:
    partner = business data/copy).
 3. Produce BOTH grill outcomes: the outcome markdown next to the spec, and the **Lavish
    review artifact for the founders** — every question a multiple choice whose FIRST
-   option is the default decision. Link it on the card (`links.artifact`).
+   option is the default decision. Questions for the business owner are business-language
+   only — what the buyer sees, what the business promises, who does what. A technical
+   point never reaches the artifact: the CTO defaults it, and the post-ticketing cut
+   review (stage 3) re-checks it. Link the artifact on the card (`links.artifact`).
 4. **Ping the reviewers — always, immediately.** The moment `links.artifact` lands on the
    card, post the artifact-ready ping into the configured Telegram channel: the artifact
    URL plus the card link, tagging the configured reviewers ([TELEGRAM.md](./TELEGRAM.md)).
