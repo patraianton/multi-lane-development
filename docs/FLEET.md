@@ -64,7 +64,10 @@ renamed under it.
 | hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | `pr-ci` targets `ci-fast` |
 | hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
 | hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| radar-runner-1…4 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; go away with the server's cancellation |
+| radar-runner-1 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; goes away with the server's cancellation |
+| radar-runner-2 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; goes away with the server's cancellation |
+| radar-runner-3 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; goes away with the server's cancellation |
+| radar-runner-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | on the slow box; goes away with the server's cancellation |
 
 - CI never lands on a production machine. The Hostinger runners were removed
   2026-08-27 after gates next to production ran 15–18× slower and failed
