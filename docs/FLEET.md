@@ -2,11 +2,12 @@
 
 The single reference for "which lanes and CI slots exist and where". Answering
 "what lanes do we have?" starts HERE, not with probing servers. Live busy/free
-state is on the board (`/#pipeline` sprint band) or per host via `hzlane status`;
-this file is the registry: what exists, where, and under what name.
+state is on the board (`/#pipeline` sprint band) or per server via
+`hzlane status`; this file is the registry: what exists and where.
 
-This repo is public: servers appear by NAME only. Addresses, ssh targets, and
-keys live in the private ops annex, keyed by the same server names.
+Servers are listed as **provider / server name** exactly as named in the
+provider's panel. Addresses, ssh targets, and keys live in the private ops
+annex, keyed by the same names.
 
 **Keep it true:** any change to lanes, runners, or servers lands here in the
 same commit or the same day. A registry that lags becomes worse than no
@@ -17,50 +18,49 @@ Last verified against the live servers: **2026-08-29**.
 ## Development lanes (10)
 
 One global sequence — "lane 4" means exactly one place. Folders on the servers
-still carry the old names; they are renamed to match right after the current
-sprint lands (a running task's lane is never renamed under it).
+still carry the old per-server names; they are renamed to the global numbers
+right after the current sprint lands (a running task's lane is never renamed
+under it).
 
 | Lane | Server | Folder on the server today | Limits |
 |---|---|---|---|
-| lane-1 | builder-1 | `lane-3` | 3 cores / 6 GB |
-| lane-2 | builder-1 | `lane-4` | 3 cores / 6 GB |
-| lane-3 | builder-1 | `lane-5` | 3 cores / 6 GB |
-| lane-4 | builder-2 | `lane-1` | 3 cores / 6 GB |
-| lane-5 | builder-2 | `lane-2` | 3 cores / 6 GB |
-| lane-6 | apps-1 | `lane-5` | shares the server with production |
-| lane-7 | apps-1 | `lane-6` | shares the server with production |
-| lane-8 | mac | `lane-a` | 16 GB shared, max 3 agents |
-| lane-9 | mac | `lane-b` | 16 GB shared, max 3 agents |
-| lane-10 | mac | `lane-c` | 16 GB shared, max 3 agents |
+| lane-1 | Hetzner / codex-dev | `lane-3` | 3 cores / 6 GB |
+| lane-2 | Hetzner / codex-dev | `lane-4` | 3 cores / 6 GB |
+| lane-3 | Hetzner / codex-dev | `lane-5` | 3 cores / 6 GB |
+| lane-4 | Hetzner / autopase-ci | `lane-1` | 3 cores / 6 GB |
+| lane-5 | Hetzner / autopase-ci | `lane-2` | 3 cores / 6 GB |
+| lane-6 | Hostinger / srv1487642 | `lane-5` | shares the server with production |
+| lane-7 | Hostinger / srv1487642 | `lane-6` | shares the server with production |
+| lane-8 | Mac mini | `lane-a` | 16 GB shared, max 3 agents |
+| lane-9 | Mac mini | `lane-b` | 16 GB shared, max 3 agents |
+| lane-10 | Mac mini | `lane-c` | 16 GB shared, max 3 agents |
 
 - On the Linux servers lanes are driven by the `hzlane` tool (`hzlane status`
   shows busy/free); on the Mac a lane is a plain folder, busy = an agent
   process working in it (the board probes exactly this way).
 - Reservation: a `<lane>.reserved` file next to the lane folder; only the CTO
   writes it.
-- **apps-1 lanes are reserve capacity.** That server runs production services —
-  use its lanes last, never for anything CPU-hungry.
+- **Hostinger lanes are reserve capacity.** That server runs production
+  services — use its lanes last, never for anything CPU-hungry.
 - When a lane is freed, its copy returns to `main` and the finished branch is
   deleted if already pushed (rule announced 2026-08-29; automation lands with
   the renaming batch).
 
 ## CI slots (PR checks, 7)
 
-| Slot | GitHub runner name today | Server | Labels | Role |
-|---|---|---|---|---|
-| cipr-1 | hzci-1 | cipr-1 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` |
-| cipr-2 | hzci-2 | cipr-1 | `ci-fast`, `vps1` | primary |
-| cipr-3 | hzci-3 | cipr-1 | `ci-fast`, `vps1` | primary |
-| reserve-1 | radar-runner-1 | builder-2 | `vps1`, `hetzner` | reserve pool |
-| reserve-2 | radar-runner-2 | builder-2 | `vps1`, `hetzner` | reserve pool |
-| reserve-3 | radar-runner-3 | builder-2 | `vps1`, `hetzner` | reserve pool |
-| reserve-4 | radar-runner-4 | builder-2 | `vps1`, `hetzner` | reserve pool |
+| Runner | Server | Labels | Role |
+|---|---|---|---|
+| hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` |
+| hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary |
+| hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary |
+| radar-runner-1 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
+| radar-runner-2 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
+| radar-runner-3 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
+| radar-runner-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
 
-- Runners get re-registered under their slot names (`cipr-N`, `reserve-N`) in
-  the renaming batch.
-- **No CI on apps-1, ever.** Its runners were removed 2026-08-27 after they ran
-  gates 15–18× slower (production owns the cores) and failed random PRs; the
-  dead runner registrations were deleted 2026-08-29.
+- **No CI on the Hostinger server, ever.** Its runners were removed 2026-08-27
+  after they ran gates 15–18× slower (production owns the cores) and failed
+  random PRs; the dead runner registrations were deleted 2026-08-29.
 - Old PR branches may still pin `runs-on: [self-hosted, vps1]` — that label
   stays on every live runner.
 
@@ -68,11 +68,9 @@ sprint lands (a running task's lane is never renamed under it).
 
 | Server | Role |
 |---|---|
-| builder-1 | development lanes |
-| builder-2 | development lanes + reserve CI |
-| cipr-1 | PR checks only |
-| apps-1 | production services + 2 reserve lanes |
-| mac | development lanes (Codex bridge) |
-
-The map "server name → provider console name and address" lives in the private
-ops annex; console renames are done by the owner in the provider panels.
+| Hetzner / codex-dev | development lanes |
+| Hetzner / autopase-ci | development lanes + reserve CI runners |
+| Hetzner / ci-runners-01 | PR checks only |
+| Hetzner / autopase-scraper | production scraper — no lanes, no CI |
+| Hostinger / srv1487642 | production services + 2 reserve lanes |
+| Mac mini | development lanes (Codex bridge) |
