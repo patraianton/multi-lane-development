@@ -9,6 +9,13 @@ Why: a mandate improvised per sprint carries whatever the CTO had in mind that m
 the stream inherits it as law. One sprint got "ship by morning" and ran clean; the next got
 "ultra mode" and spent its first hour inventing its own pre-dispatch checks.
 
+## Launch
+
+The stream window is started as a plain session at effort **xhigh — never in ultracode**
+(the multi-agent workflow mode). Ultracode tells an agent to fan out a panel on every
+substantive task; a stream given it invents its own pre-dispatch panels and holds the lanes.
+The stream's only subagents are the reviewers the unit round prescribes (§6).
+
 ## Parameters (the only per-sprint content)
 
 ```
