@@ -81,7 +81,9 @@ subscription is assigned, and the dependency order is written down.
 ## 4. Development — `ticketed → development`
 
 **Who:** development-launch + a lane from the fleet. Contracts: [DEVLAUNCH.md](./DEVLAUNCH.md),
-[FLEET.md](./FLEET.md).
+[FLEET.md](./FLEET.md). The stream window runs on [MANDATE.md](./MANDATE.md) **verbatim** —
+one text for every stream, only the parameter block is filled per sprint; the CTO never
+writes a mandate of their own.
 
 1. Dispatch the unit's task file to a free lane (lane registry and busy-check per FLEET.md).
 2. The lane codes on the pinned branch from the pinned base SHA. One unit = one lane for
