@@ -31,7 +31,7 @@ import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
   sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits,
 } from './pipeline.mjs';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps } from './sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
@@ -102,6 +102,11 @@ const DEFAULTS = {
   //     "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/myproject" }
   //   }
   hosts: {},
+  // The fleet registry (docs/FLEET.md): what a probed lane folder is called
+  // across the fleet and which server it is on. Keyed "host/folder"; a lane
+  // not listed is shown by its folder name and does not count as capacity.
+  //   "lanes": { "codex-dev/lane-3": { "name": "lane-1", "server": "Hetzner / codex-dev" } }
+  lanes: {},
   // Shared secret the probe sends as Authorization: Bearer. Empty — every
   // /probe/* path answers 403 until one is set.
   probeToken: '',
@@ -240,6 +245,7 @@ function applyConfig(raw) {
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
   config.probeToken = String(config.probeToken ?? '').trim();
   config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
+  config.lanes = parseLaneRegistry(src.lanes);
   // Missing, broken or empty founders list → null, and the board stays open.
   config.auth = parseAuth(src);
   reportAuthWarnings(config.auth);
@@ -256,6 +262,18 @@ function applyConfig(raw) {
     } : null,
   });
   return config;
+}
+
+// "host/folder" → { name, server }; an entry without a name is dropped.
+function parseLaneRegistry(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, v] of Object.entries(raw)) {
+    const name = String(v?.name ?? '').trim();
+    if (!name) continue;
+    out[String(key).trim()] = { name, server: String(v?.server ?? '').trim() || null };
+  }
+  return out;
 }
 
 function parseSubscriptions(raw) {
@@ -645,7 +663,8 @@ const lanesSource = makeSource('lanes', 45000, async () => {
   const entries = Object.entries(config.hosts ?? {});
   const res = await Promise.all(entries.map(([n, h]) => probeHost(n, h).catch(e =>
     ({ host: n, target: h.target, ok: false, lanes: [], extras: [], error: String(e.message || e) }))));
-  return res;
+  // Fleet names on top of folder names, from the registry in the settings.
+  return res.map(h => ({ ...h, lanes: (h.lanes ?? []).map(l => fleetLane(config.lanes, h.host, l)) }));
 });
 
 // ------------------------------------------------------------- GitHub

@@ -617,6 +617,7 @@ Config fields on `state/autopase-board.json`:
 | `probeToken` | empty | shared secret; must match the probe's `token` |
 | `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when `auth.founders` is set |
 | `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
+| `lanes` | `{}` | the fleet registry (docs/FLEET.md): `"host/folder": { "name", "server" }` — a probed lane folder is shown under its fleet name with its server; lanes not listed are shown by folder name, dimmed, and do not count as capacity (`laneCount`, `free`) |
 | `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
 
 A hook that has been waiting more than ten minutes shows `hooks queued, oldest Nm`
