@@ -28,6 +28,26 @@ export function startable(unit) {
   return true;
 }
 
+// The unit's own card on the board, if spawned.
+export function unitCardOf(cards, sprintCardId, unit) {
+  return (cards ?? []).find(c => c?.parent === sprintCardId && Number(c.ticket) === Number(unit?.ticket)) ?? null;
+}
+
+// Startable by the facts AND by the board: right after a merge the live
+// sources can lag one sweep — the open PR is gone, the merged PR and the
+// closed ticket not yet seen — and the unit looks queued for a minute. The
+// card remembers: a work unit whose card has left `ticketed`, or carries a PR,
+// has started and is never dispatched again; a QA ticket's card sits in `qa`
+// from birth, so for it only a PR or a lane on the card counts.
+export function startableOnBoard(unit, sprintCardId, cards) {
+  if (!startable(unit)) return false;
+  const uc = unitCardOf(cards, sprintCardId, unit);
+  if (!uc) return true;
+  if (uc.links?.pr) return false;
+  if (unit.qa) return !uc.lane;
+  return uc.stage === 'ticketed';
+}
+
 // cards: the pipeline's cards; sprints: Map(card id -> sprint facts).
 // One finding per active sprint card that has at least one free assigned lane
 // and at least one startable unit.
@@ -40,7 +60,7 @@ export function idleLaneFindings(cards, sprints, { at = null } = {}) {
     if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not idle
     const free = Array.isArray(s.free) ? s.free : [];
     if (!free.length) continue;
-    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(startable)
+    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(u => startableOnBoard(u, card.id, cards))
       .map(u => ({ unit: u.unit || '', ticket: u.ticket, title: u.title || '' }));
     if (!waiting.length) continue;
     out.push({

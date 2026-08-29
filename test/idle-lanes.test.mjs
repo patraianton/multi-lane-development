@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { idleLaneFindings, idleLedger, startable, idleLine, idleAlarmText } from '../bin/idle-lanes.mjs';
+import { idleLaneFindings, idleLedger, startable, startableOnBoard, idleLine, idleAlarmText } from '../bin/idle-lanes.mjs';
 
 const cards = [
   { id: 'cs', title: 'FINANCE-CARDS', stage: 'development', links: { ticket: 'https://github.com/acme/web/issues/1569' } },
@@ -75,4 +75,18 @@ test('the line and the alarm name the lanes, the wait, and the units', () => {
   assert.equal(idleLine(f), 'mac/lane-6 free for 12m while U3b #1583 waits with nothing in the way');
   assert.match(idleAlarmText(f), /^ACHTUNG \(board\): sprint "FINANCE-CARDS" — lanes mac\/lane-6 have been free for 12m while U3b #1583 is queued/);
   assert.match(idleAlarmText(f), /dispatch now/);
+});
+
+test('the board remembers: a unit whose card left ticketed or carries a PR is never startable again (merge lag)', () => {
+  const withCards = [
+    ...cards,
+    { id: 'u3b', title: 'U3b #1583', stage: 'review', parent: 'cs', ticket: 1583, links: { pr: 'https://github.com/acme/web/pull/1605' } },
+    { id: 'q1599', title: 'QA #1599', stage: 'qa', parent: 'cs', ticket: 1599, links: { pr: '' }, lane: '' },
+  ];
+  // Facts lag: U3b looks queued (open PR gone, merge not yet seen) — the card says it has started.
+  const f = idleLaneFindings(withCards, new Map([['cs', sprint()]]), { at: 'T' });
+  assert.deepEqual(f[0].startable.map(u => u.ticket), [1599], 'U3b is out, the QA ticket with no PR and no lane stays in');
+  assert.equal(startableOnBoard({ state: 'queued', deps: [], ticket: 1583 }, 'cs', withCards), false);
+  assert.equal(startableOnBoard({ state: 'queued', deps: [], ticket: 9999 }, 'cs', withCards), true, 'no card yet: facts decide');
+  assert.equal(startableOnBoard({ qa: true, open: true, deps: [], ticket: 1599 }, 'cs', [{ id: 'q', parent: 'cs', ticket: 1599, stage: 'qa', links: {}, lane: 'mac/lane-6' }]), false, 'a QA card with a lane has started');
 });
