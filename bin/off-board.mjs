@@ -77,6 +77,20 @@ export function offBoardFindings({ cards = [], prs = [], issues = [], lanes = []
     });
   }
 
+  // A ticket in work that IS on the board but pins no branch: the board binds
+  // a lane and a PR to a card only through the ticket's pinned branch, so the
+  // card never moves while the code is being written (TICKETING.md §2.3).
+  for (const i of issues ?? []) {
+    if (!isWorkTicket(i) || !tickets.has(Number(i.number))) continue;
+    if (normBranch(i.branch)) continue;
+    findings.push({
+      kind: 'ticket', key: `issue-branch:${i.number}`, ref: `#${i.number}`, title: String(i.title ?? ''), url: i.url ?? '',
+      detail: i.qa ? 'label qa · no pinned branch' : 'no pinned branch',
+      reason: 'a ticket in work with no pinned branch — the board cannot bind its lane or PR, so its card never leaves ticketed while the code is written',
+      fix: 'add a "**Branch:** `feat/…`" line to the ticket body (TICKETING.md §2.3) — the exact branch the lane builds and the PR carries',
+    });
+  }
+
   for (const l of lanes ?? []) {
     if (!l?.busy) continue;
     const branch = normBranch(l.branch);
