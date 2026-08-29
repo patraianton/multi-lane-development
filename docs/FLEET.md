@@ -18,20 +18,27 @@ Last verified against the live servers: **2026-08-29**.
 ## Development lanes
 
 One global sequence — "lane 4" means exactly one place. One server = one role:
-a server either builds or runs PR checks, never both. The two lanes on
-Hetzner / autopase-ci violate this (leftover from before the dedicated CI
-server existed) and are RETIRING: right after the current sprint lands they
-are removed and that server becomes CI-only. Final layout — 8 lanes: codex-dev
-1–3, Hostinger 4–5, Mac 6–8; folders are renamed to the global numbers in the
-same batch (a running task's lane is never renamed under it).
+a server either builds or runs PR checks, never both (owner's standing rule).
+Today's layout below is transitional; right after the current sprint lands
+(2026-08-29 decision, cores measured: autopase-ci 16 / ci-runners-01 8 /
+Hostinger 8 busy with production / codex-dev 4):
+
+- Hetzner / autopase-ci (16 cores, the strongest box) becomes DEVELOPMENT
+  ONLY: its reserve CI runners are removed, lanes grow to 4.
+- Hetzner / codex-dev (4 cores) shrinks to 1 lane — its 3 lanes today promise
+  9 cores the box does not have.
+- Target: lane-1..4 on autopase-ci, lane-5 on codex-dev, lane-6..7 on
+  Hostinger (reserve), lane-8..10 on the Mac. Folders are renamed to the
+  global numbers in the same batch (a running task's lane is never renamed
+  under it).
 
 | Lane | Server | Folder on the server today | Limits |
 |---|---|---|---|
 | lane-1 | Hetzner / codex-dev | `lane-3` | 3 cores / 6 GB |
 | lane-2 | Hetzner / codex-dev | `lane-4` | 3 cores / 6 GB |
 | lane-3 | Hetzner / codex-dev | `lane-5` | 3 cores / 6 GB |
-| lane-4 | Hetzner / autopase-ci | `lane-1` | RETIRING after the sprint (server becomes CI-only) |
-| lane-5 | Hetzner / autopase-ci | `lane-2` | RETIRING after the sprint (server becomes CI-only) |
+| lane-4 | Hetzner / autopase-ci | `lane-1` | 3 cores / 6 GB |
+| lane-5 | Hetzner / autopase-ci | `lane-2` | 3 cores / 6 GB |
 | lane-6 | Hostinger / srv1487642 | `lane-5` | shares the server with production |
 | lane-7 | Hostinger / srv1487642 | `lane-6` | shares the server with production |
 | lane-8 | Mac mini | `lane-a` | 16 GB shared, max 3 agents |
@@ -56,10 +63,10 @@ same batch (a running task's lane is never renamed under it).
 | hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary — `pr-ci` targets `ci-fast` |
 | hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary |
 | hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | primary |
-| radar-runner-1 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
-| radar-runner-2 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
-| radar-runner-3 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
-| radar-runner-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve |
+| radar-runner-1 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve — RETIRING after the sprint |
+| radar-runner-2 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve — RETIRING after the sprint |
+| radar-runner-3 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve — RETIRING after the sprint |
+| radar-runner-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | reserve — RETIRING after the sprint |
 
 - **No CI on the Hostinger server, ever.** Its runners were removed 2026-08-27
   after they ran gates 15–18× slower (production owns the cores) and failed
@@ -71,8 +78,8 @@ same batch (a running task's lane is never renamed under it).
 
 | Server | Role |
 |---|---|
-| Hetzner / codex-dev | development lanes |
-| Hetzner / autopase-ci | reserve CI runners (2 dev lanes retiring after the sprint) |
+| Hetzner / codex-dev | development lanes (4 cores; shrinks to 1 lane after the sprint) |
+| Hetzner / autopase-ci | development lanes (16 cores; becomes dev-only after the sprint, CI reserve retires) |
 | Hetzner / ci-runners-01 | PR checks only |
 | Hetzner / autopase-scraper | production scraper — no lanes, no CI |
 | Hostinger / srv1487642 | production services + 2 reserve lanes |
