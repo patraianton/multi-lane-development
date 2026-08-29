@@ -6,7 +6,10 @@ stage may not be skipped, however polished the input looks.
 
 The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → review → merged → qa → done` (+ `stuck`)
+`spec → grilled → ticketed → development → local_check → ci_pr → review → merged → done` (+ `stuck`)
+
+The page draws the two paper stages as one column, Grill (decision 19); QA is not a stage — it is
+one run per sprint before `done` (§7).
 
 ---
 
@@ -125,19 +128,19 @@ that time off the board. The verdict is the first line of a PR comment, plain te
 `R1 — GO` / `R1 — NO-GO`. A NO-GO is a review failure: the board sends the card back to
 `development` for the fix round (the third in a row → `stuck`); the fix is just another
 brief for a lane. A GO is followed by the merge; the merged card moves on to `merged` —
-on main, waiting for the rest of the sprint — and to `qa` when the sprint's last unit is
-merged (decision 18).
+on main, waiting for the rest of the sprint, the sprint's QA run and its own acceptance —
+and to `done` when its ticket is closed by a person after the merge (decisions 13, 19).
 
-## 7. QA — `review → merged → qa → done`
+## 7. QA — one run per sprint, before `done`; not a stage
 
 **Who:** the CTO window + QA agents.
 
 1. Every review finding not taken into the unit's round becomes its own backlog ticket
    THE MOMENT it is found. Tail bundles filed after handover are a violation.
 2. **QA runs once per sprint, never per unit.** It opens only after the sprint's LAST
-   unit is on production — until then a merged unit waits in `merged`; the QA column holds
-   the sprint under QA and its findings not yet picked up (a finding whose fix is on a lane
-   or a PR travels the road like a unit). Then two Codex computer-use agents on two free Mac lanes,
+   unit is on production — until then a merged unit waits in `merged`. QA is not a column
+   on the board (decision 19): its findings are `qa`-labelled tickets of the sprint, born
+   in `ticketed` and travelling the road like units. Then two Codex computer-use agents on two free Mac lanes,
    in parallel and independently, walk PRODUCTION in a real browser along the sprint's
    briefs (the user's path, all locales, console clean). Their findings become tickets.
    A lane's own browser proof on Preview is part of its unit, not QA.

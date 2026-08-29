@@ -85,7 +85,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.deepEqual(Object.keys(by).sort(), ['QA', 'U1', 'U2', 'U3', 'U4', 'U5', 'U6']);
     // The QA ticket is a card in QA from the start, apart from the units.
     assert.equal(by.QA.title, 'QA #1590 — AUTO-SALON tails carried out of the sprint');
-    assert.equal(by.QA.stage, 'qa');
+    assert.equal(by.QA.stage, 'ticketed', 'a finding nobody has picked up is a ticket like any other (decision 19)');
     assert.equal(by.QA.unitFacts.state, 'open');
     assert.equal(data.cards.find(c => c.id === id).sprint.counts.units, 6, 'QA tickets are not scope');
     assert.equal(data.cards.find(c => c.id === id).sprint.counts.qaOpen, 1);
@@ -191,7 +191,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     const finding = partly.cards.find(c => c.parent === id && c.unit === 'QA');
     assert.equal(finding.stage, 'development', 'the finding left QA for the lane fixing it');
     assert.equal(finding.lane, 'radar/lane-3');
-    assert.deepEqual(finding.stageHistory.map(h => h.stage), ['ticketed', 'qa', 'development']);
+    assert.deepEqual(finding.stageHistory.map(h => h.stage), ['ticketed', 'development']);
 
     // The auto-close race: the issue list says U1's ticket is closed before the
     // merged-PR list knows the merge. Closed with no merge behind it reads as
@@ -210,15 +210,9 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(back.cards.find(c => c.id === by.U1.id).stage, 'merged', 'the auto-close is not an acceptance: back from done');
     assert.deepEqual(back.cards.find(c => c.id === by.U1.id).stageHistory.slice(-2).map(h => h.stage), ['done', 'merged']);
 
-    // A merged unit that sits in QA while the sprint's QA is not open (the rule
-    // before decision 18 put it there) waits in Merged with the others.
-    const parked = await postJson(board.base, '/pipeline/card/move', { id: by.U1.id, to: 'qa' });
-    assert.equal(parked.body.card.stage, 'qa');
-    const rejoined = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.stage === 'merged');
-    assert.equal(rejoined.cards.find(c => c.id === by.U1.id).stage, 'merged', 'QA not open: back to Merged');
-
-    // Every unit merged (or closed): the sprint reaches QA by itself and waits
-    // there while its QA ticket is open.
+    // Every unit merged (or closed): the sprint reaches Merged by itself and
+    // waits there — the scope is on main; the one QA run, the acceptance of
+    // each unit and the findings are what remain (decision 19: no QA column).
     const merged = {
       ...FACTS, staleSources: [], prs: [],
       // U3's own merge (#1530, the day before its close) stays as it was: a merge
@@ -226,14 +220,15 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
       mergedPrs: [...FACTS.mergedPrs, ...FACTS.unitIssues[1515].filter(u => u.branch && u.number !== 1518).map((u, i) => ({ number: 1600 + i, url: `https://github.com/acme/web/pull/${1600 + i}`, branch: u.branch, mergedAt: '2026-08-29T01:00:00Z' }))],
     };
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(merged));
-    const inQa = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'qa');
-    assert.equal(inQa.cards.find(c => c.id === id).stage, 'qa');
-    // Merged is not accepted: every unit waits in qa until its ticket is closed
-    // after the merge — U3's was, an hour later, so it is done.
-    for (const u of inQa.cards.filter(c => c.parent === id && c.unit !== 'QA')) {
-      assert.equal(u.stage, u.unit === 'U3' ? 'done' : 'qa', u.unit);
+    const onMain = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'merged');
+    assert.equal(onMain.cards.find(c => c.id === id).stage, 'merged');
+    // Merged is not accepted: every unit waits in merged until its ticket is
+    // closed after the merge — U3's was, an hour later, so it is done.
+    for (const u of onMain.cards.filter(c => c.parent === id && c.unit !== 'QA')) {
+      assert.equal(u.stage, u.unit === 'U3' ? 'done' : 'merged', u.unit);
     }
-    assert.equal(inQa.cards.find(c => c.parent === id && c.unit === 'QA').stage, 'qa');
+    // The finding's lane went quiet and no PR carries it: it stays where it was.
+    assert.equal(onMain.cards.find(c => c.parent === id && c.unit === 'QA').stage, 'development');
 
     // Every ticket closed an hour after the merge, the QA ticket too: the units
     // are done — and the sprint still waits, its umbrella is open.
@@ -244,7 +239,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(accepted));
     const acceptedState = await until(board.base, d => d.cards.filter(c => c.parent === id).every(u => u.stage === 'done'));
     assert.ok(acceptedState.cards.filter(c => c.parent === id).every(u => u.stage === 'done'));
-    assert.equal(acceptedState.cards.find(c => c.id === id).stage, 'qa', 'the umbrella is open: the pass is not declared');
+    assert.equal(acceptedState.cards.find(c => c.id === id).stage, 'merged', 'the umbrella is open: the pass is not declared');
     assert.equal(acceptedState.cards.find(c => c.id === id).sprint.umbrellaOpen, true);
 
     // The umbrella closed: the sprint reaches done — and no further.
