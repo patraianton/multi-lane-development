@@ -6,6 +6,28 @@ could not have caught it, and the rule that closes the gap. When the rule gradua
 a contract doc (RUNBOOK/TICKETING/GRILL), it gets a "folded into" note but stays here as
 the record. Newest first.
 
+## 2026-08-29 — a foundation unit turned a ten-unit sprint into a queue of one
+
+**Sprint:** AUTO-DETAIL-FINANCE-CARDS-R1 (umbrella #1569).
+
+**What happened.** The cut put the shared leasing helper, the Detail data contract and the cache-key
+bump into one unit, U1, and every other unit imports from it. With the "start from the merged base"
+rule, nothing but the independent reminder unit could start until U1 merged; the stream ran one lane
+wide for the first hour while three fleet lanes sat free. The stream had also been given two lanes
+for a sprint whose widest wave has three units.
+
+**Why the checks missed it.** The cut-review panel checks that dependencies are explicit and acyclic —
+it does not measure the critical path or the width each wave can actually use. A correct dependency
+graph can still be a queue.
+
+**Rule.** (1) The foundation unit is cut to the minimum the others import (one helper, one key);
+a data contract that only one surface reads is its own unit beside it. (2) A unit may start from
+the head of its dependency's *open* PR once that PR's local gate is PASS, rebasing after the merge —
+the same train rule already used for U3a-from-U2. (3) Lanes assigned to a stream = the width of its
+widest wave, not a default of two. The cut review reports the critical path and the per-wave width.
+
+**Folded into:** (pending — TICKETING §4, RUNBOOK stage 3 step 4).
+
 ## 2026-08-29 — two review panels passed a ticket whose facts were wrong
 
 **Sprint:** AUTO-DETAIL-FINANCE-CARDS-R1 (umbrella #1569), unit U1 (#1575).
