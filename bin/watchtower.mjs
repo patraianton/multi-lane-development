@@ -31,7 +31,7 @@ import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
   sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits,
 } from './pipeline.mjs';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane } from './sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
@@ -107,6 +107,9 @@ const DEFAULTS = {
   // not listed is shown by its folder name and does not count as capacity.
   //   "lanes": { "codex-dev/lane-3": { "name": "lane-1", "server": "Hetzner / codex-dev" } }
   lanes: {},
+  // The same for CI runners (FLEET.md "CI slots"), keyed by runner name:
+  //   "ciSlots": { "hzci-1": { "name": "ci-slot-1", "server": "Hetzner / ci-runners-01" } }
+  ciSlots: {},
   // Shared secret the probe sends as Authorization: Bearer. Empty — every
   // /probe/* path answers 403 until one is set.
   probeToken: '',
@@ -246,6 +249,7 @@ function applyConfig(raw) {
   config.probeToken = String(config.probeToken ?? '').trim();
   config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.lanes = parseLaneRegistry(src.lanes);
+  config.ciSlots = parseLaneRegistry(src.ciSlots);
   // Missing, broken or empty founders list → null, and the board stays open.
   config.auth = parseAuth(src);
   reportAuthWarnings(config.auth);
@@ -404,6 +408,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       unitIssues: new Map(Object.entries(f.unitIssues ?? {}).map(([k, v]) => [Number(k), v])),
       ciJobs: new Map(Object.entries(f.ciJobs ?? {}).map(([k, v]) => [Number(k), v])),
       ciRunners: f.ciRunners ?? [],
+      umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
       staleSources: f.staleSources ?? [],
     };
   } else {
@@ -423,6 +428,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       unitIssues: unitIssuesSource.value ?? new Map(),
       ciJobs: ciJobsSource.value ?? new Map(),
       ciRunners: ciRunnersSource.value ?? [],
+      umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
       staleSources,
     };
   }
@@ -713,7 +719,8 @@ const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
   const out = await runText(GH, ['api', `repos/${repo}/actions/runners?per_page=100`,
     '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
   if (out === null) throw new Error('gh api actions/runners did not answer');
-  return JSON.parse(out);
+  // Slot names on top of runner names, from the registry in the settings.
+  return JSON.parse(out).map(r => fleetSlot(config.ciSlots, r));
 });
 
 // Where each open PR's checks run: for PRs whose CI is queued or in progress,
@@ -770,6 +777,9 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
 // written; a live ticket has an observable open/closed state instead. Issues
 // labelled `umbrella` are umbrellas, not units; issues labelled `wave-next`
 // are deliberately parked for a later wave and do not hold a card back.
+// Umbrella states from the same issue list: a sprint reaches done only once
+// its umbrella is closed, and "not in the list" is unknown, never closed.
+let umbrellaStates = new Map();
 const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
@@ -779,9 +789,11 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
     '--json', 'number,title,body,url,labels,createdAt,state,closedAt'], 90000);
   if (out === null) throw new Error('gh issue list (units) did not answer');
+  const states = new Map();
   for (const it of JSON.parse(out)) {
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
-    if (labels.includes('umbrella') || labels.includes('wave-next')) continue;
+    if (labels.includes('umbrella')) { states.set(it.number, String(it.state ?? 'OPEN').toUpperCase()); continue; }
+    if (labels.includes('wave-next')) continue;
     const refs = new Set();
     for (const m of `${it.title}\n${it.body ?? ''}`.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
     for (const n of refs) {
@@ -796,6 +808,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
       });
     }
   }
+  umbrellaStates = states;
   return byUmbrella;
 });
 

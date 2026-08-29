@@ -25,7 +25,8 @@ const FACTS = {
       { number: 1519, title: 'SALON-U5: migration 133 - daily rotation set', url: 'https://github.com/acme/web/issues/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133', deps: [1518, 1516] },
       { number: 1517, title: 'SALON-U2: paid-placements reader', url: 'https://github.com/acme/web/issues/1517', state: 'OPEN', branch: 'feat/salon-u02-paid-reader' },
       { number: 1516, title: 'SALON-U1: readiness contract', url: 'https://github.com/acme/web/issues/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
-      { number: 1518, title: 'SALON-U3: reserve reader', url: 'https://github.com/acme/web/issues/1518', state: 'CLOSED', branch: 'feat/salon-u03-reserve-reader' },
+      // Closed an hour after its merge: accepted, so done.
+      { number: 1518, title: 'SALON-U3: reserve reader', url: 'https://github.com/acme/web/issues/1518', state: 'CLOSED', closedAt: '2026-08-28T21:00:00Z', branch: 'feat/salon-u03-reserve-reader' },
       { number: 1522, title: 'SALON-U4: composition', url: 'https://github.com/acme/web/issues/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
       { number: 1523, title: 'SALON-U6: sprint band', url: 'https://github.com/acme/web/issues/1523', state: 'OPEN', branch: 'feat/salon-u06-band' },
       // A QA ticket: the reviews' leftovers, labelled qa — not scope, a card in QA.
@@ -34,6 +35,7 @@ const FACTS = {
   },
   ciJobs: { 1540: [{ workflow: 'pr-ci', job: 'pr-ci', status: 'in_progress', runner: 'radar-runner-3', startedAt: '2026-08-28T20:50:00Z' }] },
   ciRunners: [{ name: 'radar-runner-3', status: 'online', busy: true, labels: ['self-hosted', 'hetzner'] }],
+  umbrellaStates: { 1515: 'OPEN' },
   staleSources: [],
 };
 
@@ -89,7 +91,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U5.unitFacts.state, 'on lane');
     // The card carries its ticket's dependencies with the state of each unit named.
     assert.deepEqual(by.U5.unitFacts.deps, [
-      { ticket: 1518, unit: 'U3', state: 'merged', met: true },
+      { ticket: 1518, unit: 'U3', state: 'accepted', met: true },
       { ticket: 1516, unit: 'U1', state: 'pr green', met: false },
     ]);
     assert.deepEqual(by.U2.unitFacts.deps, []);
@@ -158,14 +160,27 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(merged));
     const inQa = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'qa');
     assert.equal(inQa.cards.find(c => c.id === id).stage, 'qa');
-    assert.ok(inQa.cards.filter(c => c.parent === id && c.unit !== 'QA').every(u => u.stage === 'done'));
+    // Merged is not accepted: every unit waits in qa until its ticket is closed
+    // after the merge — U3's was, an hour later, so it is done.
+    for (const u of inQa.cards.filter(c => c.parent === id && c.unit !== 'QA')) {
+      assert.equal(u.stage, u.unit === 'U3' ? 'done' : 'qa', u.unit);
+    }
     assert.equal(inQa.cards.find(c => c.parent === id && c.unit === 'QA').stage, 'qa');
 
-    // The QA ticket closed: the sprint and the QA card reach done — and no further.
-    const done = {
+    // Every ticket closed an hour after the merge, the QA ticket too: the units
+    // are done — and the sprint still waits, its umbrella is open.
+    const accepted = {
       ...merged,
-      unitIssues: { 1515: FACTS.unitIssues[1515].map(u => (u.qa ? { ...u, state: 'CLOSED' } : u)) },
+      unitIssues: { 1515: FACTS.unitIssues[1515].map(u => ({ ...u, state: 'CLOSED', closedAt: '2026-08-29T02:00:00Z' })) },
     };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(accepted));
+    const acceptedState = await until(board.base, d => d.cards.filter(c => c.parent === id).every(u => u.stage === 'done'));
+    assert.ok(acceptedState.cards.filter(c => c.parent === id).every(u => u.stage === 'done'));
+    assert.equal(acceptedState.cards.find(c => c.id === id).stage, 'qa', 'the umbrella is open: the pass is not declared');
+    assert.equal(acceptedState.cards.find(c => c.id === id).sprint.umbrellaOpen, true);
+
+    // The umbrella closed: the sprint reaches done — and no further.
+    const done = { ...accepted, umbrellaStates: { 1515: 'CLOSED' } };
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(done));
     const finished = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'done');
     assert.equal(finished.cards.find(c => c.id === id).stage, 'done');

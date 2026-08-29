@@ -52,6 +52,13 @@ export function fleetLane(registry, host, l) {
   return { ...l, folder: l.lane, lane: reg?.name || l.lane, server: reg?.server || null, fleet: Boolean(reg) };
 }
 
+// The same registry idea for CI runners (FLEET.md "CI slots"): a runner keeps
+// its name, takes the slot name (ci-slot-N) and its server label.
+export function fleetSlot(registry, r) {
+  const reg = registry?.[String(r?.name ?? '')];
+  return { ...r, slot: reg?.name || r.name, server: reg?.server || null, fleet: Boolean(reg) };
+}
+
 function laneNo(name) {
   const m = /(\d+)/.exec(String(name ?? ''));
   return m ? Number(m[1]) : 999;
@@ -71,7 +78,24 @@ function unitOrder(u) {
   return Number.isFinite(n) && u.unit ? n : 9999;
 }
 
+// The PR's own "Closes #N" shuts the ticket in the same second as the merge —
+// that is not an acceptance, it is GitHub. A ticket closed later than this
+// window after the merge (a person, after the acceptance run — for a rollout
+// unit that is the production probe), or closed with no merge at all (dropped,
+// or done by hand), is accepted: the unit is done. Merged and not accepted is
+// QA. An auto-closed ticket is accepted by reopening it and closing it again.
+const AUTO_CLOSE_WINDOW_MS = 2 * 60 * 1000;
+function acceptedAt(u) {
+  if (u.open || !u.closedAt) return null;
+  if (u.merged?.mergedAt) {
+    const gap = Date.parse(u.closedAt) - Date.parse(u.merged.mergedAt);
+    return Number.isFinite(gap) && gap > AUTO_CLOSE_WINDOW_MS ? u.closedAt : null;
+  }
+  return u.closedAt;
+}
+
 function unitState(u) {
+  if (u.accepted) return 'accepted';
   if (u.merged) return 'merged';
   if (u.pr) {
     if (u.pr.ci?.color === 'green') return 'pr green';
@@ -114,12 +138,14 @@ export function ciSlotSummary(runners = []) {
 // ciJobs: Map(PR number -> [{ workflow, job, status, runner, startedAt }]) for PRs whose CI runs;
 // ciRunners: the repo's self-hosted runners [{ name, status, busy, labels }];
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
-// unitIssues: Map(umbrella number -> [{ number, title, url, state, branch, deps, qa }]) —
+// umbrellaStates: Map(umbrella number -> 'OPEN' | 'CLOSED') from the same issue
+//   list, or null when unknown — a sprint is done only once its umbrella is closed;
+// unitIssues: Map(umbrella number -> [{ number, title, url, state, closedAt, branch, deps, qa }]) —
 //   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps);
 //   qa = the issue carries the `qa` label: a QA ticket (the findings a sprint's
 //   reviews left behind), listed apart from the work units as `qaTickets`.
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
-export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], staleSources = [], at = null } = {}) {
+export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], umbrellaStates = null, staleSources = [], at = null } = {}) {
   const out = new Map();
   const ciSlots = ciSlotSummary(ciRunners);
   for (const card of cards ?? []) {
@@ -136,6 +162,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       url: i.url ?? '',
       branch: normBranch(i.branch),
       open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
+      closedAt: i.closedAt ?? null,
       depTickets: (Array.isArray(i.deps) ? i.deps : []).map(Number).filter(Number.isFinite),
       deps: [],
       lane: null,
@@ -189,6 +216,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         const merged = mergedPrs.find(p => sameBranch(p.branch, u.branch));
         if (merged) u.merged = { number: merged.number, url: merged.url ?? '', mergedAt: merged.mergedAt ?? null };
       }
+      u.accepted = acceptedAt(u);
       u.state = unitState(u);
     }
     // Dependencies resolved against the sprint's own units, so a card can say
@@ -203,6 +231,22 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       });
       delete u.depTickets;
     }
+
+    // Every CI runner as one row: the slot (FLEET.md name), its server, whether
+    // it is online and busy, and which PR — which unit of this sprint — its
+    // job is running. Fleet slots first, by number.
+    const ciTable = (ciRunners ?? []).map(r => {
+      let pr = null, job = null;
+      for (const [n, jobs] of ciJobs ?? new Map()) {
+        const j = (jobs ?? []).find(x => x.runner === r.name && (x.status === 'in_progress' || x.status === 'queued'));
+        if (j) { pr = Number(n); job = j.job ?? ''; break; }
+      }
+      const u = pr != null ? units.find(x => x.pr?.number === pr) : null;
+      return {
+        name: r.name, slot: r.slot || r.name, server: r.server || runnerHost(r.name, ciRunners) || '', fleet: r.fleet !== false,
+        online: r.status === 'online', busy: Boolean(r.busy), pr, job, unit: u?.unit ?? null, ticket: u?.ticket ?? null,
+      };
+    }).sort((a, b) => Number(b.fleet) - Number(a.fleet) || laneNo(a.slot) - laneNo(b.slot) || String(a.name).localeCompare(String(b.name)));
 
     const bound = units.filter(u => u.lane).map(u => ({ ...u.lane, ticket: u.ticket, unit: u.unit }));
     const isBound = l => bound.some(x => x.host === l.host && x.lane === l.lane);
@@ -226,10 +270,12 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     const work = units.filter(u => !u.qa);
     out.set(card.id, {
       umbrella,
+      umbrellaOpen: umbrellaStates instanceof Map && umbrellaStates.has(umbrella) ? umbrellaStates.get(umbrella) === 'OPEN' : null,
       units: work,
       qaTickets,
       lanes: bound,
       laneTable,
+      ciTable,
       laneCount: inFleet.length,
       free: inFleet.filter(l => !l.busy && !isBound(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
@@ -240,6 +286,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         checking: work.filter(u => u.state === 'local check').length,
         pr: work.filter(u => u.pr && !u.merged).length,
         merged: work.filter(u => u.merged).length,
+        accepted: work.filter(u => u.accepted).length,
         queued: work.filter(u => u.state === 'queued').length,
         qa: qaTickets.length,
         qaOpen: qaTickets.filter(u => u.open && !u.merged).length,

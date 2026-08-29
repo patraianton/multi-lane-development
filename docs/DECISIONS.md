@@ -4,7 +4,21 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
-## 2026-08-29 (midday) — the page is the pipeline; QA before done
+## 2026-08-29 (midday) — the page is the pipeline; QA before done; merged is not done
+
+13. **Merged is delivered, not accepted (owner, 2026-08-29 ~12:40: "да, окей" to option 1).**
+    A merged unit goes to `qa`, not `done`; it is done once its ticket is closed later than
+    two minutes after the merge (a person, after the acceptance run — for a rollout unit the
+    production probe) or closed with no merge at all. The PR's own `Closes #N` closes the
+    ticket in the same second as the merge and is not an acceptance — PRs no longer say it;
+    an auto-closed ticket is accepted by reopening and closing it. The sprint reaches `done`
+    only when every unit is accepted, its QA tickets are closed and the umbrella is closed.
+    Why: U16 (#1532, the rollout) was Done on the board at 10:04, the second PR #1557 merged,
+    while the rollout itself — Vercel env, re-run deploys, the production probe — ran in the
+    orchestrator until after 12:00; the sprint was Done at 10:26 with the umbrella open. The
+    board reads lanes, PRs and tickets — never production — so the ticket's close after the
+    merge is the only fact that can carry the acceptance.
+
 
 12. **The windows view is cut; the pipeline is the page (owner, 2026-08-29 ~12:00).**
     The live-windows board (herdr windows in columns, the lane strip, hand-typed cards,

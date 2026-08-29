@@ -281,9 +281,8 @@
   .sprint-band .lanes-table .cell-sub { font-size: 8px; }
   .sprint-band .lanes-table tr.outside td { opacity: .55; }
   .sprint-band .lanes-table tr.down td { color: var(--blocked); }
-  .sprint-band .ci-capacity { min-width: 0; margin-top: 6px; color: var(--ink-mid); font: 9.5px/1.35 var(--mono); overflow-wrap: anywhere; }
-  .sprint-band .ci-capacity b { color: var(--done); }
-  .sprint-band .ci-capacity small { color: var(--ink-dim); font-size: 9px; }
+  .sprint-band .ci-block { margin-top: 9px; }
+  .sprint-band .ci-block .capacity-number { color: var(--done); }
   .sprint-band .links.links-row { align-items: center; }
   .sprint-band .source-health { gap: 5px; padding: 3px 7px; color: var(--working); font: 9px/1.2 var(--mono); }
   .sprint-band .source-health::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
@@ -318,7 +317,7 @@
   .sprint-band .st-on-lane { color: var(--focus); }
   .sprint-band .st-lane-idle, .sprint-band .st-local-check { color: var(--done); }
   .sprint-band .st-pr-open { color: var(--violet); }
-  .sprint-band .st-pr-green, .sprint-band .st-merged { color: var(--working); }
+  .sprint-band .st-pr-green, .sprint-band .st-merged, .sprint-band .st-accepted { color: var(--working); }
   .sprint-band .st-pr-red { color: var(--blocked); }
   .sprint-band .empty-note { color: var(--ink-dim); font: 9px var(--mono); }
   .sprint-band .sprint-card-detail { min-width: 0; }
@@ -544,7 +543,8 @@
   .pcard .sprint-table a:hover { color: var(--focus); }
   .pcard .sprint-table .st-merged, .pcard .row.st-merged { color: var(--working); }
   .pcard .sprint-table .st-pr, .pcard .row.st-pr-open { color: var(--violet); }
-  .pcard .sprint-table .st-pr-green, .pcard .row.st-pr-green { color: var(--working); }
+  .pcard .sprint-table .st-pr-green, .pcard .row.st-pr-green,
+  .pcard .sprint-table .st-accepted, .pcard .row.st-accepted { color: var(--working); }
   .pcard .sprint-table .st-pr-red, .pcard .row.st-pr-red { color: var(--blocked); }
   .pcard .sprint-table .st-on-lane, .pcard .row.st-on-lane { color: var(--focus); }
   .pcard .sprint-table .st-lane-idle, .pcard .row.st-lane-idle,
@@ -1128,11 +1128,15 @@ function sprintBandProgress(s) {
 // whether it is still open. Nothing to show while none is written.
 function sprintBandQaLine(s) {
   const qa = Array.isArray(s.qaTickets) ? s.qaTickets : [];
-  if (!qa.length) return '';
+  const uo = s.umbrellaOpen;
+  // The umbrella's close is the sprint's pass declared; it is shown next to the
+  // QA tickets because the sprint leaves QA on both.
+  const umb = uo == null ? '' : ' · umbrella ' + (uo ? 'open' : 'closed');
+  if (!qa.length) return uo == null ? '' : '<div class="qa-line' + (uo ? '' : ' clean') + '"><b>QA</b> no tickets' + umb + '</div>';
   const open = qa.filter(u => u.open && !u.merged).length;
   const links = qa.map(u => '<a class="' + (u.open && !u.merged ? 'open' : 'closed') + '" target="_blank" rel="noreferrer" href="'
     + esc(u.url || '#') + '" title="' + esc((u.title || '') + ' — ' + (u.state || '')) + '">#' + esc(String(u.ticket)) + '</a>').join(' ');
-  return '<div class="qa-line' + (open ? '' : ' clean') + '"><b>QA</b> ' + open + ' open of ' + qa.length + ' · ' + links + '</div>';
+  return '<div class="qa-line' + (open || uo ? '' : ' clean') + '"><b>QA</b> ' + open + ' open of ' + qa.length + ' · ' + links + umb + '</div>';
 }
 
 function sprintBandStatus(c) {
@@ -1178,15 +1182,6 @@ function sprintBandLanes(s) {
       + (l.busy && l.since ? '<span class="cell-sub">' + esc(l.since) + '</span>' : '') + '</td>'
       + '<td data-label="Unit">' + who + '</td></tr>';
   }).join('');
-  const ci = s.ciSlots && typeof s.ciSlots === 'object' ? s.ciSlots : null;
-  let ciLine = '<div class="ci-capacity"><b>CI slots</b> unavailable</div>';
-  if (ci && Number(ci.total) > 0) {
-    const hosts = Object.entries(ci.byHost || {}).map(([host, v]) => host + ' ' + (Number(v.busy) || 0)
-      + '/' + (Number(v.online) || 0)).join(' · ');
-    ciLine = '<div class="ci-capacity"><b>' + (Number(ci.busy) || 0) + '</b> of '
-      + (Number(ci.online) || 0) + ' online CI slots busy <small>· ' + esc(hosts || 'no host detail')
-      + (Number(ci.offline) ? ' · ' + Number(ci.offline) + ' offline' : '') + '</small></div>';
-  }
   return '<div class="lanes-block"><div class="lanes-head"><strong><span class="capacity-number">' + free.length
     + '</span> of ' + laneCount + ' lanes free</strong><span>names per FLEET.md · by facts</span></div>'
     + '<table class="flight-table lanes-table"><colgroup><col style="width:24%"><col style="width:34%">'
@@ -1194,7 +1189,42 @@ function sprintBandLanes(s) {
     + '<thead><tr><th><button type="button" tabindex="-1">Lane</button></th><th><button type="button" tabindex="-1">Server</button></th>'
     + '<th><button type="button" tabindex="-1">State</button></th><th><button type="button" tabindex="-1">Unit</button></th></tr></thead><tbody>'
     + (rows || '<tr><td colspan="4"><span class="empty-note">No lanes known</span></td></tr>')
-    + '</tbody></table>' + ciLine + '</div>';
+    + '</tbody></table></div>' + sprintBandCiTable(s);
+}
+
+// The CI slots as the same table: slot (FLEET.md name), server, online/busy,
+// and the PR — the unit of this sprint — whose job the runner is on.
+function sprintBandCiTable(s) {
+  const table = Array.isArray(s.ciTable) ? s.ciTable : [];
+  const ci = s.ciSlots && typeof s.ciSlots === 'object' ? s.ciSlots : null;
+  const head = ci && Number(ci.total) > 0
+    ? '<strong><span class="capacity-number">' + (Number(ci.busy) || 0) + '</span> of ' + (Number(ci.online) || 0) + ' online CI slots busy</strong>'
+    : '<strong>CI slots</strong>';
+  const note = ci && Number(ci.offline) ? Number(ci.offline) + ' offline · by facts' : 'names per FLEET.md · by facts';
+  const rows = table.map(r => {
+    let state, cls;
+    if (!r.online) { state = 'offline'; cls = 'st-pr-red'; }
+    else if (r.busy && r.pr != null) { state = 'checking'; cls = 'st-on-lane'; }
+    else if (r.busy) { state = 'other work'; cls = 'st-queued'; }
+    else { state = 'free'; cls = 'st-merged'; }
+    const who = r.pr != null
+      ? '<span class="unit-cell">' + esc((r.unit ? r.unit + ' · ' : '') + 'PR #' + r.pr) + '</span>'
+        + (r.job ? '<span class="cell-sub" title="job">' + esc(r.job) + '</span>' : '')
+      : '<span class="empty-note">—</span>';
+    return '<tr class="' + (r.fleet === false ? 'outside' : '') + (r.online ? '' : ' down') + '">'
+      + '<td class="lane-cell" data-label="Slot">' + esc(r.slot || r.name)
+      + (r.slot && r.slot !== r.name ? '<span class="cell-sub" title="runner name">' + esc(r.name) + '</span>' : '') + '</td>'
+      + '<td data-label="Server">' + esc(r.server || '') + (r.fleet === false ? '<span class="cell-sub">outside the fleet registry</span>' : '') + '</td>'
+      + '<td data-label="State"><span class="state-word ' + cls + '">' + state + '</span></td>'
+      + '<td data-label="PR">' + who + '</td></tr>';
+  }).join('');
+  return '<div class="lanes-block ci-block"><div class="lanes-head">' + head + '<span>' + esc(note) + '</span></div>'
+    + '<table class="flight-table lanes-table"><colgroup><col style="width:24%"><col style="width:34%">'
+    + '<col style="width:21%"><col style="width:21%"></colgroup>'
+    + '<thead><tr><th><button type="button" tabindex="-1">Slot</button></th><th><button type="button" tabindex="-1">Server</button></th>'
+    + '<th><button type="button" tabindex="-1">State</button></th><th><button type="button" tabindex="-1">PR</button></th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="4"><span class="empty-note">No CI runners known</span></td></tr>')
+    + '</tbody></table></div>';
 }
 
 function sprintBandLane(u) {
