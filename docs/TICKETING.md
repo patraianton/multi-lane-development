@@ -118,9 +118,8 @@ Every acceptance criterion is a **command plus its expected output** — provabl
 machine, not by reading prose. Anything acceptance could later call NO-GO must already be
 named here as a criterion (grill lens 2). Include negative cases: what must NOT happen,
 each also as a command.
-Evidence: undefined acceptance subjects drove the 61 h of review rework — #1340 went
-5 rounds (8.1 h) over a single guard because the subject was never defined before coding;
-#1368 went 5 rounds over the email-subject cleanup.
+Evidence: undefined acceptance subjects have driven days of review rework — five rounds
+over a single guard because the subject was never defined before coding.
 
 ### 2.6 Red probe
 
@@ -186,11 +185,10 @@ labelled `qa` that references the umbrella. One QA ticket per finding worth fixi
 (a fix is a PR like any other, bound by branch); findings that are cosmetics may share
 one ticket, closed when the decision to drop them is written. The board puts a QA ticket
 in the `qa` column the day it is written and holds the sprint in `qa` after its last unit
-merges until every QA ticket is closed (decision 11). A leftover with no `qa` label is a
+merges until every QA ticket is closed. A leftover with no `qa` label is a
 unit ticket in the board's eyes and lands in `ticketed` as work that never starts.
-Evidence: the AUTO-SALON close-out (#1562, 29.08) bundled six findings — one of them the
-two live readers that lost their schema guard — into one unlabelled note referencing the
-umbrella; the board spawned it as a queued unit of a sprint already marked done.
+Evidence: one sprint's close-out bundled six findings into one unlabelled note referencing
+the umbrella; the board spawned it as a queued unit of a sprint already marked done.
 
 ## 3. Required content of the umbrella ticket
 
