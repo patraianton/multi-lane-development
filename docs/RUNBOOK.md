@@ -33,12 +33,16 @@ The road is one-way:
    partner = business data/copy).
 3. Produce BOTH grill outcomes: the outcome markdown next to the spec, and the **Lavish
    review artifact for the founders** — every question a multiple choice whose FIRST
-   option is the default decision. Link it on the card (`links.artifact`); the Telegram
-   doorbell tags both founders.
-4. Move the card to `grilled`. The board tracks answers itself and marks the card
+   option is the default decision. Link it on the card (`links.artifact`).
+4. **Ping the reviewers — always, immediately.** The moment `links.artifact` lands on the
+   card, post the artifact-ready ping into the configured Telegram channel: the artifact
+   URL plus the card link, tagging the configured reviewers ([TELEGRAM.md](./TELEGRAM.md)).
+   Answers are given on the artifact page; the ping is only the doorbell. An artifact
+   published without the ping does not count as delivered.
+5. Move the card to `grilled`. The board tracks answers itself and marks the card
    `artifact answered`; answers arriving another way are recorded via
    `POST /pipeline/card/artifact-answered`.
-5. Fold the founders' answers back into the spec.
+6. Fold the founders' answers back into the spec.
 
 **Exit:** answers folded in. The board refuses `grilled → ticketed` while a linked
 artifact is unanswered.
