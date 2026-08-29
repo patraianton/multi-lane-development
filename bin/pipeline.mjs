@@ -33,7 +33,6 @@ export const STAGES = [
   { key: 'ci_pr', title: 'CI/PR' },
   { key: 'review', title: 'Review' },
   { key: 'merged', title: 'Merged' },
-  { key: 'qa', title: 'QA' },
   { key: 'done', title: 'Done' },
   { key: 'stuck', title: 'Stuck' },
 ];
@@ -42,7 +41,12 @@ const STAGE_KEYS = new Set(STAGES.map(s => s.key));
 // Stage names from before decision 10 (2026-08-29): a card stored as
 // "accepted", or waiting in "acceptance", is a done card. Read on load only.
 const RENAMED_STAGES = { accepted: 'done', acceptance: 'done' };
-const stageKey = s => RENAMED_STAGES[s] ?? s;
+// The QA column is gone (decision 19: QA is one run per sprint before done, not
+// a step every card takes). A card stored in `qa` is read by what it was: a
+// merged unit or a sprint waiting there is on main → merged; a finding parked
+// there is a ticket nobody has picked up → ticketed.
+const qaBecomes = src => (String(src?.unit ?? '') === 'QA' || /^QA\b/.test(String(src?.title ?? ''))) ? 'ticketed' : 'merged';
+const stageKey = (s, src) => s === 'qa' ? qaBecomes(src) : (RENAMED_STAGES[s] ?? s);
 
 // Every move a card may make on its own road. Everything else is a 400: a card
 // never skips the grill, never walks backwards by hand and never leaves the
@@ -59,8 +63,7 @@ const MOVES = {
   local_check: ['ci_pr'],
   ci_pr: ['review'],
   review: ['merged'],
-  merged: ['qa'],
-  qa: ['done'],
+  merged: ['done'],
   done: [],
   stuck: [],
 };
@@ -88,7 +91,7 @@ const STUCK_AFTER = 3;
 // failed" there is not a late report, it is a wrong request — and answering it
 // would walk the card forward into Development around the grill and the
 // tickets, which no move is allowed to do.
-const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'review', 'qa']);
+const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr', 'review']);
 
 // What the watchdog may write into a card's status line (Wave G writes it; the
 // value is validated here so a wrong word never reaches the board).
@@ -211,14 +214,14 @@ function normCard(raw) {
   const title = str(src.title, LIMIT.title).trim();
   if (!title) return null;
 
-  const stage = STAGE_KEYS.has(stageKey(src.stage)) ? stageKey(src.stage) : 'spec';
+  const stage = STAGE_KEYS.has(stageKey(src.stage, src)) ? stageKey(src.stage, src) : 'spec';
   const createdAt = isoOr(src.createdAt, new Date().toISOString());
 
   const stageHistory = [];
   for (const h of Array.isArray(src.stageHistory) ? src.stageHistory : []) {
-    if (!h || !STAGE_KEYS.has(stageKey(h.stage))) continue;
+    if (!h || !STAGE_KEYS.has(stageKey(h.stage, src))) continue;
     stageHistory.push({
-      stage: stageKey(h.stage),
+      stage: stageKey(h.stage, src),
       enteredAt: isoOr(h.enteredAt, createdAt),
       leftAt: isoOr(h.leftAt, null),
     });
@@ -986,7 +989,7 @@ async function pageData() {
 //   - a stream whose sprint scope is not machine-readable (no units:"issues"
 //     promise in stream-watch, no branch prefixes, no umbrella) can never reach
 //     done — the card says what is missing instead.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'review', 'merged', 'qa', 'done']);
+const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'review', 'merged', 'done']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
@@ -1034,34 +1037,24 @@ function unitTitle(u) {
   return str(`${u.unit ? u.unit + ' ' : ''}#${u.ticket}${bare ? ' — ' + bare : ''}`, LIMIT.title);
 }
 
-// qaOpen: the sprint's QA has opened — every work unit is merged or closed
-// (runbook §7: QA runs once per sprint, after the last unit is on main).
-function unitTargetStage(u, { qaOpen = false } = {}) {
+function unitTargetStage(u) {
   // Merged is delivered to main, not accepted: the unit is done once its
   // ticket is closed after the merge (decision 13) — the PR's auto-close does
   // not count. For a rollout unit that close follows the production probe.
+  // A QA finding closed with no fix behind it is accepted the same way.
   if (u.accepted) return 'done';
-  // Until the sprint's last unit is on main nobody is checking a merged unit:
-  // it waits in Merged. When the QA opens, the merged cards move to QA
-  // together and leave it one by one as their tickets are closed (decision 18).
-  if (u.merged) return qaOpen ? 'qa' : 'merged';
+  // On main, waiting: for the rest of the sprint, for the sprint's one QA run
+  // (runbook §7 — not a column, decision 19), for the acceptance close.
+  if (u.merged) return 'merged';
   // Review (decision 17): the PR is open and its CI is green — the code waits
   // for a reader, then for the merge. A red or running CI, or a NO-GO whose
   // fix is being written, is CI/PR.
   if (u.pr) return (u.pr.ci?.color === 'green' && u.pr.verdict?.go !== false) ? 'review' : 'ci_pr';
   if (u.lane?.check) return 'local_check';
   if (u.lane?.busy) return 'development';
-  // A QA ticket — a finding the sprint's QA or acceptance left behind — sits
-  // in QA while nobody has started its fix; once a lane or a PR carries the
-  // fix it travels the road like any unit (decision 18). Closing it, with no
-  // fix at all, finishes it.
-  if (u.qa) return u.open ? 'qa' : 'done';
+  // A QA finding nobody has picked up is a ticket like any other: ticketed.
   return null;
 }
-
-// The road stages a QA finding's fix travels — a step back from QA that is
-// work starting, not a failure.
-const FIX_ROAD = new Set(['development', 'local_check', 'ci_pr', 'review']);
 
 // What the facts would change, without changing anything — so a sweep that
 // finds nothing new writes nothing to disk.
@@ -1084,21 +1077,13 @@ function unitPlan(cards, sprints) {
       // A ticket that gained the qa label after its card was spawned becomes a
       // QA card: the label is the fact, the card follows it.
       const unit = str(u.unit ?? '', LIMIT.slotish);
-      const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u, { qaOpen: allMerged }) : null;
+      const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       let move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
-      // Two steps back that are facts, not failures (decision 18): a QA finding
-      // whose fix has started leaves QA for the road its fix is on; a card that
+      // One step back that is a fact, not a failure (decision 18): a card that
       // reached done on its ticket's auto-close — seen before the merge behind
-      // it was — goes back to where the merge puts it. Only while the sprint is
-      // not done: an accepted sprint stays as it was.
-      if (card && target && !move) {
-        if (card.stage === 'qa' && u.qa && !u.merged && FIX_ROAD.has(target)) move = target;
-        else if (card.stage === 'done' && u.merged && !u.accepted && sprint.stage !== 'done' && ['merged', 'qa'].includes(target)) move = target;
-        // A merged unit in QA while the sprint's QA is not open — put there by
-        // the rule before decision 18, or the scope grew after the QA opened —
-        // waits in Merged with the others.
-        else if (card.stage === 'qa' && !u.qa && u.merged && !u.accepted && sprint.stage !== 'done' && target === 'merged') move = target;
-      }
+      // it was — goes back to Merged. Only while the sprint is not done: an
+      // accepted sprint stays as it was.
+      if (card && !move && card.stage === 'done' && target === 'merged' && u.merged && !u.accepted && sprint.stage !== 'done') move = target;
       // A NO-GO on a card in review is a review failure: back to development
       // for the fix round (the third in a row → stuck), counted on the card.
       // Only a verdict newer than the card's entry into review counts once.
@@ -1125,8 +1110,8 @@ function unitPlan(cards, sprints) {
       const finished = allMerged && allAccepted && qaDone && s.umbrellaOpen === false;
       const anyStarted = units.some(u => u.lane || u.pr || u.merged);
       let to = null;
-      if (allMerged && ['ticketed', 'development', 'local_check', 'ci_pr', 'review'].includes(sprint.stage)) to = finished ? 'done' : 'qa';
-      else if (finished && sprint.stage === 'qa') to = 'done';
+      if (allMerged && ['ticketed', 'development', 'local_check', 'ci_pr', 'review'].includes(sprint.stage)) to = finished ? 'done' : 'merged';
+      else if (finished && sprint.stage === 'merged') to = 'done';
       else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
       if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
     }
@@ -1385,13 +1370,11 @@ function renderToonPipeline(v) {
       + ' its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text;'
       + ' the whole pipeline in full — ?full=1');
   }
-  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, merged, qa, done;'
+  help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, merged, done;'
     + ' review — the PR is open and CI is green: the code waits for its reader (verdict R<n> — GO / NO-GO as the first line of a PR comment) and then for the merge; a NO-GO sends the card back to development for the fix round;'
-    + ' merged — on main, waiting for the sprint\'s last unit: the QA opens only then and the merged cards move to qa together; a QA finding whose fix is on a lane or a PR travels the road like a unit;'
-    + ' stuck — three failures in a row, waiting for a human; qa — merged, the ticket not yet'
-    + ' closed after the merge (the PR\'s own auto-close does not count): a unit is done once'
-    + ' it is, a sprint once every unit is, its qa-labelled tickets are closed and the umbrella'
-    + ' is closed');
+    + ' merged — on main, the ticket not yet closed by a person after the merge (the PR\'s own auto-close does not count); a unit is done once it is,'
+    + ' a sprint once every unit is, its qa-labelled tickets are closed and the umbrella is closed; QA itself is one run per sprint before done, not a stage — its findings are qa-labelled tickets that travel the road like units;'
+    + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
   help.push('stale status: an active card (development, local_check, ci_pr, review) whose Status is'

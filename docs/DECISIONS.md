@@ -4,6 +4,23 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (evening) — no QA column, no Spec column
+
+19. **QA is not a stage of the road; the page starts at Grill (owner, 2026-08-29 ~18:35:
+    "remove QA altogether — it is one process at the end, run once when the sprint is handed
+    over; not a part of the pipeline"; "remove the Spec column too").** The road is
+    `spec → grilled → ticketed → development → local_check → ci_pr → review → merged → done`.
+    A merged unit waits in `merged` for the rest of the sprint, the sprint's one QA run
+    (runbook §7) and its own acceptance, and is done when a person closes its ticket after
+    the merge (decision 13). A QA finding is a `qa`-labelled ticket of the sprint: born in
+    `ticketed`, it travels the road like a unit and is done when closed. A sprint whose
+    units are all merged is `merged`; done once every unit is accepted, its findings are
+    closed and the umbrella is closed. Cards stored in `qa` are read by what they were: a
+    merged unit or a sprint → `merged`, a finding → `ticketed`. Decisions 11 and 18 fold
+    into this one. The page draws the two paper stages as one column, Grill: a card is born
+    there with its spec, the grill's GO moves it from `spec` to `grilled` (the server keeps
+    both, the card's chip says which), and it leaves the column ticketed.
+
 ## 2026-08-29 (evening) — merged is a column; QA holds only what QA is doing
 
 18. **Merged is a column between Review and QA; the QA column holds only QA work (owner,

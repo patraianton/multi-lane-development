@@ -443,7 +443,6 @@
   .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
   .pcol.review > h2 { color: var(--violet); border-color: #4d3a7a; }
   .pcol.merged > h2 { color: var(--working); border-color: #1f6a52; }
-  .pcol.qa > h2 { color: var(--done); border-color: #6a5122; }
 
   .pcard {
     --stage: var(--violet);
@@ -958,19 +957,26 @@ const NEXT_STAGE = {
   ticketed: 'development',
   development: 'local_check',
   local_check: 'ci_pr',
-  ci_pr: 'qa',
-  qa: 'done',
+  ci_pr: 'review',
+  review: 'merged',
+  merged: 'done',
 };
 // The stages a failure can be reported from — the ones where work is actually
 // run. The same list as in pipeline.mjs, which is what refuses the rest.
-const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'qa'];
+const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'review'];
 // Done is the end of the road: it does not add to the card's delivery clock.
 const OFF_THE_CLOCK = new Set(['done']);
 const STAGE_TITLE = {
-  spec: 'Spec', grilled: 'Grilled', ticketed: 'Ticketed', development: 'Development',
-  local_check: 'Local check', ci_pr: 'CI/PR', review: 'Review', merged: 'Merged', qa: 'QA', done: 'Done', stuck: 'Stuck',
+  spec: 'Spec', grilled: 'Grill', ticketed: 'Ticketed', development: 'Development',
+  local_check: 'Local check', ci_pr: 'CI/PR', review: 'Review', merged: 'Merged', done: 'Done', stuck: 'Stuck',
 };
-const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'review', 'merged', 'qa', 'done'];
+// The columns. The two paper stages before the tickets are one column, Grill
+// (owner, 29.08: "remove the Spec column"): a card is born there with its spec
+// and leaves it ticketed; the grill's GO is the move between the two stages
+// the server still keeps, and the card's chip says which one it is on.
+const ROAD = ['grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'review', 'merged', 'done'];
+const COLUMN_STAGES = { grilled: ['spec', 'grilled'] };
+const columnOf = stage => (stage === 'spec' ? 'grilled' : stage);
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
@@ -1020,12 +1026,13 @@ function fmtDur(ms) {
 // ever paid to that stage, a visit still open counted up to now. The average
 // says where a sprint's hours actually go — a column that is full is not the
 // same as a column that is slow.
-function stageDwell(cards, key, now) {
+function stageDwell(cards, keys, now) {
   const spans = [];
   let open = 0;
+  const wanted = new Set(Array.isArray(keys) ? keys : [keys]);
   for (const c of cards) {
     for (const seg of (Array.isArray(c.stageHistory) ? c.stageHistory : [])) {
-      if (seg.stage !== key) continue;
+      if (!wanted.has(seg.stage)) continue;
       const from = Date.parse(seg.enteredAt);
       const to = seg.leftAt ? Date.parse(seg.leftAt) : now;
       if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
@@ -1880,8 +1887,8 @@ function renderPipeline(d) {
   const dwellNow = Date.now();
   const dwellCards = cards.filter(c => !bandIds.has(c.id));
   $('pboard').innerHTML = ROAD.map(key => {
-    const list = cards.filter(c => c.stage === key && !bandIds.has(c.id));
-    const dwell = key === 'done' ? null : stageDwell(dwellCards, key, dwellNow);
+    const list = cards.filter(c => columnOf(c.stage) === key && !bandIds.has(c.id));
+    const dwell = key === 'done' ? null : stageDwell(dwellCards, COLUMN_STAGES[key] ?? [key], dwellNow);
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
       + (dwell ? ' <em class="col-avg" title="' + esc('average time a card spends here: ' + dwell.n + ' visit'
         + (dwell.n === 1 ? '' : 's') + ', longest ' + fmtDur(dwell.max) + (dwell.open ? ', ' + dwell.open + ' still here' : ''))
