@@ -350,3 +350,14 @@ done. no LLM call, no ssh, no POSTs.
 
 Exit code 0 if the pipeline was read. Use this with a stub config in a
 scratch directory; do not write a test file into `state/`.
+
+## Idle lanes (board, not the Watchdog)
+
+A separate check the **board** runs after every sprint sweep (decision 15, `bin/idle-lanes.mjs`):
+for each active sprint card, assigned fleet lanes that are free against units that are queued
+and startable (every dependency merged, closed, or at least on an open PR — a unit starts from
+the head of its dependency's open PR). A hit is shown at once (page, `/api/pipeline`
+`idle-lanes` table) and alarms after the grace: Telegram to the owner (`notifyIdleLanes`) and a
+hook into the CTO window (`cto_pane` of the stream-watch file, delivered by the probe). It
+repeats while the state persists. Env: `WATCHTOWER_IDLE_GRACE_MIN` (5), `WATCHTOWER_IDLE_REPEAT_MIN`
+(20). A stale lane source skips the check — unknown is not idle.

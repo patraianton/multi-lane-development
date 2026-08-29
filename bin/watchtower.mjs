@@ -29,9 +29,10 @@ import {
 } from './serve.mjs';
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
-  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard,
+  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
+import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -41,6 +42,7 @@ import {
   notifyArtifactReady,
   notifyAssignSubscription,
   notifyStuck,
+  notifyIdleLanes,
   notifyDone,
 } from './telegram-bot.mjs';
 import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
@@ -256,6 +258,7 @@ function applyConfig(raw) {
   reportAuthWarnings(config.auth);
   config.subscriptions = parseSubscriptions(src.subscriptions);
   const telegramOn = wireTelegram(src.telegram);
+  config.telegramOn = telegramOn;
   setPipelineBoard({
     subscriptions: config.subscriptions,
     notifyEnabled: telegramOn,
@@ -440,8 +443,48 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   const sync = await syncSprintUnits(sprints);
   if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
   await offBoardSweep(facts);
+  await idleLaneSweep(sprints, facts);
   return { sprints: sprints.size, ...sync };
 });
+
+// ------------------------------------------------------ idle lanes
+//
+// Decision 15: a lane assigned to a sprint sits free while a unit of that
+// sprint is queued with nothing in its way — the board says so at once (page,
+// /api/pipeline) and after a short grace alarms: Telegram to the owner, a hook
+// into the CTO window (delivered by the probe). Repeats while it persists.
+const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
+const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
+const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
+let idleNotice = '';
+async function idleLaneSweep(sprints, facts) {
+  const at = new Date().toISOString();
+  const cards = await listPipelineCards();
+  const findings = idleLaneFindings(cards, sprints, { at });
+  const ledger = await readJsonSoft(IDLE_JSON, { seen: {} });
+  const r = idleLedger(ledger, findings, at, { graceMs: IDLE_GRACE_MS, repeatMs: IDLE_REPEAT_MS });
+  await writeJsonAtomic(IDLE_JSON, r.ledger);
+  setIdleLanes({ at, findings: r.active });
+  for (const f of r.active) {
+    const line = `idle lanes: ${f.card.title}: ${idleLine(f)}`;
+    if (line !== idleNotice) { idleNotice = line; console.log(line); }
+  }
+  if (!r.active.length) idleNotice = '';
+  for (const f of r.alarms) {
+    const card = cards.find(c => c.id === f.card.id);
+    const text = idleAlarmText(f);
+    const cto = streamsSource.value?.ctoPane ?? null;
+    if (cto) {
+      try { await enqueueHook(cto, text); }
+      catch (e) { console.log(`idle lanes: hook not queued: ${e.message}`); }
+    }
+    if (config.telegramOn && card) {
+      try { await notifyIdleLanes(card, f); }
+      catch (e) { console.log(`idle lanes: telegram failed: ${e.message}`); }
+    }
+    console.log(`idle lanes: ALARM ${f.card.title}: ${idleLine(f)}${cto ? ' (hook -> ' + cto + ')' : ''}`);
+  }
+}
 
 // ------------------------------------------------------ off the board
 //

@@ -350,6 +350,19 @@ function stuckText(cfg, card, digest) {
   ]);
 }
 
+function idleLanesText(cfg, card, finding) {
+  const queued = (finding?.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
+  const mins = Math.round((finding?.ageMs ?? 0) / 60000);
+  return lines([
+    tagOf(ownerOf(cfg)),
+    '',
+    `⚠ Idle lanes on "${cardTitleOf(card)}": ${(finding?.free ?? []).join(', ')} free for ${mins}m while ${queued} ${(finding?.startable ?? []).length === 1 ? 'waits' : 'wait'} with nothing in the way.`,
+    '',
+    'Lanes are for code; nothing else holds them. The CTO window has been told to dispatch.',
+    `Card: ${cardUrl(cfg, card)}`,
+  ]);
+}
+
 function doneText(cfg, card) {
   return lines([
     tagAll(cfg.founders),
@@ -464,6 +477,15 @@ export async function notifyStuck(card, digest) {
   return sendMessage(cfg, {
     name: 'notifyStuck',
     text: stuckText(cfg, card, digest),
+  });
+}
+
+export async function notifyIdleLanes(card, finding) {
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
+  needCard(card);
+  return sendMessage(cfg, {
+    name: 'notifyIdleLanes',
+    text: idleLanesText(cfg, card, finding),
   });
 }
 

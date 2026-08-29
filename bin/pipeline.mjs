@@ -135,11 +135,21 @@ let BOARD = {
 // watch every sprint sweep and hands the findings here for the page and the
 // agent views. `skipped` names the stale source when the watch did not run.
 let OFF_BOARD = { at: null, findings: [], skipped: null };
+// Idle lanes (decision 15): a free assigned lane while a startable unit waits.
+// watchtower.mjs runs the watch every sprint sweep; findings carry `since`.
+let IDLE_LANES = { at: null, findings: [] };
 export function setOffBoard(next) {
   OFF_BOARD = {
     at: next?.at ?? null,
     findings: Array.isArray(next?.findings) ? next.findings : [],
     skipped: next?.skipped ?? null,
+  };
+}
+
+export function setIdleLanes(next) {
+  IDLE_LANES = {
+    at: next?.at ?? null,
+    findings: Array.isArray(next?.findings) ? next.findings : [],
   };
 }
 
@@ -940,6 +950,7 @@ async function pageData() {
     watchdogIntervalMin: meta.intervalMin,
     watchdogConfigured: meta.configured,
     offBoard: OFF_BOARD,
+    idleLanes: IDLE_LANES,
     cards: st.cards.map(c => cardExtras(c, st.cards)),
   };
 }
@@ -1246,6 +1257,7 @@ async function buildAgentPipeline(cards, full, port) {
       staleStatus: stale.length,
       units: cards.filter(c => c.parent).length,
       offBoard: OFF_BOARD.findings.length,
+      idleLanes: IDLE_LANES.findings.length,
     },
     cards: rows,
     stuck: stuck.map(c => ({
@@ -1266,6 +1278,12 @@ async function buildAgentPipeline(cards, full, port) {
       kind: f.kind, ref: f.ref, title: clipText(f.title || '-', full), reason: f.reason, fix: f.fix,
     })),
     offBoardSkipped: OFF_BOARD.skipped,
+    idleLanes: IDLE_LANES.findings.map(f => ({
+      card: clipText(f.card?.title || f.card?.id || '-', full),
+      free: (f.free ?? []).join(', '),
+      queued: (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', '),
+      since: fmtDur(f.ageMs ?? 0),
+    })),
   };
   if (full) {
     view.specs = cards.filter(c => c.spec.trim())
@@ -1289,6 +1307,8 @@ function renderToonPipeline(v) {
       'no active card has a stale Status'),
     toonTable('off-board', v.offBoard, ['kind', 'ref', 'title', 'reason', 'fix'],
       v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
+    toonTable('idle-lanes', v.idleLanes, ['card', 'free', 'queued', 'since'],
+      'no assigned lane sits free while a unit waits'),
   ];
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
   const help = [];
@@ -1309,6 +1329,9 @@ function renderToonPipeline(v) {
   help.push('off-board: what is being built without a card — open PRs no card carries, tickets'
     + ' in work that name no umbrella, busy lanes on unknown branches; the ledger of such cases'
     + ' is /pipeline/edge-cases (plain text)');
+  help.push('idle-lanes: a lane assigned to a sprint is free while a unit of that sprint is'
+    + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
+    + ' after a short grace the board alarms the owner and the CTO window');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
   return out.join('\n') + '\n';
