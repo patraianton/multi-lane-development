@@ -1,0 +1,76 @@
+// Idle lanes (decision 15): a free assigned lane while a startable unit waits
+// is a finding at once and an alarm after the grace. Pure fixtures.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { idleLaneFindings, idleLedger, startable, idleLine, idleAlarmText } from '../bin/idle-lanes.mjs';
+
+const cards = [
+  { id: 'cs', title: 'FINANCE-CARDS', stage: 'development', links: { ticket: 'https://github.com/acme/web/issues/1569' } },
+  { id: 'u1', title: 'U1 #1575', stage: 'ci_pr', parent: 'cs' },
+  { id: 'cd', title: 'a done sprint', stage: 'done', links: { ticket: 'https://github.com/acme/web/issues/1515' } },
+];
+
+function sprint(over = {}) {
+  return {
+    free: ['mac/lane-6', 'mac/lane-7'],
+    stale: [],
+    units: [
+      { unit: 'U1', ticket: 1575, state: 'pr green', deps: [] },
+      { unit: 'U3b', ticket: 1583, state: 'queued', deps: [{ ticket: 1577, unit: 'U3a', state: 'pr green', met: false }] },
+      { unit: 'U7', ticket: 1581, state: 'queued', deps: [{ ticket: 1575, unit: 'U1', state: 'pr green', met: false }, { ticket: 1580, unit: 'U6', state: 'on lane', met: false }] },
+    ],
+    qaTickets: [{ unit: 'QA', ticket: 1599, qa: true, open: true, state: 'open', deps: [] }],
+    ...over,
+  };
+}
+
+test('startable: queued with every dependency merged, closed, or at least on an open PR', () => {
+  assert.equal(startable({ state: 'queued', deps: [] }), true);
+  assert.equal(startable({ state: 'queued', deps: [{ met: true }] }), true);
+  assert.equal(startable({ state: 'queued', deps: [{ met: false, state: 'pr red' }] }), true, 'an open PR is a head to start from');
+  assert.equal(startable({ state: 'queued', deps: [{ met: false, state: 'on lane' }] }), false, 'a dependency still on a lane holds it');
+  assert.equal(startable({ state: 'queued', deps: [{ met: null, state: 'outside the sprint' }] }), false);
+  assert.equal(startable({ state: 'on lane', deps: [] }), false);
+  assert.equal(startable({ qa: true, open: true, deps: [] }), true);
+  assert.equal(startable({ qa: true, open: true, pr: { number: 1 }, deps: [] }), false);
+});
+
+test('a finding per active sprint with a free lane and a startable unit; U7 behind a lane is not counted', () => {
+  const f = idleLaneFindings(cards, new Map([['cs', sprint()], ['cd', sprint()]]), { at: 'T' });
+  assert.equal(f.length, 1, 'the done sprint and the unit card are skipped');
+  assert.equal(f[0].key, 'idle:cs');
+  assert.deepEqual(f[0].free, ['mac/lane-6', 'mac/lane-7']);
+  assert.deepEqual(f[0].startable.map(u => u.ticket), [1583, 1599]);
+});
+
+test('no free lane, no startable unit, or a stale source → no finding', () => {
+  assert.equal(idleLaneFindings(cards, new Map([['cs', sprint({ free: [] })]])).length, 0);
+  assert.equal(idleLaneFindings(cards, new Map([['cs', sprint({ units: [], qaTickets: [] })]])).length, 0);
+  assert.equal(idleLaneFindings(cards, new Map([['cs', sprint({ stale: ['lanes:mac'] })]])).length, 0, 'unknown is not idle');
+});
+
+test('the ledger alarms after the grace, repeats after the interval, forgets what is gone', () => {
+  const f = idleLaneFindings(cards, new Map([['cs', sprint()]]), { at: '2026-08-29T12:00:00.000Z' });
+  const opts = { graceMs: 5 * 60000, repeatMs: 20 * 60000 };
+  let r = idleLedger({ seen: {} }, f, '2026-08-29T12:00:00.000Z', opts);
+  assert.equal(r.alarms.length, 0, 'inside the grace: a line, no alarm');
+  assert.equal(r.active[0].since, '2026-08-29T12:00:00.000Z');
+  r = idleLedger(r.ledger, f, '2026-08-29T12:06:00.000Z', opts);
+  assert.equal(r.alarms.length, 1, 'past the grace: alarm');
+  assert.equal(r.alarms[0].ageMs, 6 * 60000);
+  r = idleLedger(r.ledger, f, '2026-08-29T12:10:00.000Z', opts);
+  assert.equal(r.alarms.length, 0, 'not yet time to repeat');
+  r = idleLedger(r.ledger, f, '2026-08-29T12:27:00.000Z', opts);
+  assert.equal(r.alarms.length, 1, 'repeated after the interval');
+  r = idleLedger(r.ledger, [], '2026-08-29T12:30:00.000Z', opts);
+  assert.deepEqual(r.ledger.seen, {}, 'gone is forgotten');
+  assert.equal(r.active.length, 0);
+});
+
+test('the line and the alarm name the lanes, the wait, and the units', () => {
+  const f = { card: { title: 'FINANCE-CARDS' }, free: ['mac/lane-6'], startable: [{ unit: 'U3b', ticket: 1583 }], ageMs: 12 * 60000 };
+  assert.equal(idleLine(f), 'mac/lane-6 free for 12m while U3b #1583 waits with nothing in the way');
+  assert.match(idleAlarmText(f), /^ACHTUNG \(board\): sprint "FINANCE-CARDS" — lanes mac\/lane-6 have been free for 12m while U3b #1583 is queued/);
+  assert.match(idleAlarmText(f), /dispatch now/);
+});

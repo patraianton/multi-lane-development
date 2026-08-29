@@ -4,6 +4,23 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (late afternoon) — the board alarms on idle lanes
+
+15. **A free assigned lane while a unit waits is an alarm, raised by the board itself
+    (owner, 2026-08-29 ~15:40).** Lanes are for writing code and nothing else holds them:
+    a unit leaves its lane when its PR opens, the CI/PR queue never holds a lane, a fix round
+    is just another brief. Every sprint sweep the board checks each active sprint: assigned
+    fleet lanes that are free (`free`) against units that are queued with every dependency
+    merged, closed or on an open PR (`startable`). A hit is a line on the page and in
+    `/api/pipeline` (`idle-lanes`) at once; after a grace (5 min, `WATCHTOWER_IDLE_GRACE_MIN`)
+    it alarms — Telegram to the owner, a hook typed into the CTO window by the probe — and
+    repeats every 20 min while it persists (`WATCHTOWER_IDLE_REPEAT_MIN`). Unknown is not
+    idle: a stale lane source skips the check. Ledger: `state/idle-lanes.json`.
+    Why: the finance-cards sprint ran one unit wide for an hour, then held three Mac lanes
+    idle for twenty minutes with five startable tickets queued — nobody was told until the
+    owner looked at the board. Rulebooks the stream had been given said otherwise; a rule
+    nobody enforces is not a rule. Next: the board dispatches by itself (decision pending).
+
 ## 2026-08-29 (afternoon) — nothing is built off the board
 
 14. **Everything being built is on the board; the board watches for what is not (owner,

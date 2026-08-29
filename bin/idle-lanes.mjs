@@ -1,0 +1,99 @@
+// Idle lanes (decision 15): a lane assigned to a sprint sits free while a unit
+// of that sprint waits with nothing in its way. That is never a state to sit
+// in — the board says so itself: a line on the page and in /api/pipeline at
+// once, and after a short grace an alarm (Telegram to the owner, a hook into
+// the CTO window). Lanes are for writing code; the CI/PR queue never holds one.
+//
+// Pure: watchtower.mjs feeds it the sprint facts and the ledger; tests feed
+// fixtures.
+
+const ACTIVE = new Set(['development', 'local_check', 'ci_pr']);
+
+// A queued unit can start when every dependency inside the sprint is merged,
+// closed, or at least carries an open PR (a unit starts from the head of its
+// dependency's open PR — MANDATE.md §2). A dependency still on a lane, or one
+// outside the sprint, holds it.
+export function startable(unit) {
+  if (!unit) return false;
+  if (unit.qa) {
+    if (!unit.open || unit.merged || unit.pr || unit.lane) return false;
+  } else if (unit.state !== 'queued') return false;
+  for (const d of unit.deps ?? []) {
+    if (d.met) continue;
+    if (d.met === null) return false;
+    if (typeof d.state === 'string' && d.state.startsWith('pr')) continue;
+    return false;
+  }
+  return true;
+}
+
+// cards: the pipeline's cards; sprints: Map(card id -> sprint facts).
+// One finding per active sprint card that has at least one free assigned lane
+// and at least one startable unit.
+export function idleLaneFindings(cards, sprints, { at = null } = {}) {
+  const out = [];
+  for (const card of cards ?? []) {
+    if (card?.parent || !ACTIVE.has(card?.stage)) continue;
+    const s = sprints?.get?.(card.id);
+    if (!s) continue;
+    if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not idle
+    const free = Array.isArray(s.free) ? s.free : [];
+    if (!free.length) continue;
+    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(startable)
+      .map(u => ({ unit: u.unit || '', ticket: u.ticket, title: u.title || '' }));
+    if (!waiting.length) continue;
+    out.push({
+      key: `idle:${card.id}`,
+      card: { id: card.id, title: String(card.title ?? ''), stage: card.stage },
+      free: free.slice(),
+      startable: waiting,
+      at,
+    });
+  }
+  return out;
+}
+
+// The ledger remembers when each finding was first seen and when it last
+// alarmed. A finding alarms once it is older than the grace, and again after
+// every repeat interval while it persists. A finding that is gone is dropped.
+//   ledger: { seen: { key: { first, last, alarmedAt } } }
+// Returns { ledger, active: [finding + since (ISO) + ageMs], alarms: [finding + ageMs] }.
+export function idleLedger(ledger, findings, at, { graceMs = 5 * 60 * 1000, repeatMs = 20 * 60 * 1000 } = {}) {
+  const now = Date.parse(at ?? '') || Date.now();
+  const nowIso = new Date(now).toISOString();
+  const seen = {};
+  const active = [];
+  const alarms = [];
+  for (const f of findings ?? []) {
+    const prev = ledger?.seen?.[f.key];
+    const first = prev?.first ?? nowIso;
+    const firstMs = Date.parse(first) || now;
+    const ageMs = Math.max(0, now - firstMs);
+    let alarmedAt = prev?.alarmedAt ?? null;
+    const lastAlarmMs = alarmedAt ? Date.parse(alarmedAt) : null;
+    const due = ageMs >= graceMs && (lastAlarmMs == null || now - lastAlarmMs >= repeatMs);
+    if (due) { alarmedAt = nowIso; alarms.push({ ...f, since: first, ageMs }); }
+    seen[f.key] = { first, last: nowIso, alarmedAt };
+    active.push({ ...f, since: first, ageMs });
+  }
+  return { ledger: { seen }, active, alarms };
+}
+
+function fmtMin(ms) {
+  const m = Math.round((ms ?? 0) / 60000);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+// The one-line reading of a finding, for the page, the API and the alarm.
+export function idleLine(f) {
+  const queued = (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
+  return `${f.free.join(', ')} free for ${fmtMin(f.ageMs)} while ${queued} ${f.startable.length === 1 ? 'waits' : 'wait'} with nothing in the way`;
+}
+
+// The alarm text for the CTO window: what to do, not what happened.
+export function idleAlarmText(f) {
+  const queued = (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
+  return `ACHTUNG (board): sprint "${f.card.title}" — lanes ${f.free.join(', ')} have been free for ${fmtMin(f.ageMs)} `
+    + `while ${queued} ${f.startable.length === 1 ? 'is' : 'are'} queued and startable. `
+    + 'Lanes are for code and nothing else holds them (MANDATE.md §3): dispatch now, then report which unit is on which lane.';
+}
