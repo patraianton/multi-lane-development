@@ -434,6 +434,12 @@
     border-radius: 8px; color: var(--ink-dim); background: var(--panel-low);
     font-family: var(--mono); font-size: 9px; letter-spacing: 0;
   }
+  /* Average time a card spends in the column — where the sprint's hours go. */
+  .pcol > h2 em.col-avg {
+    flex: 0 1 auto; min-width: 0; font-style: normal; font-family: var(--mono);
+    font-size: 9px; letter-spacing: 0; text-transform: none; color: var(--ink-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
   .pcol.qa > h2 { color: var(--done); border-color: #6a5122; }
 
@@ -1006,6 +1012,27 @@ function fmtDur(ms) {
   const h = Math.floor(m / 60);
   if (h < 24) return h + 'h ' + (m % 60) + 'm';
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+
+// How long a card spends in one column: every visit any card on the board
+// ever paid to that stage, a visit still open counted up to now. The average
+// says where a sprint's hours actually go — a column that is full is not the
+// same as a column that is slow.
+function stageDwell(cards, key, now) {
+  const spans = [];
+  let open = 0;
+  for (const c of cards) {
+    for (const seg of (Array.isArray(c.stageHistory) ? c.stageHistory : [])) {
+      if (seg.stage !== key) continue;
+      const from = Date.parse(seg.enteredAt);
+      const to = seg.leftAt ? Date.parse(seg.leftAt) : now;
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
+      if (!seg.leftAt) open++;
+      spans.push(to - from);
+    }
+  }
+  if (!spans.length) return null;
+  return { n: spans.length, open, avg: spans.reduce((a, b) => a + b, 0) / spans.length, max: Math.max(...spans) };
 }
 
 // A clock is drawn as "what has already been counted" plus "since when it is
@@ -1848,9 +1875,15 @@ function renderPipeline(d) {
     : '';
 
   $('pboard').style.setProperty('--pcols', String(ROAD.length));
+  const dwellNow = Date.now();
+  const dwellCards = cards.filter(c => !bandIds.has(c.id));
   $('pboard').innerHTML = ROAD.map(key => {
     const list = cards.filter(c => c.stage === key && !bandIds.has(c.id));
+    const dwell = key === 'done' ? null : stageDwell(dwellCards, key, dwellNow);
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
+      + (dwell ? ' <em class="col-avg" title="' + esc('average time a card spends here: ' + dwell.n + ' visit'
+        + (dwell.n === 1 ? '' : 's') + ', longest ' + fmtDur(dwell.max) + (dwell.open ? ', ' + dwell.open + ' still here' : ''))
+        + '">avg ' + esc(fmtDur(dwell.avg)) + '</em>' : '')
       + ' <span>' + list.length + '</span></h2>'
       + (list.length ? list.map(pcard).join('') : '<div class="empty">empty</div>')
       + '</div>';
