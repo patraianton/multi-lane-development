@@ -416,8 +416,10 @@
     grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   }
 
+  /* One column per stage on the road — the page sets --pcols from ROAD, so a
+     stage that leaves the road (acceptance, 29.08) leaves no empty column. */
   .pboard { display: grid; gap: 9px; align-items: start;
-            grid-template-columns: repeat(8, minmax(0, 1fr)); }
+            grid-template-columns: repeat(var(--pcols, 7), minmax(0, 1fr)); }
   .pcol { min-width: 0; overflow-wrap: anywhere; }
   .pcol > h2 {
     display: flex; align-items: center; gap: 5px;
@@ -469,7 +471,7 @@
   }
   .pcard .nm {
     min-width: 0; overflow-wrap: anywhere;
-    color: var(--ink); font-weight: 750; font-size: 13.5px; line-height: 1.25; letter-spacing: -.01em;
+    color: var(--ink); font-weight: 750; font-size: 11px; line-height: 1.3; letter-spacing: -.005em;
   }
   .pcard .nm[data-window] { cursor: pointer; }
   .pcard .nm[data-window]:hover { color: var(--focus); text-decoration: underline; }
@@ -586,6 +588,18 @@
   .pcard .lane-chip.busy { border-color: #1f5f7a; color: var(--focus); }
   .pcard .lane-chip.idle { border-color: #5a4a1f; color: var(--done); }
   .pcard .lane-chip .chip-key { color: inherit; opacity: .75; }
+  /* What the unit waits for: its ticket's "depends on" resolved against the
+     sprint — green once merged, amber while open, grey outside the sprint. */
+  .pcard .deps-row { padding-top: 0; align-items: center; }
+  .pcard .deps-label {
+    flex: 0 0 auto; color: var(--ink-dim); font-family: var(--ui); font-size: 8px;
+    font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .pcard .deps-row.blocked .deps-label { color: var(--done); }
+  .pcard .dep-chip.met { border-color: #1f6a52; color: var(--working); }
+  .pcard .dep-chip.open { border-color: #5a4a1f; color: var(--done); }
+  .pcard .dep-chip.outside { border-color: var(--line); color: var(--ink-dim); }
+  .pcard .dep-chip .chip-key { color: inherit; opacity: .8; }
   .pcard .sprint-wrap { min-width: 0; overflow-x: auto; }
   .pcard .sprint-table {
     width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--mono); font-size: 10px; line-height: 1.3;
@@ -1726,6 +1740,20 @@ function pcard(c) {
         + '<span class="chip-value">' + when + '</span></span>');
     }
     bits.push('<div class="row mono chip-row">' + pieces.join('') + '</div>');
+    // The ticket's dependencies, each with the state of the unit it names —
+    // "waits for" while the card is still queued behind an unmerged one.
+    if (uf && Array.isArray(uf.deps) && uf.deps.length) {
+      const unmet = uf.deps.filter(d => d.met === false);
+      const blocked = unmet.length > 0 && c.stage === 'ticketed';
+      const chips = uf.deps.map(d => {
+        const cls = d.met ? 'met' : (d.met === false ? 'open' : 'outside');
+        const name = (d.unit ? d.unit + ' ' : '') + '#' + d.ticket;
+        return '<span class="meta-chip dep-chip ' + cls + '" title="' + esc('depends on ' + name + ' — ' + (d.state || '?')) + '">'
+          + '<span class="chip-key">' + esc(name) + '</span><span class="chip-value">' + esc(d.state || '?') + '</span></span>';
+      });
+      bits.push('<div class="row mono chip-row deps-row' + (blocked ? ' blocked' : '') + '">'
+        + '<span class="deps-label">' + (blocked ? 'waits for' : 'depends on') + '</span>' + chips.join('') + '</div>');
+    }
     if (uf && uf.state) {
       bits.push('<div class="row unit-state st-' + esc(String(uf.state).replace(/\s+/g, '-')) + '">' + esc(uf.state)
         + (uf.open === false && !uf.merged ? ' · ticket closed' : '') + '</div>');
@@ -1923,6 +1951,7 @@ function renderPipeline(d) {
       + '<div class="lane-row">' + stuck.map(pcard).join('') + '</div>'
     : '';
 
+  $('pboard').style.setProperty('--pcols', String(ROAD.length));
   $('pboard').innerHTML = ROAD.map(key => {
     const list = cards.filter(c => c.stage === key && !bandIds.has(c.id));
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])

@@ -307,8 +307,13 @@ an umbrella issue, the unit tickets referencing it (open and closed) are
 listed one per row — `unit` (from the title, e.g. `U5`), `ticket`, `branch`
 (the pinned branch from the ticket body), `lane` (`host/lane`, `(idle)` when
 the lane sits on the branch but nothing runs), `pr` (open PR with its CI, or
-`#N merged`) and `state` (`queued`, `on lane`, `lane idle`, `pr open`, `pr
-green`, `pr red`, `merged`, `closed`). `lanes` is the one-line form. The
+`#N merged`), `state` (`queued`, `on lane`, `lane idle`, `pr open`, `pr
+green`, `pr red`, `merged`, `closed`) and `deps` — the tickets the unit's body
+says it depends on (every `depends on` line, TICKETING.md §2.4), each with the
+state of the unit it names (`#1527 U9 pr red, #1529 U11 merged`; `none`). In
+JSON a unit card carries them as `unitFacts.deps`: `{ ticket, unit, state,
+met }` — `met` is true once that unit is merged or its ticket closed, null for
+a ticket outside the sprint. `lanes` is the one-line form. The
 binding is by facts only: a lane's checked-out branch (`hzlane status`, the Mac
 kitchen folders) or the `TASK-<ticket>.md` its codex reads, and a PR's head
 branch — nobody announces it. In JSON the card carries `sprint` (`counts`,

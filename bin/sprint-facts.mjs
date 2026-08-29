@@ -29,6 +29,19 @@ export function parseUnitBranch(body) {
   return m ? m[1].trim() : '';
 }
 
+// The ticket's dependencies (TICKETING.md §2.4): every line that says
+// "depends on" — "**Depends on:** #1523 (reason), #1524 (reason)", a later
+// "**Dependency added:** also depends on #1521 — …" — yields the tickets it
+// names; "depends on: none" yields nothing.
+export function parseUnitDeps(body) {
+  const out = new Set();
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    if (!/\bdepends?\s+on\b/i.test(line)) continue;
+    for (const m of line.matchAll(/#(\d{3,5})\b/g)) out.add(Number(m[1]));
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 function normBranch(b) {
   return String(b ?? '').trim().replace(/^refs\/heads\//, '');
 }
@@ -86,7 +99,8 @@ export function ciSlotSummary(runners = []) {
 // ciJobs: Map(PR number -> [{ workflow, job, status, runner, startedAt }]) for PRs whose CI runs;
 // ciRunners: the repo's self-hosted runners [{ name, status, busy, labels }];
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
-// unitIssues: Map(umbrella number -> [{ number, title, url, state, branch }]).
+// unitIssues: Map(umbrella number -> [{ number, title, url, state, branch, deps }]) —
+//   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps).
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
 export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], staleSources = [], at = null } = {}) {
   const out = new Map();
@@ -104,6 +118,8 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       url: i.url ?? '',
       branch: normBranch(i.branch),
       open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
+      depTickets: (Array.isArray(i.deps) ? i.deps : []).map(Number).filter(Number.isFinite),
+      deps: [],
       lane: null,
       pr: null,
       merged: null,
@@ -155,6 +171,18 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         if (merged) u.merged = { number: merged.number, url: merged.url ?? '', mergedAt: merged.mergedAt ?? null };
       }
       u.state = unitState(u);
+    }
+    // Dependencies resolved against the sprint's own units, so a card can say
+    // "waits for U9 #1527 (pr red)" — met once the dependency is merged or its
+    // ticket closed; a ticket outside this sprint stays unresolved (met: null).
+    for (const u of units) {
+      u.deps = u.depTickets.map(n => {
+        const d = byTicket.get(n);
+        return d
+          ? { ticket: n, unit: d.unit, state: d.state, met: Boolean(d.merged || !d.open) }
+          : { ticket: n, unit: '', state: 'outside the sprint', met: null };
+      });
+      delete u.depTickets;
     }
 
     const bound = units.filter(u => u.lane).map(u => ({ ...u.lane, ticket: u.ticket, unit: u.unit }));

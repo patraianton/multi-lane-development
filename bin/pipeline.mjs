@@ -965,7 +965,7 @@ function cardExtras(c, all = []) {
     const parent = all.find(p => p.id === c.parent);
     if (parent) extra.sprintTitle = parent.title;
     const u = (sprintMap.get(c.parent)?.units ?? []).find(x => x.ticket === c.ticket);
-    if (u) extra.unitFacts = { lane: u.lane, pr: u.pr, merged: u.merged, state: u.state, open: u.open };
+    if (u) extra.unitFacts = { lane: u.lane, pr: u.pr, merged: u.merged, state: u.state, open: u.open, deps: u.deps ?? [] };
   }
   return Object.keys(extra).length ? { ...c, ...extra } : c;
 }
@@ -1311,6 +1311,7 @@ async function buildAgentCard(card, withSpec = false) {
         : u.pr ? `#${u.pr.number} ${u.pr.ci?.text ?? ''}${u.pr.runner?.name ? ' · ' + u.pr.runner.name + (u.pr.runner.host ? ' (' + u.pr.runner.host + ')' : '') : ''}`.trim()
         : '-',
       state: u.state,
+      deps: (u.deps ?? []).map(d => `#${d.ticket}${d.unit ? ' ' + d.unit : ''} ${d.state}`).join(', ') || 'none',
     })),
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`

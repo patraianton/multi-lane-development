@@ -22,7 +22,7 @@ const FACTS = {
   mergedPrs: [{ number: 1530, url: 'https://github.com/acme/web/pull/1530', branch: 'feat/salon-u03-reserve-reader', mergedAt: '2026-08-28T20:00:00Z' }],
   unitIssues: {
     1515: [
-      { number: 1519, title: 'SALON-U5: migration 133 - daily rotation set', url: 'https://github.com/acme/web/issues/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133' },
+      { number: 1519, title: 'SALON-U5: migration 133 - daily rotation set', url: 'https://github.com/acme/web/issues/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133', deps: [1518, 1516] },
       { number: 1517, title: 'SALON-U2: paid-placements reader', url: 'https://github.com/acme/web/issues/1517', state: 'OPEN', branch: 'feat/salon-u02-paid-reader' },
       { number: 1516, title: 'SALON-U1: readiness contract', url: 'https://github.com/acme/web/issues/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
       { number: 1518, title: 'SALON-U3: reserve reader', url: 'https://github.com/acme/web/issues/1518', state: 'CLOSED', branch: 'feat/salon-u03-reserve-reader' },
@@ -79,6 +79,12 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(by.U5.lane, 'mac/lane-b');
     assert.equal(by.U5.sprintTitle, 'AUTO-SALON sprint');
     assert.equal(by.U5.unitFacts.state, 'on lane');
+    // The card carries its ticket's dependencies with the state of each unit named.
+    assert.deepEqual(by.U5.unitFacts.deps, [
+      { ticket: 1518, unit: 'U3', state: 'merged', met: true },
+      { ticket: 1516, unit: 'U1', state: 'pr green', met: false },
+    ]);
+    assert.deepEqual(by.U2.unitFacts.deps, []);
 
     // Stages by facts: lane → development, the lane running the local check →
     // local_check, PR → ci_pr, merged → done, nothing → ticketed.

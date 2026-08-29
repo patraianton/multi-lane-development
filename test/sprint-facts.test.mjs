@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -18,11 +18,22 @@ test('the ticket body yields the pinned branch; titles yield the unit label', ()
   assert.equal(umbrellaOf('https://github.com/acme/web/pull/12'), null);
 });
 
+test('the ticket body yields its dependencies: every "depends on" line, none is nothing', () => {
+  assert.deepEqual(parseUnitDeps('**Branch:** `feat/x`\n**Depends on:** #1527 (needs its contract/tables merged first), #1529 (needs its contract/tables merged first)'),
+    [1527, 1529]);
+  assert.deepEqual(parseUnitDeps('**Depends on:** #1523 (contract first)\n\n- **Dependency added:** also depends on #1521 — the tag revalidation hooks the activation built there.'),
+    [1521, 1523]);
+  assert.deepEqual(parseUnitDeps('**Dependencies added:** also depends on #1516 (readiness) and #1526 (nightly job).'), [1516, 1526]);
+  assert.deepEqual(parseUnitDeps('Branch: feat/salon-u02-paid-reader\nDepends on: none'), []);
+  assert.deepEqual(parseUnitDeps('Umbrella #1515 — see #1516 for the contract'), [], 'a reference is not a dependency');
+  assert.deepEqual(parseUnitDeps(''), []);
+});
+
 test('units bind to lanes by branch or TASK file, to PRs by head branch, and the states follow', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [
-    { number: 1519, title: 'SALON-U5: migration 133', url: 'u/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133' },
-    { number: 1517, title: 'SALON-U2: paid-placements reader', url: 'u/1517', state: 'OPEN', branch: 'feat/salon-u02-paid-reader' },
+    { number: 1519, title: 'SALON-U5: migration 133', url: 'u/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133', deps: [1518, 1517, 1499] },
+    { number: 1517, title: 'SALON-U2: paid-placements reader', url: 'u/1517', state: 'OPEN', branch: 'feat/salon-u02-paid-reader', deps: [] },
     { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
     { number: 1521, title: 'SALON-U0: free-promo checkout', url: 'u/1521', state: 'OPEN', branch: '' },
     { number: 1522, title: 'SALON-U4: composition', url: 'u/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
@@ -85,6 +96,16 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U3.lane, null);
   // Nothing yet.
   assert.equal(by.U4.state, 'queued');
+  // Dependencies resolved against the sprint: merged → met, open PR → not met,
+  // a ticket from elsewhere → unresolved.
+  assert.deepEqual(by.U5.deps, [
+    { ticket: 1518, unit: 'U3', state: 'merged', met: true },
+    { ticket: 1517, unit: 'U2', state: 'pr open', met: false },
+    { ticket: 1499, unit: '', state: 'outside the sprint', met: null },
+  ]);
+  assert.deepEqual(by.U2.deps, []);
+  assert.deepEqual(by.U4.deps, [], 'no deps field on the issue is no dependencies');
+  assert.equal(by.U5.depTickets, undefined);
 
   assert.deepEqual(s.lanes.map(l => `${l.host}/${l.lane}=${l.unit}`),
     ['mac/lane-a=U0', 'lanes-01/lane-3=U1', 'radar/lane-1=U2', 'mac/lane-b=U5']);
