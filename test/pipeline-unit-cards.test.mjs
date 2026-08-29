@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { startBoard, postJson, getJson } from './helpers.mjs';
 
@@ -18,7 +18,16 @@ const FACTS = {
     // The lane is running the project's local check: that is the local_check fact.
     { host: 'mac', lane: 'lane-a', busy: true, since: '03:10 ago', branch: 'feat/salon-u06-band', task: 'TASK-1523.md', check: { pid: '4242', since: '02:40 ago', cmd: 'node scripts/ci-local.mjs' } },
   ],
-  prs: [{ number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', ci: { color: 'green', text: 'CI green (5)' } }],
+  prs: [
+    { number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', ci: { color: 'green', text: 'CI green (5)' } },
+    // Nobody's PR: no card carries its branch — off the board.
+    { number: 1599, title: 'stray fix', url: 'https://github.com/acme/web/pull/1599', branch: 'fix/stray', ci: { color: 'none', text: 'no checks' } },
+  ],
+  // Open issues as the watch sees them: a fix labelled qa that names no umbrella.
+  openIssues: [
+    { number: 1595, title: 'salon: heading fix', url: 'https://github.com/acme/web/issues/1595', qa: true, refs: [] },
+    { number: 1596, title: 'a thought for later', url: 'https://github.com/acme/web/issues/1596', refs: [] },
+  ],
   mergedPrs: [{ number: 1530, url: 'https://github.com/acme/web/pull/1530', branch: 'feat/salon-u03-reserve-reader', mergedAt: '2026-08-28T20:00:00Z' }],
   unitIssues: {
     1515: [
@@ -115,6 +124,19 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'ci_pr']);
     // The sprint's own stage followed its units: work has started.
     assert.equal(data.cards.find(c => c.id === id).stage, 'development');
+
+    // The watch: the stray PR and the umbrella-less fix are off the board, the
+    // thought is not work; both are in the ledger with their fix.
+    const watched = await until(board.base, d => d.offBoard && d.offBoard.findings.length === 2);
+    assert.deepEqual(watched.offBoard.findings.map(f => [f.kind, f.ref]).sort(), [['pr', 'PR #1599'], ['ticket', '#1595']]);
+    assert.equal(watched.offBoard.skipped, null);
+    const ledger = await readFile(path.join(board.dir, 'edge-cases.md'), 'utf8');
+    assert.match(ledger, /PR #1599 off the board \(pr\)/);
+    assert.match(ledger, /#1595 off the board \(ticket\)/);
+    const agentView = await getJson(board.base, '/api/pipeline?format=json');
+    assert.equal(agentView.body.summary.offBoard, 2);
+    const ledgerText = await fetch(`${board.base}/pipeline/edge-cases`).then(r => r.text());
+    assert.match(ledgerText, /Edge cases/);
 
     // A second sweep changes nothing and spawns nothing twice.
     await settle(700);

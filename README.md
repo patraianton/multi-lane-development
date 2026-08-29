@@ -107,23 +107,13 @@ Until a project is chosen, slow sources (ssh, `gh`) are not asked, and `/api/boa
 
 ---
 
-## Windows board
+## Off the board
 
-**Header:** Watchtower, the project being watched, counters, a **windows** / **pipeline** toggle, `+` (hand-typed window card) / **+ Card** (pipeline card), and the gear.
+Everything being built is on the board — the watch (`bin/off-board.mjs`) checks it after every sprint sweep: an open PR no card carries, a ticket in work that names no umbrella, a busy lane on a branch no card carries. Findings stand in the amber **Off the board** zone above the columns and in `/api/pipeline` (`off-board` table), each with its fix; every new one is written into `state/edge-cases.md` (`GET /pipeline/edge-cases`) as an edge case to fold into [`docs/TICKETING.md`](docs/TICKETING.md) §7.
 
-**Columns:**
+## Sources
 
-| Column | What is in it |
-| --- | --- |
-| **Needs you** | Window `blocked`, an ask marker in its last words, or an unanswered question in its umbrella issue. Always first |
-| **Working** | The agent is working right now |
-| **Lane is building** | The window is silent but its lane is busy |
-| **Idle** | Live agent, no work and no lanes |
-| **No agent** | A window with no agent in it |
-
-Clicking a window card is the board's only herdr action: it focuses that tab. It does not start or stop agents.
-
-Window cards are assembled from live sources on each refresh. You can still hide a window (restore it behind the gear) or add a card of your own with `+`.
+The server reads these on their own timers; the windows they describe are no longer drawn (decision 12) but still feed the cards, the shadow verdict and `/api/board`.
 
 | What | Source | How often |
 | --- | --- | --- |

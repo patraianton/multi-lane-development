@@ -9,6 +9,7 @@
 // endpoints and the agent view. watchtower.mjs only routes to it.
 
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
 import { lanesLine } from './sprint-facts.mjs';
 import {
@@ -129,6 +130,18 @@ let BOARD = {
   notifyEnabled: false,
   senders: null,
 };
+
+// What is being built off the board (decision 14): watchtower.mjs runs the
+// watch every sprint sweep and hands the findings here for the page and the
+// agent views. `skipped` names the stale source when the watch did not run.
+let OFF_BOARD = { at: null, findings: [], skipped: null };
+export function setOffBoard(next) {
+  OFF_BOARD = {
+    at: next?.at ?? null,
+    findings: Array.isArray(next?.findings) ? next.findings : [],
+    skipped: next?.skipped ?? null,
+  };
+}
 
 export function configurePipeline(stateDir) {
   FILE = path.join(stateDir, 'pipeline-cards.json');
@@ -926,6 +939,7 @@ async function pageData() {
     usesSubscriptions: BOARD.subscriptions.length > 0,
     watchdogIntervalMin: meta.intervalMin,
     watchdogConfigured: meta.configured,
+    offBoard: OFF_BOARD,
     cards: st.cards.map(c => cardExtras(c, st.cards)),
   };
 }
@@ -1231,6 +1245,7 @@ async function buildAgentPipeline(cards, full, port) {
         n + c.counters.localFails + c.counters.ciFails + c.counters.reviewFails, 0),
       staleStatus: stale.length,
       units: cards.filter(c => c.parent).length,
+      offBoard: OFF_BOARD.findings.length,
     },
     cards: rows,
     stuck: stuck.map(c => ({
@@ -1247,6 +1262,10 @@ async function buildAgentPipeline(cards, full, port) {
         return age == null ? 'no time' : fmtDur(age);
       })(),
     })),
+    offBoard: OFF_BOARD.findings.map(f => ({
+      kind: f.kind, ref: f.ref, title: clipText(f.title || '-', full), reason: f.reason, fix: f.fix,
+    })),
+    offBoardSkipped: OFF_BOARD.skipped,
   };
   if (full) {
     view.specs = cards.filter(c => c.spec.trim())
@@ -1268,6 +1287,8 @@ function renderToonPipeline(v) {
       'no card is stuck'),
     toonTable('stale', v.stale, ['id', 'title', 'age'],
       'no active card has a stale Status'),
+    toonTable('off-board', v.offBoard, ['kind', 'ref', 'title', 'reason', 'fix'],
+      v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
   ];
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
   const help = [];
@@ -1285,6 +1306,9 @@ function renderToonPipeline(v) {
     + ' — a finished card shows "(stopped)"');
   help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
     + ' missing or older than twice the Watchdog interval');
+  help.push('off-board: what is being built without a card — open PRs no card carries, tickets'
+    + ' in work that name no umbrella, busy lanes on unknown branches; the ledger of such cases'
+    + ' is /pipeline/edge-cases (plain text)');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
   return out.join('\n') + '\n';
@@ -1431,6 +1455,15 @@ export async function handlePipeline(req, res, url, port) {
   // What the page polls while the Pipeline view is on.
   if (req.method === 'GET' && url.pathname === '/pipeline/data') {
     send(res, 200, JSON.stringify(await pageData()));
+    return true;
+  }
+
+  // The edge-case ledger: every case of work off the board, as written.
+  if (req.method === 'GET' && url.pathname === '/pipeline/edge-cases') {
+    let text = '';
+    try { text = await readFile(path.join(path.dirname(FILE), 'edge-cases.md'), 'utf8'); }
+    catch { text = 'no edge cases recorded yet — nothing has been built off the board since the watch started\n'; }
+    sendText(res, 200, text);
     return true;
   }
 
