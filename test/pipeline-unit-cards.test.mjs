@@ -173,11 +173,57 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(u4.stage, 'ticketed', 'stale sources: no move');
     assert.equal(u4.links.pr, 'https://github.com/acme/web/pull/1550');
 
+    // One unit merged while the rest are still in flight: it waits in Merged —
+    // on main, nobody checking it — because the QA opens only with the sprint's
+    // last unit (decision 18). A QA finding whose fix a lane has started leaves
+    // QA for development: work starting, not a failure.
+    const partial = {
+      ...FACTS, staleSources: [],
+      prs: FACTS.prs.filter(p => p.number !== 1540),
+      mergedPrs: [...FACTS.mergedPrs, { number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', mergedAt: '2026-08-29T01:00:00Z' }],
+      lanes: [...FACTS.lanes, { host: 'radar', lane: 'lane-3', busy: true, since: '00:05 ago', branch: 'fix/salon-tails' }],
+      unitIssues: { 1515: FACTS.unitIssues[1515].map(u => u.number === 1590 ? { ...u, branch: 'fix/salon-tails' } : u) },
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(partial));
+    const partly = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.stage === 'merged');
+    assert.equal(partly.cards.find(c => c.id === by.U1.id).stage, 'merged', 'merged, the sprint not yet: waits in Merged');
+    assert.equal(partly.cards.find(c => c.id === id).stage, 'development', 'the sprint is still in flight');
+    const finding = partly.cards.find(c => c.parent === id && c.unit === 'QA');
+    assert.equal(finding.stage, 'development', 'the finding left QA for the lane fixing it');
+    assert.equal(finding.lane, 'radar/lane-3');
+    assert.deepEqual(finding.stageHistory.map(h => h.stage), ['ticketed', 'qa', 'development']);
+
+    // The auto-close race: the issue list says U1's ticket is closed before the
+    // merged-PR list knows the merge. Closed with no merge behind it reads as
+    // accepted — the card reaches done — and comes back to Merged the moment
+    // the merge is known and the close turns out to be a second after it.
+    const raced = {
+      ...partial, mergedPrs: FACTS.mergedPrs,
+      unitIssues: { 1515: partial.unitIssues[1515].map(u => u.number === 1516 ? { ...u, state: 'CLOSED', closedAt: '2026-08-29T01:00:01Z' } : u) },
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(raced));
+    const wrongly = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.stage === 'done');
+    assert.equal(wrongly.cards.find(c => c.id === by.U1.id).stage, 'done', 'an old close with no merge known is a person\'s word');
+    const caught = { ...raced, mergedPrs: partial.mergedPrs };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(caught));
+    const back = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.stage === 'merged');
+    assert.equal(back.cards.find(c => c.id === by.U1.id).stage, 'merged', 'the auto-close is not an acceptance: back from done');
+    assert.deepEqual(back.cards.find(c => c.id === by.U1.id).stageHistory.slice(-2).map(h => h.stage), ['done', 'merged']);
+
+    // A merged unit that sits in QA while the sprint's QA is not open (the rule
+    // before decision 18 put it there) waits in Merged with the others.
+    const parked = await postJson(board.base, '/pipeline/card/move', { id: by.U1.id, to: 'qa' });
+    assert.equal(parked.body.card.stage, 'qa');
+    const rejoined = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.stage === 'merged');
+    assert.equal(rejoined.cards.find(c => c.id === by.U1.id).stage, 'merged', 'QA not open: back to Merged');
+
     // Every unit merged (or closed): the sprint reaches QA by itself and waits
     // there while its QA ticket is open.
     const merged = {
       ...FACTS, staleSources: [], prs: [],
-      mergedPrs: FACTS.unitIssues[1515].filter(u => u.branch).map((u, i) => ({ number: 1600 + i, url: `https://github.com/acme/web/pull/${1600 + i}`, branch: u.branch, mergedAt: '2026-08-29T01:00:00Z' })),
+      // U3's own merge (#1530, the day before its close) stays as it was: a merge
+      // dated after the close would read as "closed before delivery", not accepted.
+      mergedPrs: [...FACTS.mergedPrs, ...FACTS.unitIssues[1515].filter(u => u.branch && u.number !== 1518).map((u, i) => ({ number: 1600 + i, url: `https://github.com/acme/web/pull/${1600 + i}`, branch: u.branch, mergedAt: '2026-08-29T01:00:00Z' }))],
     };
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(merged));
     const inQa = await until(board.base, d => d.cards.find(c => c.id === id)?.stage === 'qa');

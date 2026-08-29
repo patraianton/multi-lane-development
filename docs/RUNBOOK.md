@@ -6,7 +6,7 @@ stage may not be skipped, however polished the input looks.
 
 The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → review → qa → done` (+ `stuck`)
+`spec → grilled → ticketed → development → local_check → ci_pr → review → merged → qa → done` (+ `stuck`)
 
 ---
 
@@ -124,17 +124,20 @@ shows how long the code has waited for a reader and then for its merge — the o
 that time off the board. The verdict is the first line of a PR comment, plain text:
 `R1 — GO` / `R1 — NO-GO`. A NO-GO is a review failure: the board sends the card back to
 `development` for the fix round (the third in a row → `stuck`); the fix is just another
-brief for a lane. A GO is followed by the merge; the merged card moves on to `qa`.
+brief for a lane. A GO is followed by the merge; the merged card moves on to `merged` —
+on main, waiting for the rest of the sprint — and to `qa` when the sprint's last unit is
+merged (decision 18).
 
-## 7. QA — `ci_pr → qa → done`
+## 7. QA — `review → merged → qa → done`
 
 **Who:** the CTO window + QA agents.
 
 1. Every review finding not taken into the unit's round becomes its own backlog ticket
    THE MOMENT it is found. Tail bundles filed after handover are a violation.
 2. **QA runs once per sprint, never per unit.** It opens only after the sprint's LAST
-   unit is on production — a unit card in `qa` means "merged, waiting for the sprint's
-   QA", not "check this unit". Then two Codex computer-use agents on two free Mac lanes,
+   unit is on production — until then a merged unit waits in `merged`; the QA column holds
+   the sprint under QA and its findings not yet picked up (a finding whose fix is on a lane
+   or a PR travels the road like a unit). Then two Codex computer-use agents on two free Mac lanes,
    in parallel and independently, walk PRODUCTION in a real browser along the sprint's
    briefs (the user's path, all locales, console clean). Their findings become tickets.
    A lane's own browser proof on Preview is part of its unit, not QA.
