@@ -4,6 +4,20 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (afternoon) — nothing is built off the board
+
+14. **Everything being built is on the board; the board watches for what is not (owner,
+    2026-08-29 ~13:00).** Three ways onto the board and no fourth (TICKETING.md §7): a unit
+    ticket naming its umbrella, a QA ticket (`qa` label + umbrella number) for anything after
+    the sprint, a card of its own for work of no sprint. The umbrella number counts in the
+    body **or in a comment** — the board reads both from now on. The watch runs after every
+    sprint sweep: open PRs no card carries, tickets in work naming no umbrella, busy lanes on
+    unknown branches — flagged above the columns and in `/api/pipeline`, and every new case
+    written into `state/edge-cases.md` as an edge case the regulation must absorb.
+    Why: Zhenya's acceptance fixes #1572/#1573 were opened without an umbrella and worked by
+    the orchestrator while the board showed nothing; the umbrella line, added on request,
+    went into a comment the board did not read.
+
 ## 2026-08-29 (midday) — the page is the pipeline; QA before done; merged is not done
 
 13. **Merged is delivered, not accepted (owner, 2026-08-29 ~12:40: "да, окей" to option 1).**

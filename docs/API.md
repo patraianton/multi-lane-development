@@ -339,6 +339,15 @@ or done by hand). For a rollout unit that close follows the production probe.
 A ticket the PR auto-closed is accepted by reopening it and closing it again.
 The unit's `state` says `accepted`; `sprint.accepted` counts them.
 
+**Off the board (decision 14).** `/pipeline/data` carries `offBoard: { at,
+findings, skipped }` and `/api/pipeline` an `off-board[N]{kind,ref,title,reason,fix}`
+table plus `summary.offBoard` — what is being built without a card: an open PR
+no card carries (`pr`), a ticket in work that names no umbrella (`ticket`), a
+busy lane on a branch no card carries (`lane`). `skipped` names the stale
+source when the watch did not run. `GET /pipeline/edge-cases` is the ledger
+(`state/edge-cases.md`): one dated block per new finding, one line per
+resolution. EXECUTION.md "Off the board (the watch)".
+
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
 are written (TICKETING.md §2.11). The board lists it apart from the units as

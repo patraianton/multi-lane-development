@@ -198,7 +198,8 @@ finished-and-green #1481 lay ready for 8.5 h.
 
 A finding from a unit's review that is judged not worth a round **now** does not go into a
 "tails" note and does not stay in the sprint log: it goes into a **QA ticket** — an issue
-labelled `qa` that references the umbrella. One QA ticket per finding worth fixing
+labelled `qa` that references the umbrella — the number in the body or in a comment, the
+board reads both. One QA ticket per finding worth fixing
 (a fix is a PR like any other, bound by branch); findings that are cosmetics may share
 one ticket, closed when the decision to drop them is written. The board puts a QA ticket
 in the `qa` column the day it is written and holds the sprint in `qa` after its last unit
@@ -262,3 +263,32 @@ Minutes, not hours. All boxes or the card stays in `ticketed`:
 - A ticket that requires the lane to ask a human anything not already carrying a default.
 - A ticket whose acceptance criteria a machine cannot check.
 - Links in place of folded content for landmines, forbidden zones, or decisions.
+
+## 7. Nothing is built off the board
+
+**Everything that is being built is on the board, from the first minute.** A PR, a ticket
+someone codes against, a busy lane — each belongs to a card, or it does not exist for the
+process. Three ways onto the board, and no fourth:
+
+| What | How it gets a card |
+| --- | --- |
+| A unit of a sprint | its ticket names the umbrella (`#NNNN` in the body or a comment) and pins its branch (§2.3); the board spawns the unit card itself |
+| A fix after the sprint — an acceptance finding, a review leftover, an owner's remark | a **QA ticket**: the umbrella's number in the ticket + the label `qa` (§2.11); the card lands in the QA column of that sprint, even after the umbrella is closed |
+| Work that belongs to no sprint | a card of its own on the board (`+ Card` or `POST /pipeline/card/create`) with the ticket attached — and if it is more than one unit, it is a sprint: spec → grill → tickets |
+
+A PR is on the board through its ticket's pinned branch (or `links.pr` on a hand card);
+a lane is on the board through the branch it builds or the `TASK-<ticket>.md` it reads.
+
+**The watch.** The board checks this after every sprint sweep (`bin/off-board.mjs`):
+open PRs no card carries, tickets in work (a branch, a depends-on line, a unit label, or
+the `qa` label) that name no umbrella, busy lanes on branches no card carries. Findings
+stand in the amber **Off the board** zone above the columns and in `/api/pipeline`
+(`off-board` table), each with its fix; every new one is written into
+`state/edge-cases.md` (`/pipeline/edge-cases`) as an **edge case** — a situation this
+regulation did not cover. An edge case is closed by folding its rule into this file, not
+by fixing the one ticket.
+
+Evidence: 29.08 — Zhenya's two acceptance fixes (#1572, #1573) were written without an
+umbrella ("#1515 is closed") and their umbrella line went into a comment; the board did not
+see them until the line was in the body and the `qa` label on. The orchestrator worked
+them while the board showed nothing.

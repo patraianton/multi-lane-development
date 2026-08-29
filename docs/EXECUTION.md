@@ -272,6 +272,24 @@ a fresh run of three.
 These two processes never call `unstuck`, never call `accept`, never pick a
 lane, and never assign a subscription.
 
+## Off the board (the watch)
+
+After every sprint sweep the board compares what GitHub and the lanes say is
+being built with what the cards carry ([TICKETING.md](./TICKETING.md) §7):
+
+| Finding | Test | Fix named on the line |
+| --- | --- | --- |
+| `pr` | an open PR whose branch no card has pinned and whose URL no card has attached (bot branches skipped) | pin the branch in the unit ticket, or attach the PR to its card |
+| `ticket` | an open issue shaped like work — a `Branch:` line, a depends-on line, a unit label, or the `qa` label — with no card (it names no umbrella, or names one that is not a sprint here) | write the umbrella number into the ticket; label `qa` for an after-sprint fix |
+| `lane` | a busy lane on a branch no card carries and no `TASK-<ticket>.md` of a card | give the work its ticket or stop it |
+
+A stale source skips the watch and the zone says so — unknown is never "off
+the board". Findings: the **Off the board** zone on the page, `offBoard` on
+`/pipeline/data`, the `off-board` table and `summary.offBoard` on
+`/api/pipeline`. The ledger `state/edge-cases.md` (`GET /pipeline/edge-cases`)
+gets one dated block per new finding and one line per resolution; each block
+is an edge case to fold into the regulation.
+
 ## HTTP contracts
 
 Every request may carry `Authorization: Bearer {apiToken}` when the token is
@@ -483,6 +501,10 @@ by status code — an empty page on a green pipeline is an alarm.
   migration numbers, not merge timing.
 - A unit without a ticket, or coding before the ticket exists
   ([TICKETING.md](./TICKETING.md) §6).
+- Building anything that is not on the board — a PR no card carries, a ticket
+  that names no umbrella, a lane on an unknown branch. The board's off-board
+  watch flags it above the columns and in `/api/pipeline` (`off-board`), and
+  writes it into `state/edge-cases.md` ([TICKETING.md](./TICKETING.md) §7).
 
 ## CTO standing orders (process)
 

@@ -18,7 +18,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { readFile, mkdir, stat, readdir, open } from 'node:fs/promises';
+import { readFile, mkdir, stat, readdir, open, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
@@ -29,8 +29,9 @@ import {
 } from './serve.mjs';
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
-  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits,
+  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard,
 } from './pipeline.mjs';
+import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -409,6 +410,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: new Map(Object.entries(f.ciJobs ?? {}).map(([k, v]) => [Number(k), v])),
       ciRunners: f.ciRunners ?? [],
       umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
+      openIssues: f.openIssues ?? [],
       staleSources: f.staleSources ?? [],
     };
   } else {
@@ -429,6 +431,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: ciJobsSource.value ?? new Map(),
       ciRunners: ciRunnersSource.value ?? [],
       umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
+      openIssues: unitIssuesSource.ok ? openWorkIssues : null,
       staleSources,
     };
   }
@@ -436,8 +439,47 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   setCardSprints(sprints);
   const sync = await syncSprintUnits(sprints);
   if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
+  await offBoardSweep(facts);
   return { sprints: sprints.size, ...sync };
 });
+
+// ------------------------------------------------------ off the board
+//
+// Everything being built lives on the board (decision 14). After every sprint
+// sweep: open PRs no card carries, tickets in work that name no umbrella,
+// busy lanes on unknown branches. The findings go to the page and to
+// /api/pipeline; every new one is written into state/edge-cases.md — the
+// ledger the process is corrected from. Unknown is never "off the board":
+// a stale source skips the watch and the page says so.
+const EDGE_JSON = path.join(STATE_DIR, 'edge-cases.json');
+const EDGE_MD = path.join(STATE_DIR, 'edge-cases.md');
+const EDGE_HEAD = '# Edge cases — what was built off the board\n\n'
+  + 'Written by the board (decision 14): every entry is a case the process did not cover.'
+  + ' Fold each one into TICKETING.md §7 and note the rule here.\n\n';
+let offBoard = { at: null, findings: [], skipped: null };
+async function offBoardSweep(facts) {
+  const at = new Date().toISOString();
+  const stale = facts.staleSources ?? [];
+  if (stale.length || !Array.isArray(facts.openIssues)) {
+    offBoard = { at, findings: offBoard.findings, skipped: `sources stale: ${stale.join(', ') || 'tickets'}` };
+    setOffBoard(offBoard);
+    return;
+  }
+  const findings = offBoardFindings({
+    cards: await listPipelineCards(), prs: facts.prs ?? [], issues: facts.openIssues, lanes: facts.lanes ?? [], at,
+  });
+  offBoard = { at, findings, skipped: null };
+  setOffBoard(offBoard);
+  const ledger = await readJsonSoft(EDGE_JSON, { seen: {} });
+  const r = updateLedger(ledger, findings, at);
+  if (!r.fresh.length && !r.resolved.length) return;
+  await writeJsonAtomic(EDGE_JSON, r.ledger);
+  let head = '';
+  try { await stat(EDGE_MD); } catch { head = EDGE_HEAD; }
+  await appendFile(EDGE_MD, head + ledgerMarkdown(r.fresh, r.resolved, at) + '\n');
+  for (const f of r.fresh) console.log(`off the board: ${f.ref} — ${f.reason}`);
+  for (const f of r.resolved) console.log(`back on the board: ${f.ref}`);
+}
 setInterval(() => { sprintSource.tick(); }, sprintSweepMs).unref();
 
 // Which project the board is showing, and how the filter is expressed.
@@ -782,6 +824,10 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
 // umbrella is whatever the unit tickets reference (the label is optional —
 // #1515 carries none), so the state of every referenced issue is kept.
 let umbrellaStates = new Map();
+// Every open issue that is neither an umbrella nor parked, with what it
+// references (body AND comments — a "continuation of #1515" written as a
+// comment counts, 29.08): the off-board watch reads this list.
+let openWorkIssues = [];
 const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
@@ -789,17 +835,28 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   // Closed units are read too: a sprint card shows a finished unit as done,
   // not as vanished. Consumers that want the open scope filter on `state`.
   const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
-    '--json', 'number,title,body,url,labels,createdAt,state,closedAt'], 90000);
+    '--json', 'number,title,body,url,labels,createdAt,state,closedAt,comments'], 90000);
   if (out === null) throw new Error('gh issue list (units) did not answer');
   const states = new Map();
   const issueState = new Map();
+  const work = [];
   for (const it of JSON.parse(out)) {
     issueState.set(it.number, String(it.state ?? 'OPEN').toUpperCase());
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
     if (labels.includes('umbrella')) { states.set(it.number, issueState.get(it.number)); continue; }
     if (labels.includes('wave-next')) continue;
     const refs = new Set();
-    for (const m of `${it.title}\n${it.body ?? ''}`.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
+    const text = [it.title, it.body ?? '', ...(it.comments ?? []).map(c => c.body ?? '')].join('\n');
+    for (const m of text.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
+    refs.delete(it.number);
+    if (issueState.get(it.number) === 'OPEN') {
+      work.push({
+        number: it.number, title: it.title, url: it.url, labels,
+        branch: parseUnitBranch(it.body), deps: parseUnitDeps(it.body), qa: labels.includes('qa'),
+        dependsLine: /\bdepends?\s+on\b/i.test(String(it.body ?? '')),
+        refs: [...refs],
+      });
+    }
     for (const n of refs) {
       if (n === it.number) continue;
       if (!byUmbrella.has(n)) byUmbrella.set(n, []);
@@ -814,6 +871,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   }
   for (const n of byUmbrella.keys()) if (issueState.has(n)) states.set(n, issueState.get(n));
   umbrellaStates = states;
+  openWorkIssues = work;
   return byUmbrella;
 });
 
