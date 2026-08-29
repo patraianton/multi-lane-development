@@ -348,6 +348,24 @@ source when the watch did not run. `GET /pipeline/edge-cases` is the ledger
 (`state/edge-cases.md`): one dated block per new finding, one line per
 resolution. EXECUTION.md "Off the board (the watch)".
 
+**Idle lanes (decision 15).** `/pipeline/data` carries `idleLanes: { at, findings }`
+and `/api/pipeline` an `idle-lanes[N]{card,free,queued,since}` table plus
+`summary.idleLanes`: a lane assigned to a sprint sits free while a unit of that
+sprint is queued with nothing in its way.
+
+**Auto-dispatch (decision 16).** `/pipeline/data` carries `autoDispatch: { at, on,
+rows }` and `/api/pipeline` an `auto-dispatch[N]{card,unit,lane,base,state}` table
+plus `summary.autoDispatch` (rows) and `summary.autoDispatchOn`. One row per
+startable unit the board pairs with a free launchable lane — `unit` is `U3b #1583`,
+`lane` the fleet name (`mac/lane-6`), `base` where the unit starts from (`main`, or
+`feat/fin-u3a@b34d212d (PR #1602 of U3a)`: the head of the dependency's open PR).
+`state` is `would dispatch` while the switch is off (the default), else what the
+journal `state/auto-dispatch.json` says — `launched 12:19Z`, `failed 12:19Z — …`,
+`held 12:19Z — …` — and `held: <why>` for a startable unit that could not be paired
+(no pinned branch, two open-PR dependencies, only light lanes free, no launcher for
+the lane). Journal rows stay in the table for a day. DEVLAUNCH.md "Auto-dispatch
+(decision 16)".
+
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
 are written (TICKETING.md §2.11). The board lists it apart from the units as
