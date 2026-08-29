@@ -183,26 +183,34 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     }));
     units.sort((a, b) => unitOrder(a) - unitOrder(b) || a.ticket - b.ticket);
     const byTicket = new Map(units.map(u => [u.ticket, u]));
-    const byBranch = new Map(units.filter(u => u.branch).map(u => [u.branch, u]));
+    // Several tickets may pin one branch (one PR closing three QA findings):
+    // the lane building that branch belongs to each of them, not to the last
+    // one the map happened to keep.
+    const byBranch = new Map();
+    for (const u of units) {
+      if (!u.branch) continue;
+      if (!byBranch.has(u.branch)) byBranch.set(u.branch, []);
+      byBranch.get(u.branch).push(u);
+    }
 
     for (const l of lanes) {
-      let u = null;
+      let hits = [];
       const branch = normBranch(l.branch);
       // The TASK file names the ticket the codex is reading right now — the
       // strongest evidence; the checked-out branch can be a leftover.
       if (l.task) {
         const m = /TASK-(\d{3,5})\b/.exec(String(l.task));
-        if (m && byTicket.has(Number(m[1]))) u = byTicket.get(Number(m[1]));
+        if (m && byTicket.has(Number(m[1]))) hits = [byTicket.get(Number(m[1]))];
       }
-      if (!u && branch && byBranch.has(branch)) u = byBranch.get(branch);
-      if (!u) continue;
+      if (!hits.length && branch && byBranch.has(branch)) hits = byBranch.get(branch);
+      if (!hits.length) continue;
       const rec = {
         host: l.host, lane: l.lane, busy: Boolean(l.busy), since: l.since ?? null,
         branch: branch || null, task: l.task ?? null, check: l.check ?? null,
         folder: l.folder ?? null, server: l.server ?? null, fleet: l.fleet !== false,
       };
       // A busy lane beats an idle one still parked on the unit's branch.
-      if (!u.lane || (rec.busy && !u.lane.busy)) u.lane = rec;
+      for (const u of hits) if (!u.lane || (rec.busy && !u.lane.busy)) u.lane = rec;
     }
 
     for (const u of units) {

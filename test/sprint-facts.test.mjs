@@ -134,6 +134,30 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.laneTable.map(l => l.lane + ':' + (l.unit || '-')), ['lane-1:U2', 'lane-2:-', 'lane-3:U1', 'lane-5:-', 'lane-6:-', 'lane-a:U0', 'lane-b:U5']);
 });
 
+test('one branch pinned by three tickets: the lane building it shows on every one of them', () => {
+  // Three QA findings fixed by one PR on one branch (salon, 29.08): the board
+  // used to hand the lane to whichever ticket the branch map kept last, so two
+  // of the three looked abandoned while the lane was busy on their fix.
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const unitIssues = new Map([[1515, [
+    { number: 1586, title: 'salon cards: marker text', url: 'u/1586', state: 'OPEN', branch: 'preview/salon-card-av01', qa: true },
+    { number: 1587, title: 'salon cards: tighten the gaps', url: 'u/1587', state: 'OPEN', branch: 'preview/salon-card-av01', qa: true },
+    { number: 1598, title: 'salon cards: drop the TOP-6 badge', url: 'u/1598', state: 'OPEN', branch: 'preview/salon-card-av01', qa: true },
+    { number: 1599, title: 'FIN gap: MobilleCard', url: 'u/1599', state: 'OPEN', branch: 'feat/fin-1599' },
+  ]]]);
+  const lanes = [
+    { host: 'lanes-01', lane: 'lane-3', busy: true, since: 'Sat 12:00', branch: 'preview/salon-card-av01' },
+    { host: 'lanes-01', lane: 'lane-1', busy: true, since: 'Sat 12:26', branch: 'feat/fin-1599' },
+    { host: 'lanes-01', lane: 'lane-2', busy: false, since: null, branch: 'main' },
+  ];
+  const facts = sprintFactsFor([card], { lanes, prs: [], mergedPrs: [], unitIssues, umbrellaStates: new Map([[1515, 'OPEN']]), at: '2026-08-29T13:00:00Z' });
+  const s = facts.get('csprint');
+  assert.deepEqual(s.qaTickets.map(u => [u.ticket, u.lane?.lane ?? null, u.state]),
+    [[1586, 'lane-3', 'on lane'], [1587, 'lane-3', 'on lane'], [1598, 'lane-3', 'on lane']],
+    'every ticket pinned to the branch carries the lane');
+  assert.deepEqual(s.units.map(u => [u.ticket, u.lane?.lane ?? null]), [[1599, 'lane-1']], 'the other lane binds as before');
+});
+
 test('merged is not accepted: the ticket closed by the PR does not count, a later close does, and no merge means the close is the word', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [
