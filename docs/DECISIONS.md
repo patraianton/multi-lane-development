@@ -4,7 +4,18 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
-## 2026-08-29 (midday) — QA before done
+## 2026-08-29 (midday) — the page is the pipeline; QA before done
+
+12. **The windows view is cut; the pipeline is the page (owner, 2026-08-29 ~12:00).**
+    The live-windows board (herdr windows in columns, the lane strip, hand-typed cards,
+    hidden cards) is gone from the page — "it is simply not needed; the pipeline is the
+    default story". The server keeps reading windows: they still feed the pipeline
+    (window names on cards, the shadow verdict of ADR-0006, `/api/board` for agents).
+    The gear keeps only the project choice, which is what those facts are filtered by.
+    In the same round: lane names come from the fleet registry (FLEET.md → `lanes` in the
+    settings), and the sprint band's summary shows the fleet as a table — lane, server,
+    state, unit — with the ticket/artifact/subscription chips in one row under it.
+
 
 11. **A QA stage before done (owner, 2026-08-29 ~11:30).** The road is `… → ci_pr → qa →
     done`. The findings a sprint's reviews leave behind are written as **QA tickets** —

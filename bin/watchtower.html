@@ -132,115 +132,23 @@
   .hidden-list .item button:hover { border-color: #1f6a52; }
   .note { font-size: 11px; color: var(--ink-dim); }
 
-  /* ---- lane strip ---- */
-  .lanes-strip {
-    display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; min-width: 0;
-    padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel-low);
-  }
-  .lanes-strip:empty { display: none; }
-  .host {
-    flex: 1 1 260px; min-width: 0; max-width: 100%;
-    border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px;
-    overflow-wrap: anywhere;
-    background: #0c141d;
-  }
-  .host > .hname { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-mid); }
-  .host.bad > .hname { color: var(--blocked); }
-  .host .lane { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
-  .host .lane b { color: var(--ink); font-weight: 600; }
-  .host .lane.busy { color: var(--working); }
-  .host .lane.busy b { color: var(--working); }
-  .host .lane .who { color: var(--violet); }
-  .host .extra { font-size: 10px; color: var(--ink-dim); font-family: var(--mono); }
-
-  /* ---- columns ---- */
-  .board { display: grid; gap: 8px; padding: 8px 12px 16px; overflow: auto; align-items: start;
-           flex: 1 1 auto; min-height: 0;
-           grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .col { min-width: 0; overflow-wrap: anywhere; }
-  .col > h2 {
-    margin: 0 0 6px; padding: 4px 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
-    color: var(--ink-mid); border-bottom: 1px solid var(--line);
-  }
-  .col > h2 span { color: var(--ink-dim); font-family: var(--mono); }
-  .col.ask > h2 { color: var(--blocked); border-color: #6a2224; }
-
-  /* ---- card ---- */
-  .card {
-    border: 1px solid var(--line); border-left: 3px solid var(--unknown); border-radius: 4px;
-    background: var(--panel); margin-bottom: 8px; padding: 7px 9px; cursor: pointer;
-  }
-  .card:hover { background: var(--panel-hi); border-color: var(--line-hot); }
-  .card.s-working { border-left-color: var(--working); }
-  .card.s-blocked { border-left-color: var(--blocked); }
-  .card.s-done    { border-left-color: var(--done); }
-  .card.s-idle    { border-left-color: var(--idle); }
-  .card.s-unknown { border-left-color: var(--unknown); }
-  .card.here { outline: 1px solid var(--focus); }
-
-  .card.manual { border-left-color: var(--violet); border-style: dashed; cursor: default; }
-
-  .card .top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-  /* The ×: always on the right, its own button — a normal click on the card does
-     not hit it, and it does not trigger the card click (bubbling is stopped). */
-  .card .x {
-    margin-left: auto; font-family: var(--ui); font-size: 12px; line-height: 1;
-    padding: 1px 5px; border: 1px solid transparent; border-radius: 3px;
-    background: transparent; color: var(--ink-dim); cursor: pointer;
-  }
-  .card .x:hover { color: var(--blocked); border-color: #6a2224; }
-  .card .by-hand { color: var(--violet); font-family: var(--mono); font-size: 10px; }
-  .card .nm { font-weight: 700; font-size: 13px; }
-  .card .place { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
-  .card .state { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
-  .s-working .state { color: var(--working); }
-  .s-blocked .state { color: var(--blocked); }
-  .s-done .state { color: var(--done); }
-  .s-idle .state, .s-unknown .state { color: var(--idle); }
-
-  .card .row { margin-top: 4px; font-size: 11.5px; color: var(--ink-mid); }
-  .card .row.mono { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
-  .card .recap {
-    margin-top: 5px; padding: 4px 6px; border-left: 2px solid var(--line-hot);
-    background: var(--panel-low); color: var(--ink-mid); font-size: 11.5px; line-height: 1.35;
-    max-height: 4.6em; overflow: hidden;
-  }
-  .card .ask {
-    margin-top: 5px; padding: 4px 6px; border: 1px solid #6a2224; border-radius: 3px;
-    background: #1d0f11; color: #ffb3b4; font-size: 11.5px;
-  }
   .chip {
     display: inline-block; margin: 3px 4px 0 0; padding: 1px 6px; border-radius: 9px;
     border: 1px solid var(--line); font-family: var(--mono); font-size: 10.5px; color: var(--ink-mid);
   }
-  .chip.green { color: var(--working); border-color: #1f6a52; }
-  .chip.red { color: var(--blocked); border-color: #6a2224; }
-  .chip.run { color: var(--done); border-color: #6a5122; }
-  .chip.none { color: var(--ink-dim); }
-  .chip.lane { color: var(--working); border-color: #1f6a52; }
-  .chip.umb { color: var(--violet); border-color: #4a3a70; }
-  .chip a, .card a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  .chip a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
   .empty { color: var(--ink-dim); font-size: 11px; padding: 4px 6px; }
   .err { margin: 6px 12px; padding: 6px 9px; border: 1px solid #6a2224; background: #1d0f11; color: #ffb3b4;
          font-family: var(--mono); font-size: 11px; }
 
-  /* ---- pipeline view ----
-     The same design language as the windows view: the same panels, the same
-     lines, the same monospace details. What differs is what a column means —
-     here it is a stage of the road, not a state of a live window. */
+  /* ---- the pipeline — the page. The windows view (live herdr windows in
+     columns, the lane strip) was cut on 2026-08-29 by the owner's word: the
+     board is the road, not a mirror of windows. A column here is a stage of
+     the road. ---- */
   .pipeline {
-    display: none; flex: 1 1 auto; min-height: 0; overflow: auto;
+    display: block; flex: 1 1 auto; min-height: 0; overflow: auto;
     padding: 11px 14px 20px; scrollbar-gutter: stable;
   }
-  body.view-pipeline .pipeline { display: block; }
-  body.view-pipeline .board,
-  body.view-pipeline .lanes-strip,
-  body.view-pipeline #handbar,
-  body.view-pipeline #counts,
-  body.view-pipeline #add-toggle { display: none; }
-  body:not(.view-pipeline) #pipebar,
-  body:not(.view-pipeline) #pipe-counts,
-  body:not(.view-pipeline) #pipe-add-toggle { display: none; }
 
   /* Sprints that have split into unit cards live here, above the columns:
      a sprint does not move on its own — its stage follows its units — and
@@ -253,7 +161,7 @@
   .sprint-band .band-stack { display: grid; gap: 10px; width: 100%; max-width: 1840px; min-width: 0; }
   .sprint-band .sprint-panel-wrap { min-width: 0; }
   .sprint-band .sprint-panel {
-    display: grid; grid-template-columns: minmax(290px, 370px) minmax(0, 1fr); min-width: 0; overflow: hidden;
+    display: grid; grid-template-columns: minmax(340px, 470px) minmax(0, 1fr); min-width: 0; overflow: hidden;
     border: 1px solid var(--line); border-left: 3px solid var(--sprint); border-radius: 9px;
     background:
       radial-gradient(circle at 0 0, rgba(120, 221, 255, .075), transparent 34%),
@@ -356,18 +264,28 @@
   .sprint-band .status-line.stalled .verdict { color: var(--done); }
   .sprint-band .status-line.looping .verdict { color: var(--blocked); }
   .sprint-band .status-line .stale-mark { color: var(--done); }
-  .sprint-band .capacity-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 10px; }
-  .sprint-band .capacity { min-width: 0; }
-  .sprint-band .capacity strong { display: block; color: var(--ink); font-size: 13px; }
-  .sprint-band .capacity .capacity-number { color: var(--working); font: 750 22px/1 var(--mono); }
-  .sprint-band .capacity small, .sprint-band .ci-capacity small {
-    display: block; margin-top: 4px; color: var(--ink-dim); font: 9px/1.35 var(--mono); overflow-wrap: anywhere;
-  }
-  .sprint-band .ci-capacity { min-width: 0; margin-top: 7px; color: var(--ink-mid); font: 10px/1.35 var(--mono); }
+  /* The lanes of the fleet as a table across the whole pane — the same table
+     as "in flight", a size smaller: lane (FLEET.md name), server, state, who
+     is on it. The chips (ticket, artifact, subscription, sources) share one
+     row underneath. */
+  .sprint-band .lanes-block { min-width: 0; }
+  .sprint-band .lanes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+  .sprint-band .lanes-head strong { color: var(--ink); font-size: 12px; }
+  .sprint-band .lanes-head .capacity-number { color: var(--working); font: 750 18px/1 var(--mono); }
+  .sprint-band .lanes-head span { color: var(--ink-dim); font: 9px var(--mono); }
+  .sprint-band .lanes-table { font-size: 9.5px; }
+  .sprint-band .lanes-table th { padding: 4px 6px; }
+  .sprint-band .lanes-table th button { cursor: default; }
+  .sprint-band .lanes-table td { padding: 4px 6px; }
+  .sprint-band .lanes-table .lane-cell { color: var(--ink); font: 750 9.5px var(--mono); }
+  .sprint-band .lanes-table .cell-sub { font-size: 8px; }
+  .sprint-band .lanes-table tr.outside td { opacity: .55; }
+  .sprint-band .lanes-table tr.down td { color: var(--blocked); }
+  .sprint-band .ci-capacity { min-width: 0; margin-top: 6px; color: var(--ink-mid); font: 9.5px/1.35 var(--mono); overflow-wrap: anywhere; }
   .sprint-band .ci-capacity b { color: var(--done); }
-  .sprint-band .source-health {
-    gap: 5px; margin-top: 7px; padding: 3px 7px; color: var(--working); font: 9px/1.2 var(--mono);
-  }
+  .sprint-band .ci-capacity small { color: var(--ink-dim); font-size: 9px; }
+  .sprint-band .links.links-row { align-items: center; }
+  .sprint-band .source-health { gap: 5px; padding: 3px 7px; color: var(--working); font: 9px/1.2 var(--mono); }
   .sprint-band .source-health::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
   .sprint-band .source-health.stale { border-color: #6a5122; color: var(--done); white-space: normal; }
   .sprint-band .table-pane { min-width: 0; padding: 10px 12px 12px; }
@@ -747,7 +665,6 @@
   @media (max-width: 680px) {
     .pipeline { padding: 8px 9px 16px; }
     .pboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .sprint-band .capacity-row { grid-template-columns: minmax(0, 1fr); }
     .sprint-band .flight-table, .sprint-band .flight-table tbody,
     .sprint-band .flight-table tr, .sprint-band .flight-table td { display: block; width: 100%; }
     .sprint-band .flight-table thead { display: none; }
@@ -764,46 +681,22 @@
     .pboard { grid-template-columns: minmax(0, 1fr); }
   }
 
-  /* Onboarding replaces the board itself, so the daily controls are out of the
-     way until a project is picked. The pipeline is not a view of herdr windows
-     and needs no project, so it stays reachable. */
-  body.onboarding:not(.view-pipeline) .num,
-  body.onboarding:not(.view-pipeline) .hbtn,
-  body.onboarding:not(.view-pipeline) .handbar,
-  body.onboarding:not(.view-pipeline) .lanes-strip,
-  body.onboarding:not(.view-pipeline) .board { display: none; }
 </style>
 </head>
 <body>
 <header>
   <h1>Watchtower <span class="proj" id="project"></span></h1>
-  <div class="num" id="counts">loading…</div>
   <div class="num" id="pipe-counts"></div>
   <div class="flag" id="board-warn" hidden></div>
   <span class="spacer"></span>
   <div class="num" id="signed-in" hidden></div>
-  <!-- Which view is on. The choice is remembered in this browser, so a refresh
-       comes back to the view you were working in. -->
-  <button class="hbtn" id="view-windows" title="live herdr windows">windows</button>
-  <button class="hbtn" id="view-pipeline" title="pipeline cards: spec → done">pipeline</button>
   <button class="hbtn plus" id="pipe-add-toggle" title="add a pipeline card">+ Card</button>
-  <button class="hbtn plus" id="add-toggle" title="add a card by hand">+</button>
-  <button class="hbtn gear" id="settings-toggle" title="settings: project and hidden cards">⚙</button>
+  <button class="hbtn gear" id="settings-toggle" title="settings: the project whose windows feed the facts">⚙</button>
 </header>
-<!-- The "add a card" bar lives outside the board redraw: the board refreshes
-     every three seconds and typed text must not disappear under your hands. -->
-<div class="handbar" id="handbar">
-  <form id="add-form" autocomplete="off">
-    <input class="t" id="add-title" placeholder="title (required)" maxlength="200">
-    <input class="txt" id="add-text" placeholder="text (optional)" maxlength="2000">
-    <select id="add-column"></select>
-    <button class="hbtn" type="submit">add</button>
-    <span class="note" id="add-note"></span>
-  </form>
-</div>
 <!-- "+ Card": a card is born at the Spec stage with a title and, if you already
      have them, the spec text and a short summary. Everything else is filled in
-     as it moves. -->
+     as it moves. The bar lives outside the board redraw: the board refreshes
+     every three seconds and typed text must not disappear under your hands. -->
 <div class="handbar" id="pipebar">
   <form id="pipe-form" autocomplete="off">
     <input class="t" id="pipe-title" placeholder="title (required)" maxlength="200">
@@ -813,8 +706,6 @@
     <span class="note" id="pipe-note"></span>
   </form>
 </div>
-<div class="lanes-strip" id="strip"></div>
-<div class="board" id="board"></div>
 <div class="pipeline" id="pipeline">
   <!-- Stuck is not a column of the road: it is a card that failed three times in
        a row and now waits for a human. It sits above everything, in red. -->
@@ -823,20 +714,8 @@
   <div class="pboard" id="pboard"></div>
 </div>
 
-<!-- First run: pick the project this board watches. -->
-<div class="sheet" id="onboarding">
-  <div class="box">
-    <h2>Pick a project to watch</h2>
-    <p>Watchtower groups your herdr windows by project — the worktree root
-      (<code>~/.herdr/worktrees/&lt;project&gt;</code>) or the repository the window sits in.
-      Pick one and the board shows every window and worktree of that project.
-      You can change it later behind the gear.</p>
-    <div class="plist" id="onboarding-list"></div>
-    <p class="note" id="onboarding-note"></p>
-  </div>
-</div>
-
-<!-- The gear: change the project and restore hidden cards. -->
+<!-- The gear: the project whose herdr windows feed the facts (window names
+     on cards, the shadow verdict). The pipeline itself needs no project. -->
 <div class="sheet" id="settings">
   <div class="box" style="position: relative">
     <button class="hbtn close" id="settings-close">close</button>
@@ -844,8 +723,6 @@
     <h3>Project</h3>
     <div class="plist" id="settings-list"></div>
     <p class="note" id="settings-note"></p>
-    <h3>Hidden cards</h3>
-    <div class="hidden-list" id="hidden-list"></div>
   </div>
 </div>
 
@@ -905,208 +782,21 @@ function dur(iso) {
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
 
-const STATE_TEXT = {
-  working: 'working', idle: 'idle', blocked: 'blocked', done: 'done', unknown: 'unknown',
-};
-
-function laneChip(l) {
-  const br = l.branch ? ' · ' + esc(l.branch) : '';
-  return '<span class="chip lane">lane ' + esc(l.host) + ' ' + esc(l.lane) + br + '</span>';
-}
-
-function prChip(p) {
-  return '<span class="chip ' + esc(p.ci.color) + '">'
-    + '<a href="' + esc(p.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">PR #' + p.number + '</a>'
-    + ' · ' + esc(p.ci.text) + (p.draft ? ' · draft' : '') + ' · ' + esc(p.via) + '</span>';
-}
-
-function card(c, focusedTab) {
-  const bits = [];
-  const held = dur(c.since);
-  bits.push('<div class="top">'
-    + '<span class="nm">' + esc(c.name) + '</span>'
-    + '<span class="place">' + esc(c.place) + '</span>'
-    + (c.manual
-      ? '<span class="by-hand">by hand' + (c.since ? ' · ' + esc(ago(c.since)) : '') + '</span>'
-      : '<span class="state">' + esc(STATE_TEXT[c.status] ?? c.status)
-        + (held ? ' · for ' + esc(held) : '') + '</span>')
-    + (c.focused ? '<span class="place" style="color:var(--focus)">you are here</span>' : '')
-    + '<button class="x" title="' + (c.manual ? 'delete this card' : 'take this window off the board (restore it behind the gear)')
-    + '">×</button>'
-    + '</div>');
-
-  if (c.title && c.title !== c.name) bits.push('<div class="row">' + esc(c.title) + '</div>');
-
-  // model, account, branch
-  const f = c.footer ?? {};
-  const line1 = [];
-  if (f.model) line1.push(esc(f.model));
-  if (f.account) line1.push(esc(f.account));
-  if (f.effort) line1.push('effort ' + esc(f.effort));
-  if (f.contextPct != null) line1.push('context ' + f.contextPct + '%');
-  if (c.agent && !f.model) line1.push(esc(c.agent));
-  if (line1.length) bits.push('<div class="row mono">' + line1.join(' · ') + '</div>');
-
-  const line2 = [];
-  if (c.branch) line2.push('branch ' + esc(c.branch));
-  else if (c.detached) line2.push('detached HEAD (' + esc(c.detached) + ')');
-  if (c.isWorktree) line2.push('worktree of ' + esc(c.repoName ?? ''));
-  if (c.folder && c.folder !== String(c.name).toLowerCase()) line2.push('folder ' + esc(c.folder));
-  if (c.window && c.window !== c.name) line2.push('window ' + esc(c.window));
-  if (line2.length) bits.push('<div class="row mono">' + line2.join(' · ') + '</div>');
-
-  if (c.explain && (c.explain.ruleName || c.explain.rule)) {
-    const e = c.explain;
-    bits.push('<div class="row mono" title="' + esc(e.ruleWhere ?? '') + '">rule: '
-      + esc(e.ruleName ?? e.rule)
-      + (e.evidence ? ' · "' + esc(e.evidence) + '"' : '') + '</div>');
-  }
-
-  if (c.askReasons && c.askReasons.length) {
-    bits.push('<div class="ask">' + c.askReasons.map(esc).join('<br>') + '</div>');
-  }
-
-  const chips = [];
-  for (const l of c.lanes) chips.push(laneChip(l));
-  if (!c.lanes.length && c.laneSlots.length) {
-    chips.push('<span class="chip none">lane free (' + esc(c.laneSlots.join(', ')) + ')</span>');
-  }
-  for (const p of c.prs) chips.push(prChip(p));
-  if (c.umbrella) {
-    const u = c.umbrella;
-    const link = u.url
-      ? '<a href="' + esc(u.url) + '" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">umbrella #' + u.number + '</a>'
-      : 'umbrella #' + u.number;
-    const askBit = u.ask
-      ? ' · ' + esc(u.ask.word) + (u.ask.answered ? ' (closed)' : ' · unanswered for ' + esc(dur(u.ask.at)))
-      : '';
-    chips.push('<span class="chip umb">' + link + askBit + '</span>');
-  }
-  if (chips.length) bits.push('<div>' + chips.join('') + '</div>');
-
-  if (c.recap) {
-    bits.push('<div class="recap">' + esc(c.recap) + '</div>');
-    bits.push('<div class="row mono">last words: ' + esc(c.recapFrom ?? '') + '</div>');
-  }
-
-  return '<div class="card s-' + esc(c.status) + (c.manual ? ' manual' : '')
-    + (c.tab && c.tab === focusedTab ? ' here' : '') + '"'
-    + (c.tab ? ' data-tab="' + esc(c.tab) + '"' : '')
-    // The working directory is what the × needs: a card is a tab PLUS a folder,
-    // one tab can have a second pane in another folder.
-    + (c.tab ? ' data-cwd="' + esc(c.cwd ?? '') + '"' : '')
-    + (c.manual ? ' data-manual="' + esc(c.id) + '"' : '')
-    + ' data-name="' + esc(c.name) + '" title="' + esc(c.cwd) + '">' + bits.join('') + '</div>';
-}
-
-function hostBox(h, cards, laneOwners) {
-  // Lane owners are counted by the server across every window, hidden ones
-  // included. Cards stay as a fallback (an older server answer had no laneOwners).
-  const owner = {};
-  for (const c of cards) for (const l of c.lanes) owner[l.host + '|' + l.lane] = c.name;
-  Object.assign(owner, laneOwners ?? {});
-  const rows = (h.lanes ?? []).map(l => {
-    const who = owner[h.host + '|' + l.lane];
-    return '<div class="lane' + (l.busy ? ' busy' : '') + '"><b>' + esc(l.lane) + '</b> '
-      + (l.busy ? 'busy' : 'free')
-      + (l.branch ? ' · ' + esc(l.branch) : '')
-      + (who ? ' · <span class="who">' + esc(who) + '</span>' : (l.busy ? ' · <span class="who">unclaimed</span>' : ''))
-      + '</div>';
-  }).join('');
-  const extras = (h.extras ?? []).map(e => '<div class="extra">' + esc(e) + '</div>').join('');
-  return '<div class="host' + (h.ok ? '' : ' bad') + '">'
-    + '<div class="hname">' + esc(h.host) + ' <span style="color:var(--ink-dim)">' + esc(h.target) + '</span></div>'
-    + (h.ok ? (rows || '<div class="extra">no lanes visible</div>') : '<div class="extra">' + esc(h.error ?? 'no connection') + '</div>')
-    + extras + '</div>';
-}
-
-// Sources that failed are shown next to the lanes, not in the header: they are
-// not a daily number, but an empty cell must never pass for a fact.
-function problemBox(sources) {
-  const bad = (sources ?? []).filter(s => !s.ok);
-  if (!bad.length) return '';
-  return '<div class="host bad"><div class="hname">sources not answering</div>'
-    + bad.map(s => '<div class="extra">' + esc(s.name) + ': ' + esc(s.error ?? 'no answer') + '</div>').join('')
-    + '</div>';
-}
-
+// /data still comes every three seconds: it carries the page version (a new
+// build reloads the page), the project name, the header warnings and the
+// settings sheet's project list. The windows it describes are not drawn.
 function render(d) {
   if (pageVersion === null) pageVersion = d.pageVersion;
   else if (d.pageVersion && d.pageVersion !== pageVersion) { location.reload(); return; }
   lastData = d;
-
-  document.body.classList.toggle('onboarding', Boolean(d.needsProject));
   $('project').textContent = d.project ?? '';
-  fillColumns(d.columns);
   const warn = [d.probeStale, d.hooksNotice, d.slotsAlarm].filter(Boolean).join(' · ');
   $('board-warn').textContent = warn;
   $('board-warn').hidden = !warn;
-
-  // The pipeline is the board's own state and needs no herdr project, so the
-  // "pick a project" screen must not stand in front of it.
-  if (d.needsProject && view === 'pipeline') {
-    $('onboarding').classList.remove('open');
-    return;
-  }
-  if (d.needsProject) {
-    $('onboarding').classList.add('open');
-    $('settings').classList.remove('open');
-    renderProjects($('onboarding-list'), d.projects ?? [], null);
-    return;
-  }
-  $('onboarding').classList.remove('open');
-
-  const auto = d.cards.filter(c => !c.manual);
-  const hand = d.cards.filter(c => c.manual);
-  // "windows" and "waiting for you" are counted over the same thing — windows.
-  // Cards typed by hand are not windows and stay out of that count; if such a
-  // card sits in the "needs you" column, it is mentioned separately.
-  const ask = auto.filter(c => c.column === 'ask').length;
-  const askByHand = hand.filter(c => c.column === 'ask').length;
-  const laneCount = d.cards.reduce((n, c) => n + c.lanes.length, 0);
-  $('counts').innerHTML = '<b>' + auto.length + '</b> windows · <b>' + ask + '</b> need you'
-    + (askByHand ? ' (+' + askByHand + ' by hand)' : '') + ' · <b>'
-    + laneCount + '</b> lanes building · <b>' + d.prsOpen + '</b> open PRs'
-    + (hand.length ? ' · <b>' + hand.length + '</b> cards by hand' : '');
-
   if ($('settings').classList.contains('open')) renderSettings(d);
-
-  $('strip').innerHTML = (d.hosts ?? []).map(h => hostBox(h, d.cards, d.laneOwners)).join('')
-    + problemBox(d.sources);
-
-  $('board').innerHTML = d.columns.map(col => {
-    const list = d.cards.filter(c => c.column === col.key);
-    return '<div class="col ' + esc(col.key) + '"><h2>' + esc(col.title) + ' <span>' + list.length + '</span></h2>'
-      + (list.length ? list.map(c => card(c, d.focusedTab)).join('') : '<div class="empty">empty</div>')
-      + '</div>';
-  }).join('');
-
-  for (const el of document.querySelectorAll('.card')) {
-    // Clicking an automatic card makes herdr switch to that window. A card typed
-    // by hand has no window — clicking it does nothing.
-    if (el.dataset.tab) {
-      el.onclick = () => post('/focus', { tab: el.dataset.tab });
-    }
-    const x = el.querySelector('.x');
-    if (!x) continue;
-    x.onclick = async (ev) => {
-      // The × is not a click on the card: stop bubbling, otherwise herdr would
-      // also jump to the window that was just taken off the board.
-      ev.stopPropagation();
-      ev.preventDefault();
-      const r = el.dataset.manual
-        ? await post('/card/remove', { id: el.dataset.manual })
-        : await post('/card/hide', { tab: el.dataset.tab, cwd: el.dataset.cwd ?? '', name: el.dataset.name });
-      // Do not take the card off screen if the board could not save the edit:
-      // it would come back on the next refresh and look like a failure.
-      if (r && r.error) { showError('could not hide the card: ' + r.error); return; }
-      el.remove();
-      poll();
-    };
-  }
 }
 
-// --------------------------------- hand edits, project choice
+// --------------------------------- project choice
 
 function post(path, body) {
   return fetch(path, {
@@ -1120,21 +810,12 @@ function showError(text) {
   if (!div) {
     div = document.createElement('div');
     div.className = 'err';
-    document.body.insertBefore(div, $('board'));
+    document.body.insertBefore(div, $('pipeline'));
   }
   div.textContent = text;
 }
 
-// The column choices are filled once: a redraw must not reset the selection.
-function fillColumns(columns) {
-  const sel = $('add-column');
-  if (sel.options.length) return;
-  sel.innerHTML = (columns ?? []).map(c =>
-    '<option value="' + esc(c.key) + '">' + esc(c.title) + '</option>').join('');
-  sel.value = 'idle';
-}
-
-// The project list, shared by onboarding and settings.
+// The project list in the settings sheet.
 function renderProjects(box, projects, current) {
   const rows = (projects ?? []).map(p =>
     '<button data-project="' + esc(p.project) + '"' + (p.project === current ? ' class="cur"' : '') + '>'
@@ -1146,7 +827,7 @@ function renderProjects(box, projects, current) {
   box.innerHTML = rows.join('');
   for (const b of box.querySelectorAll('button')) {
     b.onclick = async () => {
-      const note = box === $('onboarding-list') ? $('onboarding-note') : $('settings-note');
+      const note = $('settings-note');
       note.textContent = 'saving…';
       const r = b.dataset.all
         ? await post('/project/select', { all: true })
@@ -1160,30 +841,9 @@ function renderProjects(box, projects, current) {
   }
 }
 
-function renderHidden(list) {
-  $('hidden-list').innerHTML = list.length
-    ? list.map(h => '<span class="item">' + esc(h.name || h.tab)
-        + ' <span class="note">' + esc(h.tab) + '</span>'
-        + '<button data-unhide="' + esc(h.tab) + '" data-cwd="' + esc(h.cwd ?? '') + '">restore</button></span>').join('')
-    : '<span class="note">nothing is hidden</span>';
-  for (const b of $('hidden-list').querySelectorAll('button')) {
-    b.onclick = async () => {
-      await post('/card/unhide', { tab: b.dataset.unhide, cwd: b.dataset.cwd ?? '' });
-      poll();
-    };
-  }
-}
-
 function renderSettings(d) {
   renderProjects($('settings-list'), d.projects ?? [], d.project ?? null);
-  renderHidden(d.handHidden ?? []);
 }
-
-$('add-toggle').onclick = () => {
-  const open = $('handbar').classList.toggle('open');
-  $('add-toggle').classList.toggle('on', open);
-  if (open) $('add-title').focus();
-};
 
 $('settings-toggle').onclick = () => {
   const open = $('settings').classList.toggle('open');
@@ -1193,22 +853,6 @@ $('settings-toggle').onclick = () => {
 $('settings-close').onclick = () => {
   $('settings').classList.remove('open');
   $('settings-toggle').classList.remove('on');
-};
-
-$('add-form').onsubmit = async (ev) => {
-  ev.preventDefault();
-  const title = $('add-title').value.trim();
-  if (!title) { $('add-note').textContent = 'a title is required'; $('add-title').focus(); return; }
-  $('add-note').textContent = '';
-  const r = await post('/card/add', {
-    title, text: $('add-text').value.trim(), column: $('add-column').value,
-  });
-  if (r && r.error) { $('add-note').textContent = r.error; return; }
-  $('add-title').value = '';
-  $('add-text').value = '';
-  $('add-note').textContent = 'added';
-  setTimeout(() => { $('add-note').textContent = ''; }, 2000);
-  poll();
 };
 
 // ------------------------------------------------------- the pipeline view
@@ -1242,9 +886,6 @@ const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_p
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
-
-let view = 'windows';
-try { if (localStorage.getItem('watchtower-view') === 'pipeline') view = 'pipeline'; } catch (e) {}
 
 let pipeSeen = '';
 let pipeTimer = null;
@@ -1444,8 +1085,9 @@ function sprintBandCounts(s) {
   };
 }
 
-function sprintBandLinks(c) {
+function sprintBandLinks(c, s) {
   const links = c.links || {};
+  const stale = (s && s.stale) || [];
   const chips = [];
   for (const [key, label] of [['ticket', 'Ticket'], ['artifact', 'Artifact'], ['branch', 'Branch'], ['pr', 'PR']]) {
     const value = links[key];
@@ -1458,7 +1100,9 @@ function sprintBandLinks(c) {
   if ((c.subscription || '').trim()) {
     chips.push('<span class="chip mini-link"><b>Subscription</b><span>' + esc(c.subscription) + '</span></span>');
   }
-  return '<div class="links">' + (chips.length ? chips.join('') : '<span class="empty-note">No references attached</span>') + '</div>';
+  chips.push('<span class="source-health' + (stale.length ? ' stale' : '') + '">'
+    + (stale.length ? 'Stale sources: ' + esc(stale.join(', ')) + ' — lane and PR facts may be old' : 'Sources current') + '</span>');
+  return '<div class="links links-row">' + chips.join('') + '</div>';
 }
 
 function sprintBandProgress(s) {
@@ -1506,26 +1150,51 @@ function sprintBandStatus(c) {
     + '</span></span></div>';
 }
 
-function sprintBandCapacity(s) {
+// Every lane of the fleet, one row each: the FLEET.md name, the server, what
+// the lane is doing and which unit of this sprint sits on it. Lanes the
+// registry does not know come last, dimmed; a silent host shows in red.
+function sprintBandLanes(s) {
+  const table = Array.isArray(s.laneTable) ? s.laneTable : [];
   const free = s.free || [];
-  const busyElsewhere = s.busyElsewhere || [];
-  const stale = s.stale || [];
-  const laneCount = Number(s.laneCount) || 0;
+  const laneCount = Number(s.laneCount) || table.filter(l => l.fleet !== false).length;
+  const rows = table.map(l => {
+    const server = l.server || l.host || '';
+    const folder = l.folder && l.folder !== l.lane ? l.host + '/' + l.folder : '';
+    let state, cls;
+    if (l.hostOk === false) { state = l.remembered ? 'host silent' : 'host down'; cls = 'st-pr-red'; }
+    else if (l.check) { state = 'checking'; cls = 'st-local-check'; }
+    else if (l.busy && l.unit) { state = 'building'; cls = 'st-on-lane'; }
+    else if (l.busy) { state = 'other work'; cls = 'st-queued'; }
+    else if (l.unit) { state = 'idle'; cls = 'st-lane-idle'; }
+    else { state = 'free'; cls = 'st-merged'; }
+    const who = l.unit
+      ? '<span class="unit-cell">' + esc(l.unit + ' #' + l.ticket) + '</span>'
+      : (l.busy && l.branch ? '<span class="cell-sub" title="' + esc(l.branch) + '">' + esc(l.branch) + '</span>' : '<span class="empty-note">—</span>');
+    return '<tr class="' + (l.fleet === false ? 'outside' : '') + (l.hostOk === false ? ' down' : '') + '">'
+      + '<td class="lane-cell" data-label="Lane">' + esc(l.lane || '?')
+      + (folder ? '<span class="cell-sub" title="folder on the server today">' + esc(folder) + '</span>' : '') + '</td>'
+      + '<td data-label="Server">' + esc(server) + (l.fleet === false ? '<span class="cell-sub">outside the fleet registry</span>' : '') + '</td>'
+      + '<td data-label="State"><span class="state-word ' + cls + '">' + state + '</span>'
+      + (l.busy && l.since ? '<span class="cell-sub">' + esc(l.since) + '</span>' : '') + '</td>'
+      + '<td data-label="Unit">' + who + '</td></tr>';
+  }).join('');
   const ci = s.ciSlots && typeof s.ciSlots === 'object' ? s.ciSlots : null;
   let ciLine = '<div class="ci-capacity"><b>CI slots</b> unavailable</div>';
   if (ci && Number(ci.total) > 0) {
     const hosts = Object.entries(ci.byHost || {}).map(([host, v]) => host + ' ' + (Number(v.busy) || 0)
       + '/' + (Number(v.online) || 0)).join(' · ');
     ciLine = '<div class="ci-capacity"><b>' + (Number(ci.busy) || 0) + '</b> of '
-      + (Number(ci.online) || 0) + ' online CI slots busy'
-      + '<small>' + esc(hosts || 'No host detail') + (Number(ci.offline) ? ' · ' + Number(ci.offline) + ' offline' : '') + '</small></div>';
+      + (Number(ci.online) || 0) + ' online CI slots busy <small>· ' + esc(hosts || 'no host detail')
+      + (Number(ci.offline) ? ' · ' + Number(ci.offline) + ' offline' : '') + '</small></div>';
   }
-  return '<div class="capacity"><strong><span class="capacity-number">' + free.length + '</span> of '
-    + laneCount + ' lanes free</strong><small>' + esc(free.join(' · ') || 'No free lanes')
-    + (busyElsewhere.length ? '<br>Busy with other work: ' + esc(busyElsewhere.join(' · ')) : '') + '</small>'
-    + ciLine + '<span class="source-health' + (stale.length ? ' stale' : '') + '">'
-    + (stale.length ? 'Stale sources: ' + esc(stale.join(', ')) + ' — lane and PR facts may be old' : 'Sources current')
-    + '</span></div>';
+  return '<div class="lanes-block"><div class="lanes-head"><strong><span class="capacity-number">' + free.length
+    + '</span> of ' + laneCount + ' lanes free</strong><span>names per FLEET.md · by facts</span></div>'
+    + '<table class="flight-table lanes-table"><colgroup><col style="width:24%"><col style="width:34%">'
+    + '<col style="width:21%"><col style="width:21%"></colgroup>'
+    + '<thead><tr><th><button type="button" tabindex="-1">Lane</button></th><th><button type="button" tabindex="-1">Server</button></th>'
+    + '<th><button type="button" tabindex="-1">State</button></th><th><button type="button" tabindex="-1">Unit</button></th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="4"><span class="empty-note">No lanes known</span></td></tr>')
+    + '</tbody></table>' + ciLine + '</div>';
 }
 
 function sprintBandLane(u) {
@@ -1534,8 +1203,10 @@ function sprintBandLane(u) {
   const cls = checking ? 'st-local-check' : (u.lane.busy ? 'st-on-lane' : 'st-lane-idle');
   const mode = checking ? 'checking' : (u.lane.busy ? 'busy' : 'idle');
   const since = checking ? u.lane.check.since : u.lane.since;
-  return '<span class="' + cls + '">' + esc((u.lane.host || '?') + '/' + (u.lane.lane || '?')) + '</span>'
-    + '<span class="cell-sub">' + mode + (since ? ' · ' + esc(since) : '') + '</span>';
+  const where = u.lane.server || u.lane.host || '';
+  const folder = u.lane.folder && u.lane.folder !== u.lane.lane ? u.lane.host + '/' + u.lane.folder : '';
+  return '<span class="' + cls + '" title="' + esc(where + (folder ? ' · folder ' + folder : '')) + '">' + esc(u.lane.lane || '?') + '</span>'
+    + '<span class="cell-sub">' + esc(where) + (where ? ' · ' : '') + mode + (since ? ' · ' + esc(since) : '') + '</span>';
 }
 
 function sprintBandPr(u) {
@@ -1628,7 +1299,7 @@ function sprintBandPanel(c) {
     + '<div class="identity-meta"><span class="badge">' + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span>'
     + '<span class="clock"><small>Total</small>' + clockSpan('clk', cl.total, cl.totalFrom) + '</span></div></div>'
     + sprintBandProgress(s) + sprintBandStatus(c)
-    + '<div class="capacity-row">' + sprintBandCapacity(s) + sprintBandLinks(c) + '</div></aside>'
+    + sprintBandLanes(s) + sprintBandLinks(c, s) + '</aside>'
     + sprintBandTable(c) + '</article><div class="sprint-card-detail" data-sprint-detail="' + esc(c.id) + '"'
     + (open ? '' : ' hidden') + '>' + pcard(c) + '</div></div>';
 }
@@ -1743,10 +1414,12 @@ function pcard(c) {
     const pieces = ['<span class="meta-chip unit-parent" title="' + esc('sprint ' + c.parent + ' — ' + parentTitle) + '">'
       + '<span class="chip-key">&#8627; sprint</span><span class="chip-value">' + esc(parentTitle) + '</span></span>'];
     if (uf && uf.lane) {
+      const where = uf.lane.server || uf.lane.host || '';
+      const folder = uf.lane.folder && uf.lane.folder !== uf.lane.lane ? ' · folder ' + uf.lane.host + '/' + uf.lane.folder : '';
       pieces.push('<span class="meta-chip lane-chip ' + (uf.lane.busy ? 'busy' : 'idle') + '" title="'
-        + esc((uf.lane.branch || '') + (uf.lane.since ? ' · since ' + uf.lane.since : '')) + '">'
-        + '<span class="chip-key">' + esc(uf.lane.host + '/' + uf.lane.lane) + '</span>'
-        + '<span class="chip-value">' + (uf.lane.busy ? 'building' : 'idle') + '</span></span>');
+        + esc(where + folder + (uf.lane.branch ? ' · ' + uf.lane.branch : '') + (uf.lane.since ? ' · since ' + uf.lane.since : '')) + '">'
+        + '<span class="chip-key">' + esc(uf.lane.lane) + '</span>'
+        + '<span class="chip-value">' + (uf.lane.busy ? 'building' : 'idle') + (where ? ' · ' + esc(where) : '') + '</span></span>');
     }
     if (uf && (uf.merged || uf.pr)) {
       pieces.push(pipelinePrChip(uf.merged
@@ -2087,7 +1760,6 @@ function wirePipeline(data) {
 
 async function pipePoll() {
   if (pipeTimer) { clearTimeout(pipeTimer); pipeTimer = null; }
-  if (view !== 'pipeline') return;
   try {
     const r = await fetch('/pipeline/data', { cache: 'no-store' });
     const d = await r.json();
@@ -2103,22 +1775,9 @@ async function pipePoll() {
   } catch (e) {
     showError('the pipeline did not answer: ' + (e && e.message ? e.message : e));
   } finally {
-    if (view === 'pipeline') pipeTimer = setTimeout(pipePoll, 3000);
+    pipeTimer = setTimeout(pipePoll, 3000);
   }
 }
-
-function setView(next) {
-  view = next === 'pipeline' ? 'pipeline' : 'windows';
-  try { localStorage.setItem('watchtower-view', view); } catch (e) {}
-  document.body.classList.toggle('view-pipeline', view === 'pipeline');
-  $('view-windows').classList.toggle('on', view === 'windows');
-  $('view-pipeline').classList.toggle('on', view === 'pipeline');
-  if (view === 'pipeline') pipePoll();
-  else if (pipeTimer) { clearTimeout(pipeTimer); pipeTimer = null; }
-}
-
-$('view-windows').onclick = () => setView('windows');
-$('view-pipeline').onclick = () => setView('pipeline');
 
 $('pipe-add-toggle').onclick = () => {
   const open = $('pipebar').classList.toggle('open');
@@ -2142,7 +1801,7 @@ $('pipe-form').onsubmit = async (ev) => {
   pipePoll();
 };
 
-setView(view);
+pipePoll();
 
 let failures = 0;
 let pollTimer = null;

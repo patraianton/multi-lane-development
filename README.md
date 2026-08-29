@@ -1,11 +1,8 @@
 # Watchtower
 
-A live board for a coding-agent fleet, and a delivery pipeline those agents run.
+A delivery pipeline for a coding-agent fleet, served by one process (`bin/watchtower.mjs`).
 
-The page has two views, served by one process (`bin/watchtower.mjs`):
-
-- **Windows** — the original monitoring board. Every herdr window on a chosen project: what the agent is doing, which build lane is compiling, which pull requests are open and what CI says, and — first column, always — who is waiting for a human.
-- **Pipeline** — persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → done, while live data (windows, lanes, branches, PRs) attaches to it.
+The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → QA → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards, the shadow verdict, `/api/board` for agents) and is not drawn.
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
