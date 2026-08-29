@@ -51,16 +51,20 @@ test('acceptance and accepted from an older state file load as done; ci_pr moves
     assert.equal(list.body.summary.failures, 3);
     assert.ok(list.body.cards.find(c => c.id === 'c-old-finished').clock.endsWith('(stopped)'));
     const toon = await fetch(`${board.base}/api/pipeline`).then(r => r.text());
-    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, qa, done;'), toon);
+    assert.ok(toon.includes('stages: spec, grilled, ticketed, development, local_check, ci_pr, review, merged, qa, done;'), toon);
     assert.ok(!/acceptance|accepted/.test(toon), toon);
 
-    // ci_pr → review → qa → done are plain moves, ci_pr → done is not; accept is not
+    // ci_pr → review → merged → qa → done are plain moves, ci_pr → done is not; accept is not
     // an action any more.
     const skip = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'done' });
     assert.equal(skip.status, 400);
     assert.match(JSON.stringify(skip.body), /can only move to review/);
     const rv = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'review' });
     assert.equal(rv.body.card.stage, 'review');
+    const early = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'qa' });
+    assert.equal(early.status, 400, 'review goes to merged first');
+    const mg = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'merged' });
+    assert.equal(mg.body.card.stage, 'merged');
     const qa = await postJson(board.base, '/pipeline/card/move', { id: 'c-ci', to: 'qa' });
     assert.equal(qa.status, 200);
     assert.equal(qa.body.card.stage, 'qa');

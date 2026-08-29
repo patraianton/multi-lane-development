@@ -441,6 +441,8 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .pcol.done > h2 { color: var(--working); border-color: #1f6a52; }
+  .pcol.review > h2 { color: var(--violet); border-color: #4d3a7a; }
+  .pcol.merged > h2 { color: var(--working); border-color: #1f6a52; }
   .pcol.qa > h2 { color: var(--done); border-color: #6a5122; }
 
   .pcard {
@@ -966,9 +968,9 @@ const CAN_FAIL = ['development', 'local_check', 'ci_pr', 'qa'];
 const OFF_THE_CLOCK = new Set(['done']);
 const STAGE_TITLE = {
   spec: 'Spec', grilled: 'Grilled', ticketed: 'Ticketed', development: 'Development',
-  local_check: 'Local check', ci_pr: 'CI/PR', qa: 'QA', done: 'Done', stuck: 'Stuck',
+  local_check: 'Local check', ci_pr: 'CI/PR', review: 'Review', merged: 'Merged', qa: 'QA', done: 'Done', stuck: 'Stuck',
 };
-const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'qa', 'done'];
+const ROAD = ['spec', 'grilled', 'ticketed', 'development', 'local_check', 'ci_pr', 'review', 'merged', 'qa', 'done'];
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];

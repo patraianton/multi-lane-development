@@ -158,6 +158,21 @@ test('one branch pinned by three tickets: the lane building it shows on every on
   assert.deepEqual(s.units.map(u => [u.ticket, u.lane?.lane ?? null]), [[1599, 'lane-1']], 'the other lane binds as before');
 });
 
+test('a close with no merge behind it counts as accepted only once it is older than the auto-close window', () => {
+  // The issue list refreshes faster than the merged-PR list: for a minute a
+  // ticket the PR just auto-closed looks closed with no merge — a person's
+  // word, accepted, done. U4 and U6 reached done that way on 29.08.
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const issue = { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'CLOSED', closedAt: '2026-08-29T10:00:00Z', branch: 'feat/salon-u01-readiness' };
+  const facts = at => sprintFactsFor([card], { unitIssues: new Map([[1515, [issue]]]), umbrellaStates: new Map([[1515, 'OPEN']]), at }).get('csprint').units[0];
+  const fresh = facts('2026-08-29T10:00:30Z');
+  assert.equal(fresh.accepted, null, 'thirty seconds old: the merged list may not have caught up');
+  assert.equal(fresh.state, 'closed');
+  const old = facts('2026-08-29T10:05:00Z');
+  assert.equal(old.accepted, '2026-08-29T10:00:00Z');
+  assert.equal(old.state, 'accepted');
+});
+
 test('merged is not accepted: the ticket closed by the PR does not count, a later close does, and no merge means the close is the word', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [

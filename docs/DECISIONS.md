@@ -4,6 +4,25 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (evening) — merged is a column; QA holds only what QA is doing
+
+18. **Merged is a column between Review and QA; the QA column holds only QA work (owner,
+    2026-08-29 ~17:55: "sort out QA — why are they all sitting there? no QA is running").**
+    Eight cards sat in QA with nothing being checked: five merged units of a sprint whose
+    last unit was still in review (the rule of decision 13 put them there, the word "QA"
+    said something else), and three findings whose fix was already on a lane and then on a
+    green PR. Now a merged unit waits in `merged` — on main, nobody checking it — until the
+    sprint's last unit is merged (runbook §7: QA runs once per sprint); then every merged
+    card moves to `qa` together and leaves it one by one as tickets are closed by a person.
+    A QA finding sits in `qa` only while nobody has started its fix; once a lane or a PR
+    carries the fix it travels the road like a unit — a step back from QA that is work
+    starting, not a failure — and returns to `qa` when its fix is merged. Two more facts
+    fixed on the way: a ticket closed with no merge behind it counts as accepted only two
+    minutes after the close (U4 and U6 reached `done` on their PR's auto-close, seen by the
+    issue list before the merged-PR list caught up), and a card that got to `done` that way
+    goes back to where the merge puts it while its sprint is not done. The page shows the
+    stages the server has: Review (decision 17) had been a column on the server only.
+
 ## 2026-08-29 (evening) — the board dispatches by itself
 
 16. **A free lane and a ready ticket meet on the board, not in a rulebook (owner,
