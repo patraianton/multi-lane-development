@@ -6,3 +6,6 @@ state/
 deploy/lavish-worker/assets.gen.mjs
 deploy/lavish-worker/wrangler.gen.jsonc
 node_modules/
+
+# Local sidecar (briefs, design drafts, server logs) kept next to the checkout, never part of the project
+.local/
