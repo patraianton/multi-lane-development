@@ -31,7 +31,7 @@ import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
   sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits,
 } from './pipeline.mjs';
-import { sprintFactsFor, parseUnitBranch } from './sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
@@ -772,6 +772,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
         number: it.number, title: it.title, url: it.url, createdAt: it.createdAt,
         state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
         branch: parseUnitBranch(it.body),
+        deps: parseUnitDeps(it.body),
       });
     }
   }
