@@ -580,6 +580,8 @@
   .pcard .pr-chip.ci-run { border-color: #6a5122; color: var(--done); }
   .pcard .lane-chip.busy { border-color: #1f5f7a; color: var(--focus); }
   .pcard .lane-chip.idle { border-color: #5a4a1f; color: var(--done); }
+  .pcard .lane-chip.none { border-color: var(--line); color: var(--ink-dim); }
+  .pcard .lane-chip.none .chip-key { opacity: 1; }
   .pcard .lane-chip .chip-key { color: inherit; opacity: .75; }
   /* What the unit waits for: its ticket's "depends on" resolved against the
      sprint — green once merged, amber while open, grey outside the sprint. */
@@ -1550,26 +1552,43 @@ function pcard(c) {
     const parentTitle = c.sprintTitle || c.parent;
     const pieces = ['<span class="meta-chip unit-parent" title="' + esc('sprint ' + c.parent + ' — ' + parentTitle) + '">'
       + '<span class="chip-key">&#8627; sprint</span><span class="chip-value">' + esc(parentTitle) + '</span></span>'];
+    // Where the unit is, always (owner, 29.08): its development lane and its
+    // CI slot, a dash when there is none — so the absence is on the card too.
     if (uf && uf.lane) {
       const where = uf.lane.server || uf.lane.host || '';
       const folder = uf.lane.folder && uf.lane.folder !== uf.lane.lane ? ' · folder ' + uf.lane.host + '/' + uf.lane.folder : '';
+      const mode = uf.lane.check ? 'checking' : (uf.lane.busy ? 'building' : 'idle');
       pieces.push('<span class="meta-chip lane-chip ' + (uf.lane.busy ? 'busy' : 'idle') + '" title="'
         + esc(where + folder + (uf.lane.branch ? ' · ' + uf.lane.branch : '') + (uf.lane.since ? ' · since ' + uf.lane.since : '')) + '">'
-        + '<span class="chip-key">' + esc(uf.lane.lane) + '</span>'
-        + '<span class="chip-value">' + (uf.lane.busy ? 'building' : 'idle') + (where ? ' · ' + esc(where) : '') + '</span></span>');
+        + '<span class="chip-key">lane</span>'
+        + '<span class="chip-value">' + esc(uf.lane.lane) + ' · ' + mode + (where ? ' · ' + esc(where) : '') + '</span></span>');
+    } else if (uf) {
+      const why = (c.links && c.links.branch)
+        ? 'no lane has this branch checked out (' + c.links.branch + ')'
+        : 'the ticket pins no branch, so no lane can be bound to this unit';
+      pieces.push('<span class="meta-chip lane-chip none" title="' + esc(why) + '">'
+        + '<span class="chip-key">lane</span><span class="chip-value">—</span></span>');
     }
     if (uf && (uf.merged || uf.pr)) {
       pieces.push(pipelinePrChip(uf.merged
         ? { number: uf.merged.number, url: uf.merged.url, status: 'merged', ci: { color: 'green', text: 'merged' } }
         : uf.pr));
     }
-    // The CI slot: which runner, on which server, for how long.
+    // The CI slot: which slot (FLEET.md name), its runner, for how long — or
+    // why there is none (no job right now, no PR at all).
     if (uf && uf.pr && uf.pr.runner && !uf.merged) {
       const r = uf.pr.runner;
       const when = r.status === 'in_progress' ? (r.since ? 'running ' + esc(ago(r.since)).replace(' ago', '') : 'running') : 'queued';
-      pieces.push('<span class="meta-chip lane-chip busy" title="' + esc('CI job ' + (r.job || '') + ' on ' + (r.name || '?') + (r.host ? ' (' + r.host + ')' : '')) + '">'
-        + '<span class="chip-key">CI ' + esc(r.name || 'slot?') + (r.host ? ' · ' + esc(r.host) : '') + '</span>'
-        + '<span class="chip-value">' + when + '</span></span>');
+      pieces.push('<span class="meta-chip lane-chip busy" title="' + esc('CI job ' + (r.job || '') + ' on ' + (r.name || '?') + (r.server ? ' — ' + r.server : (r.host ? ' (' + r.host + ')' : ''))) + '">'
+        + '<span class="chip-key">CI</span>'
+        + '<span class="chip-value">' + esc(r.slot || r.name || 'slot?') + ' · ' + when + (r.slot && r.name && r.slot !== r.name ? ' · ' + esc(r.name) : '') + '</span></span>');
+    } else if (uf && uf.pr && !uf.merged) {
+      const ci = uf.pr.ci && uf.pr.ci.text ? uf.pr.ci.text : 'no checks';
+      pieces.push('<span class="meta-chip lane-chip none" title="' + esc('no CI job is running for PR #' + uf.pr.number + ' right now — ' + ci) + '">'
+        + '<span class="chip-key">CI</span><span class="chip-value">— · ' + esc(ci) + '</span></span>');
+    } else if (uf && !uf.merged) {
+      pieces.push('<span class="meta-chip lane-chip none" title="no PR yet, so no CI slot">'
+        + '<span class="chip-key">CI</span><span class="chip-value">—</span></span>');
     }
     bits.push('<div class="row mono chip-row">' + pieces.join('') + '</div>');
     // The ticket's dependencies, each with the state of the unit it names —

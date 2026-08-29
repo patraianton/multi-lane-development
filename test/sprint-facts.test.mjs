@@ -85,7 +85,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U2.state, 'pr open');
   assert.equal(by.U1.state, 'pr green');
   // The CI slot: the job in progress names the runner and its server.
-  assert.deepEqual(by.U1.pr.runner, { name: 'radar-runner-2', host: 'hetzner', status: 'in_progress', since: '2026-08-28T20:50:00Z', job: 'browser-smoke' });
+  assert.deepEqual(by.U1.pr.runner, { name: 'radar-runner-2', slot: 'radar-runner-2', server: '', host: 'hetzner', status: 'in_progress', since: '2026-08-28T20:50:00Z', job: 'browser-smoke' });
   assert.equal(by.U2.pr.runner, undefined, 'no job facts for that PR');
   assert.deepEqual(s.ciSlots, { total: 4, online: 3, busy: 2, offline: 1, byHost: { hetzner: { total: 2, online: 2, busy: 2 }, hzci: { total: 1, online: 1, busy: 0 }, hostinger: { total: 1, online: 0, busy: 0 } } });
   assert.equal(runnerHost('vps1-runner-3', ciRunners), 'vps1-runner', 'unknown runner: name without its number');
