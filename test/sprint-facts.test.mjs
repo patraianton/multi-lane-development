@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -118,6 +118,38 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, queued: 1, qa: 1, qaOpen: 1 });
   assert.deepEqual(s.stale, ['umbrella']);
   assert.equal(lanesLine(s), 'mac/lane-a U0 #1521, lanes-01/lane-3 U1 #1516, radar/lane-1 U2 #1517, mac/lane-b U5 #1519');
+  // Every lane is a row of the table: bound unit, busy, sorted by lane number.
+  assert.equal(s.laneTable.length, 7);
+  assert.deepEqual(s.laneTable.map(l => l.lane + ':' + (l.unit || '-')), ['lane-1:U2', 'lane-2:-', 'lane-3:U1', 'lane-5:-', 'lane-6:-', 'lane-a:U0', 'lane-b:U5']);
+});
+
+test('the fleet registry renames lanes and only fleet lanes count as capacity', () => {
+  const registry = {
+    'lanes-01/lane-3': { name: 'lane-1', server: 'Hetzner / codex-dev' },
+    'mac/lane-a': { name: 'lane-6', server: 'Mac mini' },
+  };
+  const named = fleetLane(registry, 'lanes-01', { host: 'lanes-01', lane: 'lane-3', busy: true, branch: 'feat/x' });
+  assert.deepEqual({ lane: named.lane, folder: named.folder, server: named.server, fleet: named.fleet, busy: named.busy },
+    { lane: 'lane-1', folder: 'lane-3', server: 'Hetzner / codex-dev', fleet: true, busy: true });
+  const unknown = fleetLane(registry, 'hetzner', { host: 'hetzner', lane: 'lane-1', busy: false });
+  assert.deepEqual({ lane: unknown.lane, folder: unknown.folder, server: unknown.server, fleet: unknown.fleet }, { lane: 'lane-1', folder: 'lane-1', server: null, fleet: false });
+
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const unitIssues = new Map([[1515, [
+    { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
+  ]]]);
+  const lanes = [
+    fleetLane(registry, 'lanes-01', { host: 'lanes-01', lane: 'lane-3', busy: true, since: 'Fri', branch: 'feat/salon-u01-readiness' }),
+    fleetLane(registry, 'mac', { host: 'mac', lane: 'lane-a', busy: false, branch: 'main' }),
+    fleetLane(registry, 'hetzner', { host: 'hetzner', lane: 'lane-1', busy: false, branch: 'main' }),
+  ];
+  const s = sprintFactsFor([card], { lanes, unitIssues }).get('csprint');
+  assert.equal(s.units[0].lane.lane, 'lane-1', 'the unit sits on the fleet name');
+  assert.equal(s.units[0].lane.folder, 'lane-3');
+  assert.equal(s.laneCount, 2, 'only registry lanes are capacity');
+  assert.deepEqual(s.free, ['mac/lane-6']);
+  assert.deepEqual(s.laneTable.map(l => [l.lane, l.fleet, l.unit]), [['lane-1', true, 'U1'], ['lane-6', true, null], ['lane-1', false, null]], 'fleet lanes first, the unknown lane last');
+  assert.equal(lanesLine(s), 'lanes-01/lane-1 (folder lane-3) U1 #1516');
 });
 
 test('an umbrella with no unit tickets yet is a sprint with an empty table', () => {

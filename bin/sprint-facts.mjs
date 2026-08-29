@@ -42,6 +42,21 @@ export function parseUnitDeps(body) {
   return [...out].sort((a, b) => a - b);
 }
 
+// The fleet registry (docs/FLEET.md): lanes are named lane-1…lane-N across
+// every server while the folders on the servers may still carry older names.
+// registry: { "host/folder": { name, server } }. A probed lane keeps its
+// folder, takes the fleet name and server label, and is marked `fleet`; a lane
+// the registry does not know is shown by its folder name, fleet: false.
+export function fleetLane(registry, host, l) {
+  const reg = registry?.[`${host}/${l.lane}`];
+  return { ...l, folder: l.lane, lane: reg?.name || l.lane, server: reg?.server || null, fleet: Boolean(reg) };
+}
+
+function laneNo(name) {
+  const m = /(\d+)/.exec(String(name ?? ''));
+  return m ? Number(m[1]) : 999;
+}
+
 function normBranch(b) {
   return String(b ?? '').trim().replace(/^refs\/heads\//, '');
 }
@@ -146,6 +161,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       const rec = {
         host: l.host, lane: l.lane, busy: Boolean(l.busy), since: l.since ?? null,
         branch: branch || null, task: l.task ?? null, check: l.check ?? null,
+        folder: l.folder ?? null, server: l.server ?? null, fleet: l.fleet !== false,
       };
       // A busy lane beats an idle one still parked on the unit's branch.
       if (!u.lane || (rec.busy && !u.lane.busy)) u.lane = rec;
@@ -191,6 +207,19 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     const bound = units.filter(u => u.lane).map(u => ({ ...u.lane, ticket: u.ticket, unit: u.unit }));
     const isBound = l => bound.some(x => x.host === l.host && x.lane === l.lane);
     const name = l => `${l.host}/${l.lane}`;
+    // Capacity is the fleet (FLEET.md): once a registry names lanes, only those
+    // count as free; a lane outside it is still listed, but not as capacity.
+    const inFleet = lanes.some(l => l.fleet === true) ? lanes.filter(l => l.fleet === true) : lanes;
+    // Every lane as one row for the sprint band: who is on it, by facts.
+    const laneTable = lanes.map(l => {
+      const b = bound.find(x => x.host === l.host && x.lane === l.lane);
+      return {
+        host: l.host, lane: l.lane, folder: l.folder ?? null, server: l.server ?? null, fleet: l.fleet !== false,
+        busy: Boolean(l.busy), state: l.state ?? null, since: l.since ?? null, branch: normBranch(l.branch) || null,
+        check: Boolean(l.check), hostOk: l.hostOk !== false, remembered: Boolean(l.remembered),
+        unit: b?.unit ?? null, ticket: b?.ticket ?? null,
+      };
+    }).sort((a, b) => Number(b.fleet) - Number(a.fleet) || laneNo(a.lane) - laneNo(b.lane) || String(a.host).localeCompare(String(b.host)));
     // QA tickets are not scope: they stand apart from the units and their
     // progress bar, and hold the sprint in QA while one is open.
     const qaTickets = units.filter(u => u.qa);
@@ -200,8 +229,9 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       units: work,
       qaTickets,
       lanes: bound,
-      laneCount: lanes.length,
-      free: lanes.filter(l => !l.busy && !isBound(l)).map(name),
+      laneTable,
+      laneCount: inFleet.length,
+      free: inFleet.filter(l => !l.busy && !isBound(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
       ciSlots,
       counts: {
@@ -225,6 +255,6 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
 export function lanesLine(sprint) {
   if (!sprint) return '-';
   if (!sprint.lanes.length) return sprint.laneCount ? `none of ${sprint.laneCount} lanes` : 'no lanes known';
-  return sprint.lanes.map(l => `${l.host}/${l.lane} ${l.unit ? l.unit + ' ' : ''}#${l.ticket}${l.busy ? '' : ' (idle)'}`)
+  return sprint.lanes.map(l => `${l.host}/${l.lane}${l.folder && l.folder !== l.lane ? ' (folder ' + l.folder + ')' : ''} ${l.unit ? l.unit + ' ' : ''}#${l.ticket}${l.busy ? '' : ' (idle)'}`)
     .join(', ');
 }
