@@ -369,3 +369,92 @@ done. no ssh, no POSTs.
 
 Exit code 0 if the plan was printed. Use this with a stub config in a
 scratch directory; do not write a test file into `state/`.
+
+## Auto-dispatch (decision 16)
+
+Development-launch above is the hand tool: one card, one assigned lane, `--run`.
+**Auto-dispatch** is the board doing the same for a sprint's units by itself —
+"there is a lane, there is development; this must not be a regulation" (owner,
+2026-08-29). It runs inside `bin/watchtower.mjs` after every sprint sweep and the
+idle-lanes check ([DECISIONS.md](./DECISIONS.md) 15 → 16); the pure parts live in
+`bin/auto-dispatch.mjs` and are tested with fixtures, no ssh.
+
+### What it does
+
+1. **Plan** (`planDispatch`): for every active sprint card — startable units
+   (queued, every dependency merged, closed or on an open PR — `startable` of
+   `bin/idle-lanes.mjs`) against the sprint's free fleet lanes (`sprint.free`:
+   in the registry, not busy, not bound to a unit). A lane counts only if
+   `state/fleet-launch.json` names a launcher for it, and not while reserved or
+   launched by the board in the last ten minutes (the probe lags). A light lane
+   (`noBuilds`, lane-3 in [FLEET.md](./FLEET.md)) is never chosen for a unit that
+   needs a build — and every unit does unless the board is told otherwise. One
+   unit per lane, lanes in fleet order, units in unit order. Never sent: a unit
+   with a lane, a PR, a merged PR, no pinned branch, a branch already on origin
+   (checked with `gh api` right before the launch), or a journal entry.
+2. **Base**: the head of the dependency's open PR — branch, head SHA, PR number
+   from the sprint facts — or `main` when every dependency is merged or closed
+   (MANDATE.md §2). Two dependencies on open PRs cannot be one base: the unit is
+   held and the table says so; a person writes that brief.
+3. **Task file** `TASK-<ticket>.md`, the hand-made shape (the finance-cards
+   `TASK-FIN-U8.md` is the model): a header — sprint, umbrella, ticket, lane,
+   branch, `Base: …`, the spec bundle's path on the host — then the sprint's
+   common brief, then `# TICKET #<n> — verbatim` with the body from
+   `gh issue view`. The brief is the first `BRIEF-COMMON*.md` under
+   `<spec dir>/tasks/` (else `<spec dir>/`); with none, the common minimum
+   (`COMMON_BRIEF`: MANDATE §5 and the playbook §4 paragraphs — lane rules, base
+   check, push discipline, four-step self-check, finish yourself, never
+   `Closes #N`). The spec dir is the program under `specsDir` whose
+   `PROGRAM-STATE.md` names the sprint's umbrella, else a `spec: <path>` line in
+   the card's spec text. A copy of every task file sent stays in
+   `state/auto-dispatch/`.
+4. **Launch**, over the board's own ssh settings (`hosts` in
+   `state/autopase-board.json`: target, key, connect timeout): `scp` the task
+   file to the host's kitchen; if the spec dir is known, `test -d` the bundle on
+   the host and `scp -r` it once when missing; then the launcher from the fleet
+   config — `hzlane N "Прочитай <kitchen>/TASK-<ticket>.md и выполни целиком"` on
+   Linux, `maclane N "…"` behind the PATH prefix on the Mac. A launcher answering
+   busy (exit 2) or reserved (exit 3) is a hold, not a failure. Timeouts: 60 s per
+   ssh/gh call, 5 min for the bundle copy.
+5. **Record**: the journal `state/auto-dispatch.json` — `{ dispatched: { "<ticket>":
+   { card, unit, lane, base, at, result, error } } }`. `launched` is final: the
+   unit is never sent again (by the next sweep the lane is busy on its branch and
+   the facts bind them). `failed` and `held` are retried after ten minutes, not
+   sooner. On `launched`, one line in the umbrella issue:
+   `board: U3b #1583 dispatched to mac/lane-6 from feat/fin-u3a@b34d212d (PR #1602 of U3a)`;
+   a lost comment does not undo a launch. Entries older than a week are dropped.
+
+### The switch
+
+**Off by default.** Without `WATCHTOWER_AUTO_DISPATCH=1` the board plans, logs
+`auto-dispatch: would dispatch U3b #1583 -> mac/lane-6 from … (WATCHTOWER_AUTO_DISPATCH=1 to send)`
+once per pair, fills the `auto-dispatch` table ([API.md](./API.md), state
+`would dispatch`) and the page's Auto-dispatch line — and touches no host. With
+the switch on and `state/fleet-launch.json` missing, nothing is sent either and
+the log says so. Turning it on for the live board is the owner's call.
+
+### `state/fleet-launch.json`
+
+Template: [`fleet-launch.example.json`](./fleet-launch.example.json) — the
+lanes and launchers of FLEET.md. Not in git (`state/`), so a change in FLEET.md
+is a change here by hand.
+
+| field | meaning |
+| --- | --- |
+| `prompt` | The launcher's argument; `{taskFile}` becomes the task file's path on the host (`~/` → `$HOME/`). Default `Прочитай {taskFile} и выполни целиком`. |
+| `hosts.<name>` | Keyed by the board's host names (`hosts` in the settings), where the ssh target and key already live. `kitchen` — the folder the task file and the bundle land in; `launch` — the command with `{n}` (lane number), `{lane}`, `{prompt}`; `shell` — a prefix for a non-interactive login (the Mac's PATH); `ssh`/`key` — overrides for the board's values. |
+| `lanes.<lane-N>` | `host` (must match the sprint fact's `host/lane-N`), `n`, `noBuilds` (never a unit that needs a build), `reserved` (never chosen). |
+
+`WATCHTOWER_FLEET_LAUNCH_FILE` points the board at another file (tests).
+`WATCHTOWER_SCP` overrides the scp binary the way `WATCHTOWER_SSH` does ssh.
+
+### Checking it without a host
+
+`npm test` runs the planner, the base, the task text, the launch plan and the
+journal on fixtures (`test/auto-dispatch.test.mjs`) and a board on a facts file
+with the switch off (`test/auto-dispatch-board.test.mjs`): the `auto-dispatch`
+table shows `would dispatch`, the journal file is never written. By hand: start
+`node bin/watchtower.mjs` with `WATCHTOWER_STATE_DIR` pointing at a scratch
+folder, `WATCHTOWER_SPRINT_FACTS_FILE` at a facts file and
+`WATCHTOWER_FLEET_LAUNCH_FILE` at a launch config, create a sprint card with the
+umbrella link and move it to `development`, then read `/api/pipeline`.

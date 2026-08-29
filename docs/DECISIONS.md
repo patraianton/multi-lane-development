@@ -4,6 +4,31 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-29 (evening) — the board dispatches by itself
+
+16. **A free lane and a ready ticket meet on the board, not in a rulebook (owner,
+    2026-08-29 ~16:30: "there is a lane, there is development — this must not be a
+    regulation").** After every idle-lanes check the board plans the dispatch itself:
+    for each active sprint, the startable units (decision 15's `startable`) against the
+    sprint's free fleet lanes that have a launcher in `state/fleet-launch.json` — not busy,
+    not bound, not reserved, and a light lane (lane-3, no builds) only for a unit that
+    needs no build. One unit per lane, one launch per lane per sweep. The base is the head
+    of the dependency's open PR (MANDATE.md §2) or `main`; a unit with two open-PR
+    dependencies, or no pinned branch, is held and the table says why. The task file is
+    the hand-made shape — `TASK-<ticket>.md` = the ticket verbatim + the sprint's
+    `BRIEF-COMMON-*.md` (or the common minimum) + the base line — copied with the spec
+    bundle to the lane's host and started through the fleet's launcher (`hzlane N` /
+    `maclane N "Прочитай … и выполни целиком"`); on success one line in the umbrella
+    (`board: U3b #1583 dispatched to mac/lane-6 from feat/fin-u3a@b34d212d …`). The
+    journal `state/auto-dispatch.json` makes a launched unit final and holds a failed one
+    for ten minutes; a unit whose branch already exists on origin, has a PR or a lane is
+    never sent. **Off by default:** without `WATCHTOWER_AUTO_DISPATCH=1` the board only
+    says what it would send (`auto-dispatch` table in `/api/pipeline`, the page, the log).
+    Why: decision 15 alarmed on the very state the board could end itself; the finance-cards
+    sprint held free lanes for twenty minutes with five startable tickets while every
+    rulebook already said "free lane + ready brief = dispatch". A rule the board enforces by
+    doing is the first one that holds. DEVLAUNCH.md "Auto-dispatch (decision 16)".
+
 ## 2026-08-29 (late afternoon) — the board alarms on idle lanes
 
 15. **A free assigned lane while a unit waits is an alarm, raised by the board itself
@@ -19,7 +44,7 @@ the record of when and why.
     Why: the finance-cards sprint ran one unit wide for an hour, then held three Mac lanes
     idle for twenty minutes with five startable tickets queued — nobody was told until the
     owner looked at the board. Rulebooks the stream had been given said otherwise; a rule
-    nobody enforces is not a rule. Next: the board dispatches by itself (decision pending).
+    nobody enforces is not a rule. Next: the board dispatches by itself (decision 16).
 
 ## 2026-08-29 (afternoon) — nothing is built off the board
 
