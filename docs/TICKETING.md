@@ -169,11 +169,27 @@ killed by the next push to the same branch.
 
 ### 2.10 Definition of done
 
-Done = **green pr-ci on the exact head + a GO review verdict**, and the merge is
-automatic from that moment — auto-merge armed at GO (conveyor rule 6), or the board's
+**Merged is delivered, not done.** The merge is automatic from **green pr-ci on the exact
+head + a GO review verdict** — auto-merge armed at GO (conveyor rule 6), or the board's
 CI-slot runner where it drives CI/PR ([EXECUTION.md](./EXECUTION.md) merges on green
 itself; the GO review must come before it is pointed at the PR). Under neither mechanism does a finished PR
 wait for a human's morning, and a green PR never waits for a neighbor (rule 5).
+
+**Done = the ticket closed by the acceptance, after the merge**, with the acceptance
+commands' output pasted in the closing comment (§2.5). The ticket's `Done =` line names
+that acceptance — for a rollout unit it is the production probe, which only exists after
+the env flip and the rebuild, i.e. after the merge. Two rules follow (decision 13):
+- **A PR never says `Closes #N` / `Fixes #N`.** GitHub would close the ticket in the same
+  second as the merge, and the board reads that for what it is — not an acceptance. If it
+  happened anyway: reopen the ticket and close it again after the acceptance run.
+- The board keeps a merged unit in **QA** until its ticket is closed later than two
+  minutes after the merge; the sprint leaves QA only when every unit is accepted, the QA
+  tickets (§2.11) are closed and **the umbrella is closed** — closing the umbrella is
+  how the pass is declared.
+Evidence: on 29.08 U16 (rollout, #1532) went to Done at 10:04 — the second PR #1557
+merged and auto-closed the ticket — while the actual rollout (Vercel env, cancelled and
+re-run deploys, the production probe) ran in the orchestrator until after 12:00; the
+sprint itself was marked Done at 10:26 with the umbrella still open.
 Evidence: nights cost 47 h (#1356 and #1267 alone ~20 h); 23 PRs hung open longer than
 6 h, almost all opened in the evening of 26.08 and merged next morning (9–23 h each);
 finished-and-green #1481 lay ready for 8.5 h.

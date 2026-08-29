@@ -870,6 +870,7 @@ function ciSlotsLine(ci) {
 function sprintSummary(s) {
   return {
     umbrella: s.umbrella,
+    umbrellaOpen: s.umbrellaOpen ?? null,
     ...s.counts,
     ciSlots: s.ciSlots ?? null,
     lanes: s.lanes.map(l => ({ host: l.host, lane: l.lane, unit: l.unit, ticket: l.ticket, busy: l.busy })),
@@ -992,10 +993,14 @@ function unitTitle(u) {
 }
 
 function unitTargetStage(u) {
-  if (u.merged) return 'done';
   // A QA ticket sits in QA from the day it is written, fix PR or not; closing
   // it is what finishes it.
   if (u.qa) return u.open ? 'qa' : 'done';
+  // Merged is delivered to main, not accepted: the unit waits in QA until its
+  // ticket is closed after the merge (decision 13) — the PR's auto-close does
+  // not count. For a rollout unit that close follows the production probe.
+  if (u.accepted) return 'done';
+  if (u.merged) return 'qa';
   if (u.pr) return 'ci_pr';
   if (u.lane?.check) return 'local_check';
   if (u.lane?.busy) return 'development';
@@ -1029,19 +1034,21 @@ function unitPlan(cards, sprints) {
     }
     // The sprint's own stage follows its units: development once any unit has
     // started; QA once every unit is merged (or closed) — the scope is
-    // delivered and the findings its reviews left behind are what remains
-    // (decision 11); done once its QA tickets are all closed too. With no QA
-    // ticket written the sprint waits in QA for a human to declare the pass.
-    // Forward only, facts only.
+    // delivered, what remains is the acceptance of each unit and the findings
+    // the reviews left behind (decisions 11, 13); done once every unit is
+    // accepted, the QA tickets are closed and the umbrella is closed — the
+    // umbrella's close is the pass declared. Forward only, facts only.
     const units = s.units ?? [];
     const qa = s.qaTickets ?? [];
     if (units.length && !s.stale?.length && sprint.stage !== 'stuck') {
-      const allDone = units.every(u => u.merged || !u.open);
-      const qaDone = qa.length > 0 && qa.every(u => u.merged || !u.open);
+      const allMerged = units.every(u => u.merged || !u.open);
+      const allAccepted = units.every(u => u.accepted);
+      const qaDone = qa.every(u => u.merged || !u.open);
+      const finished = allMerged && allAccepted && qaDone && s.umbrellaOpen === false;
       const anyStarted = units.some(u => u.lane || u.pr || u.merged);
       let to = null;
-      if (allDone && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = qaDone ? 'done' : 'qa';
-      else if (allDone && qaDone && sprint.stage === 'qa') to = 'done';
+      if (allMerged && ['ticketed', 'development', 'local_check', 'ci_pr'].includes(sprint.stage)) to = finished ? 'done' : 'qa';
+      else if (finished && sprint.stage === 'qa') to = 'done';
       else if (anyStarted && sprint.stage === 'ticketed') to = 'development';
       if (to) plan.push({ kind: 'sprint-stage', id: sprintId, to });
     }
@@ -1270,8 +1277,10 @@ function renderToonPipeline(v) {
       + ' the whole pipeline in full — ?full=1');
   }
   help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, qa, done;'
-    + ' stuck — three failures in a row, waiting for a human; qa — the findings a sprint\'s'
-    + ' reviews left behind (tickets labelled qa) are closed before done');
+    + ' stuck — three failures in a row, waiting for a human; qa — merged, the ticket not yet'
+    + ' closed after the merge (the PR\'s own auto-close does not count): a unit is done once'
+    + ' it is, a sprint once every unit is, its qa-labelled tickets are closed and the umbrella'
+    + ' is closed');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
   help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'

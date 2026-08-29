@@ -70,6 +70,9 @@ on Linux, `~/kitchens/autopase.lv` on the Mac). Names match this table since
 | ci-slot-4 | hzci-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | registered 2026-08-29; no core cap, 8 GB swap added |
 | ci-slot-5 | hzci-5 | Hetzner / autopase-ci | `vps1`, `hetzner` | registered 2026-08-29 |
 
+- The board shows the slots from its own copy of this table — `ciSlots` in
+  `state/autopase-board.json`, keyed by runner name → `{ name, server }`; a change
+  here is a change there in the same commit.
 - Who needs which label: `pr-ci` → `ci-fast`; `nightly-quality` → `vps1` (any
   slot); `garage-osm-import`, the `daily-health` disk check and
   `vps1-maintenance` → `hetzner` (slots 4–5 only). Without slots 4–5 those

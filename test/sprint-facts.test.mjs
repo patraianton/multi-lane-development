@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane, fleetSlot } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -37,7 +37,8 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
     { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
     { number: 1521, title: 'SALON-U0: free-promo checkout', url: 'u/1521', state: 'OPEN', branch: '' },
     { number: 1522, title: 'SALON-U4: composition', url: 'u/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
-    { number: 1518, title: 'SALON-U3: reserve reader', url: 'u/1518', state: 'CLOSED', branch: 'feat/salon-u03-reserve-reader' },
+    // Closed an hour after its merge: accepted by a person, not by the PR.
+    { number: 1518, title: 'SALON-U3: reserve reader', url: 'u/1518', state: 'CLOSED', closedAt: '2026-08-28T21:00:00Z', branch: 'feat/salon-u03-reserve-reader' },
     // The reviews' leftovers, labelled qa: a QA ticket, not a unit.
     { number: 1525, title: 'SALON tails carried out of the sprint', url: 'u/1525', state: 'OPEN', branch: '', qa: true },
   ]]]);
@@ -69,10 +70,11 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
     { workflow: 'pr-ci', job: 'browser-smoke', status: 'in_progress', runner: 'radar-runner-2', startedAt: '2026-08-28T20:50:00Z' },
   ]]]);
   const facts = sprintFactsFor([card, { id: 'plain', links: { ticket: '' } }],
-    { lanes, prs, mergedPrs, unitIssues, ciJobs, ciRunners, staleSources: ['umbrella'], at: '2026-08-28T21:00:00Z' });
+    { lanes, prs, mergedPrs, unitIssues, ciJobs, ciRunners, umbrellaStates: new Map([[1515, 'OPEN']]), staleSources: ['umbrella'], at: '2026-08-28T21:00:00Z' });
   assert.equal(facts.has('plain'), false, 'a card without an umbrella link is not a sprint');
   const s = facts.get('csprint');
   assert.equal(s.umbrella, 1515);
+  assert.equal(s.umbrellaOpen, true);
   assert.deepEqual(s.units.map(u => u.unit), ['U0', 'U1', 'U2', 'U3', 'U4', 'U5'], 'sorted by unit number; the QA ticket is not a unit');
   assert.deepEqual(s.qaTickets.map(u => [u.unit, u.ticket, u.state, u.open]), [['QA', 1525, 'open', true]]);
 
@@ -87,14 +89,23 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U2.pr.runner, undefined, 'no job facts for that PR');
   assert.deepEqual(s.ciSlots, { total: 4, online: 3, busy: 2, offline: 1, byHost: { hetzner: { total: 2, online: 2, busy: 2 }, hzci: { total: 1, online: 1, busy: 0 }, hostinger: { total: 1, online: 0, busy: 0 } } });
   assert.equal(runnerHost('vps1-runner-3', ciRunners), 'vps1-runner', 'unknown runner: name without its number');
+  // Every runner is a row: the PR whose job it runs and the unit behind it.
+  assert.deepEqual(s.ciTable.map(r => [r.name, r.online, r.busy, r.pr, r.unit]), [
+    ['hzci-1', true, false, null, null],
+    ['radar-runner-1', true, true, null, null],
+    ['vps1-runner', false, false, null, null],
+    ['radar-runner-2', true, true, 1540, 'U1'],
+  ], 'by the first number in the name when no registry names the slots');
+  assert.equal(s.ciTable[3].job, 'browser-smoke');
   assert.equal(ciSlotSummary([]).total, 0);
   // TASK-file binding on the Mac; the branch there belongs to another unit.
   assert.deepEqual({ host: by.U0.lane.host, lane: by.U0.lane.lane }, { host: 'mac', lane: 'lane-a' });
   assert.equal(by.U0.state, 'on lane');
   assert.equal(by.U5.lane.lane, 'lane-b', 'the busy lane reading TASK-1519 beats the idle branch match');
   assert.equal(by.U5.state, 'on lane');
-  // Merged PR on a closed ticket.
-  assert.equal(by.U3.state, 'merged');
+  // Merged PR on a ticket closed an hour later: accepted.
+  assert.equal(by.U3.state, 'accepted');
+  assert.equal(by.U3.accepted, '2026-08-28T21:00:00Z');
   assert.equal(by.U3.merged.number, 1530);
   assert.equal(by.U3.lane, null);
   // Nothing yet.
@@ -102,7 +113,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   // Dependencies resolved against the sprint: merged → met, open PR → not met,
   // a ticket from elsewhere → unresolved.
   assert.deepEqual(by.U5.deps, [
-    { ticket: 1518, unit: 'U3', state: 'merged', met: true },
+    { ticket: 1518, unit: 'U3', state: 'accepted', met: true },
     { ticket: 1517, unit: 'U2', state: 'pr open', met: false },
     { ticket: 1499, unit: '', state: 'outside the sprint', met: null },
   ]);
@@ -115,12 +126,39 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.free, ['radar/lane-2', 'lanes-01/lane-5']);
   assert.deepEqual(s.busyElsewhere, ['hostinger/lane-6']);
   assert.equal(s.laneCount, 7);
-  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, queued: 1, qa: 1, qaOpen: 1 });
+  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, accepted: 1, queued: 1, qa: 1, qaOpen: 1 });
   assert.deepEqual(s.stale, ['umbrella']);
   assert.equal(lanesLine(s), 'mac/lane-a U0 #1521, lanes-01/lane-3 U1 #1516, radar/lane-1 U2 #1517, mac/lane-b U5 #1519');
   // Every lane is a row of the table: bound unit, busy, sorted by lane number.
   assert.equal(s.laneTable.length, 7);
   assert.deepEqual(s.laneTable.map(l => l.lane + ':' + (l.unit || '-')), ['lane-1:U2', 'lane-2:-', 'lane-3:U1', 'lane-5:-', 'lane-6:-', 'lane-a:U0', 'lane-b:U5']);
+});
+
+test('merged is not accepted: the ticket closed by the PR does not count, a later close does, and no merge means the close is the word', () => {
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const unitIssues = new Map([[1515, [
+    // Closed in the same second as the merge — GitHub's "Closes #N".
+    { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'CLOSED', closedAt: '2026-08-29T07:03:46Z', branch: 'feat/salon-u01' },
+    // Closed 40 minutes after the merge — the acceptance.
+    { number: 1517, title: 'SALON-U2: reader', url: 'u/1517', state: 'CLOSED', closedAt: '2026-08-29T07:45:00Z', branch: 'feat/salon-u02' },
+    // No PR at all, closed: dropped or done by hand — the ticket is the word.
+    { number: 1518, title: 'SALON-U3: note', url: 'u/1518', state: 'CLOSED', closedAt: '2026-08-29T08:00:00Z', branch: '' },
+    // Merged, still open.
+    { number: 1519, title: 'SALON-U4: rollout', url: 'u/1519', state: 'OPEN', branch: 'feat/salon-u04' },
+  ]]]);
+  const mergedPrs = [
+    { number: 1601, url: 'pr/1601', branch: 'feat/salon-u01', mergedAt: '2026-08-29T07:03:45Z' },
+    { number: 1602, url: 'pr/1602', branch: 'feat/salon-u02', mergedAt: '2026-08-29T07:03:45Z' },
+    { number: 1604, url: 'pr/1604', branch: 'feat/salon-u04', mergedAt: '2026-08-29T07:03:45Z' },
+  ];
+  const s = sprintFactsFor([card], { mergedPrs, unitIssues, umbrellaStates: new Map() }).get('csprint');
+  const by = Object.fromEntries(s.units.map(u => [u.unit, u]));
+  assert.deepEqual([by.U1.state, by.U1.accepted], ['merged', null], 'auto-closed by the PR: merged, not accepted');
+  assert.deepEqual([by.U2.state, by.U2.accepted], ['accepted', '2026-08-29T07:45:00Z']);
+  assert.deepEqual([by.U3.state, by.U3.accepted], ['accepted', '2026-08-29T08:00:00Z']);
+  assert.deepEqual([by.U4.state, by.U4.accepted], ['merged', null]);
+  assert.equal(s.umbrellaOpen, null, 'an umbrella outside the list is unknown, never closed');
+  assert.equal(s.counts.accepted, 2);
 });
 
 test('the fleet registry renames lanes and only fleet lanes count as capacity', () => {
@@ -131,6 +169,9 @@ test('the fleet registry renames lanes and only fleet lanes count as capacity', 
   const named = fleetLane(registry, 'lanes-01', { host: 'lanes-01', lane: 'lane-3', busy: true, branch: 'feat/x' });
   assert.deepEqual({ lane: named.lane, folder: named.folder, server: named.server, fleet: named.fleet, busy: named.busy },
     { lane: 'lane-1', folder: 'lane-3', server: 'Hetzner / codex-dev', fleet: true, busy: true });
+  const slot = fleetSlot({ 'hzci-1': { name: 'ci-slot-1', server: 'Hetzner / ci-runners-01' } }, { name: 'hzci-1', status: 'online', busy: true });
+  assert.deepEqual({ slot: slot.slot, server: slot.server, fleet: slot.fleet, busy: slot.busy }, { slot: 'ci-slot-1', server: 'Hetzner / ci-runners-01', fleet: true, busy: true });
+  assert.equal(fleetSlot({}, { name: 'x-runner' }).slot, 'x-runner');
   const unknown = fleetLane(registry, 'hetzner', { host: 'hetzner', lane: 'lane-1', busy: false });
   assert.deepEqual({ lane: unknown.lane, folder: unknown.folder, server: unknown.server, fleet: unknown.fleet }, { lane: 'lane-1', folder: 'lane-1', server: null, fleet: false });
 

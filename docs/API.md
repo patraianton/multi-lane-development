@@ -327,8 +327,17 @@ id), `ticket`, `unit`, `links.ticket` / `links.branch` from the ticket,
 `links.pr` and `lane` refreshed from the facts every sweep, `sprint-of` in the
 card view. They start at `ticketed` and are walked forward by facts alone —
 busy lane → `development`, the lane running the project's local check →
-`local_check`, PR open → `ci_pr`, PR merged → `done` — never
-backwards, never out of `stuck`, and not at all while a source is stale.
+`local_check`, PR open → `ci_pr`, PR merged → `qa`, ticket closed after the
+merge → `done` — never backwards, never out of `stuck`, and not at all while a
+source is stale.
+
+**Accepted (decision 13).** Merged is delivered to main, not accepted. A unit is
+`done` once its ticket is closed *after* the merge — later than two minutes,
+because a PR body's "Closes #N" shuts the ticket in the same second as the merge
+and that is GitHub, not an acceptance — or closed with no merge at all (dropped,
+or done by hand). For a rollout unit that close follows the production probe.
+A ticket the PR auto-closed is accepted by reopening it and closing it again.
+The unit's `state` says `accepted`; `sprint.accepted` counts them.
 
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
@@ -336,8 +345,11 @@ are written (TICKETING.md §2.11). The board lists it apart from the units as
 `qaTickets` (`sprint.qa` / `sprint.qaOpen` in the counts, the `qa` table in the
 card view), spawns it as a card titled `QA #N — …` straight into `qa`, and moves
 it to `done` when the ticket is closed. The sprint itself goes `qa` once every
-unit is merged or closed, and `done` by facts only once its QA tickets are all
-closed — with none written it waits in `qa` for a human move (`qa → done`).
+unit is merged or closed, and `done` by facts once every unit is accepted, its
+QA tickets are closed **and the umbrella is closed** (`sprint.umbrellaOpen`;
+unknown — an umbrella outside the last 300 issues — never reads as closed). The
+umbrella's close is the pass declared; `qa → done` by hand remains for a sprint
+without unit tickets.
 Deleting the sprint card deletes its unit cards. The list view's `summary`
 counts them under `units`.
 
@@ -618,6 +630,7 @@ Config fields on `state/autopase-board.json`:
 | `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when `auth.founders` is set |
 | `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
 | `lanes` | `{}` | the fleet registry (docs/FLEET.md): `"host/folder": { "name", "server" }` — a probed lane folder is shown under its fleet name with its server; lanes not listed are shown by folder name, dimmed, and do not count as capacity (`laneCount`, `free`) |
+| `ciSlots` | `{}` | the same registry for CI runners (docs/FLEET.md "CI slots"): `"<runner name>": { "name", "server" }` — the runner is shown under its slot name with its server |
 | `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
 
 A hook that has been waiting more than ten minutes shows `hooks queued, oldest Nm`
