@@ -160,6 +160,41 @@
   }
   .sprint-band .band-stack { display: grid; gap: 10px; width: 100%; max-width: 1840px; min-width: 0; }
   .sprint-band .sprint-panel-wrap { min-width: 0; }
+  /* The big blocks fold (owner, 29.08): a sprint collapses to one line — name,
+     stage, clock, the unit counts, the QA line, free lanes — and opens on a
+     click; the off-board zone folds to its heading. Folded by default; what
+     the owner opened stays open in this browser. */
+  .sprint-band .sprint-brief {
+    display: none; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; padding: 9px 12px;
+    border: 1px solid var(--line); border-left: 3px solid var(--sprint); border-radius: 9px; cursor: pointer;
+    background: linear-gradient(145deg, var(--panel-lift), var(--panel) 54%, #0f1924);
+    box-shadow: 0 6px 16px var(--shadow-deep), inset 0 1px rgba(255, 255, 255, .035);
+  }
+  .sprint-band .sprint-brief:hover { border-color: var(--line-hot); }
+  .sprint-band .sprint-panel-wrap.collapsed .sprint-brief { display: flex; }
+  .sprint-band .sprint-panel-wrap.collapsed .sprint-panel,
+  .sprint-band .sprint-panel-wrap.collapsed .sprint-card-detail { display: none; }
+  .sprint-band .sprint-brief .caret, .sprint-band .fold-btn .caret, .offboard-zone .caret {
+    display: inline-block; width: 0; height: 0; border-left: 5px solid currentColor;
+    border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform 120ms ease;
+  }
+  .sprint-band .sprint-brief .name { min-width: 0; color: var(--ink); font-weight: 750; font-size: 13px; overflow-wrap: anywhere; }
+  .sprint-band .sprint-brief .stat { color: var(--ink-mid); font: 10px var(--mono); white-space: nowrap; }
+  .sprint-band .sprint-brief .stat b { color: var(--ink); font-weight: 700; }
+  .sprint-band .sprint-brief .stat.qa b { color: var(--done); }
+  .sprint-band .sprint-brief .stat.qa.clean b { color: var(--working); }
+  .sprint-band .sprint-brief .hint { margin-left: auto; color: var(--ink-dim); font: 9px var(--mono); white-space: nowrap; }
+  .sprint-band .fold-btn {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--line);
+    border-radius: 10px; background: rgba(8, 13, 19, .58); color: var(--ink-dim); cursor: pointer; font: 700 9px/1.2 var(--mono);
+  }
+  .sprint-band .fold-btn:hover { color: var(--focus); border-color: #31556a; }
+  .sprint-band .fold-btn .caret { transform: rotate(90deg); }
+  .offboard-zone > h2 { cursor: pointer; }
+  .offboard-zone > h2 .caret { margin-right: 6px; transform: rotate(90deg); }
+  .offboard-zone.collapsed > h2 { margin-bottom: 0; }
+  .offboard-zone.collapsed > h2 .caret { transform: none; }
+  .offboard-zone.collapsed .ob-list { display: none; }
   .sprint-band .sprint-panel {
     display: grid; grid-template-columns: minmax(340px, 470px) minmax(0, 1fr); min-width: 0; overflow: hidden;
     border: 1px solid var(--line); border-left: 3px solid var(--sprint); border-radius: 9px;
@@ -922,7 +957,19 @@ const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
 
 let pipeSeen = '';
 let pipeTimer = null;
+let lastPipe = null;
 const openCards = new Set();
+// What the owner unfolded in this browser: sprints by id, the off-board zone.
+// Absent = folded (the default, owner 29.08).
+let folds = { sprints: {}, offboard: true };
+try {
+  const saved = JSON.parse(localStorage.getItem('watchtower-folds') || 'null');
+  if (saved && typeof saved === 'object') folds = { sprints: saved.sprints || {}, offboard: saved.offboard !== false };
+} catch (e) {}
+function saveFolds() { try { localStorage.setItem('watchtower-folds', JSON.stringify(folds)); } catch (e) {} }
+function isSprintFolded(id) { return folds.sprints[id] !== false; }
+function toggleSprintFold(id) { folds.sprints[id] = isSprintFolded(id) ? false : true; saveFolds(); if (lastPipe) renderPipeline(lastPipe); }
+function toggleOffBoardFold() { folds.offboard = !folds.offboard; saveFolds(); if (lastPipe) renderPipeline(lastPipe); }
 // Each sprint owns its table order. Refreshes rebuild the band, so sorting
 // lives outside the DOM and survives the three-second redraw cycle.
 const sprintBandSort = new Map();
@@ -1350,13 +1397,40 @@ function sprintBandTable(c) {
     + '</tbody></table></section>';
 }
 
+// One line for a folded sprint: what the owner needs to decide whether to
+// open it — stage, clock, where the units are, QA, free lanes.
+function sprintBandBrief(c) {
+  const s = c.sprint || {};
+  const cl = calcClocks(c);
+  const counts = sprintBandCounts(s);
+  const qa = Array.isArray(s.qaTickets) ? s.qaTickets : [];
+  const qaOpen = qa.filter(u => u.open && !u.merged).length;
+  const active = counts.onLane + counts.checking + counts.pr;
+  return '<div class="sprint-brief" data-sprint-toggle="' + esc(c.id) + '" title="open the sprint">'
+    + '<span class="caret"></span><span class="name">' + esc(c.title) + '</span>'
+    + '<span class="badge">' + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span>'
+    + '<span class="clock"><small>Total</small>' + clockSpan('clk', cl.total, cl.totalFrom) + '</span>'
+    + '<span class="stat"><b>' + counts.merged + '</b>/' + counts.units + ' merged</span>'
+    + '<span class="stat"><b>' + active + '</b> in flight</span>'
+    + (counts.queued ? '<span class="stat"><b>' + counts.queued + '</b> queued</span>' : '')
+    + (qa.length || s.umbrellaOpen != null
+      ? '<span class="stat qa' + (qaOpen ? '' : ' clean') + '"><b>QA ' + qaOpen + '</b>/' + qa.length
+        + (s.umbrellaOpen == null ? '' : ' · umbrella ' + (s.umbrellaOpen ? 'open' : 'closed')) + '</span>'
+      : '')
+    + '<span class="stat"><b>' + (s.free || []).length + '</b>/' + (Number(s.laneCount) || 0) + ' lanes free</span>'
+    + '<span class="hint">click to open</span></div>';
+}
+
 function sprintBandPanel(c) {
   const s = c.sprint;
   const cl = calcClocks(c);
   const open = openCards.has(c.id);
-  return '<div class="sprint-panel-wrap" data-sprint-panel="' + esc(c.id) + '" style="--sprint: ' + sprintHue(c.id) + '">'
+  const folded = isSprintFolded(c.id);
+  return '<div class="sprint-panel-wrap' + (folded ? ' collapsed' : '') + '" data-sprint-panel="' + esc(c.id) + '" style="--sprint: ' + sprintHue(c.id) + '">'
+    + sprintBandBrief(c)
     + '<article class="sprint-panel"><aside class="sprint-summary"><div class="sprint-identity">'
     + '<div class="sprint-name-row"><h3 class="sprint-name">' + esc(c.title) + '</h3>'
+    + '<button type="button" class="fold-btn" data-sprint-toggle="' + esc(c.id) + '" title="fold the sprint to one line"><span class="caret"></span>fold</button>'
     + '<button type="button" class="card-toggle" data-sprint-card="' + esc(c.id) + '" aria-expanded="'
     + (open ? 'true' : 'false') + '" title="Toggle the full sprint card">card</button></div>'
     + '<div class="identity-meta"><span class="badge">' + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span>'
@@ -1715,10 +1789,11 @@ function renderPipeline(d) {
   // Off the board: what is being built without a card, each with its fix.
   const obZone = $('offboard-zone');
   obZone.classList.toggle('on', obList.length > 0 || Boolean(ob.skipped));
+  obZone.classList.toggle('collapsed', folds.offboard);
   obZone.innerHTML = obList.length || ob.skipped
-    ? '<h2>Off the board — ' + obList.length + ' thing' + (obList.length === 1 ? '' : 's') + ' being built without a card'
+    ? '<h2 data-ob-toggle="1" title="' + (folds.offboard ? 'open the list' : 'fold the list') + '"><span class="caret"></span>Off the board — ' + obList.length + ' thing' + (obList.length === 1 ? '' : 's') + ' being built without a card'
       + (ob.skipped ? ' · watch skipped: ' + esc(ob.skipped) : '')
-      + ' · <a href="/pipeline/edge-cases" target="_blank" rel="noreferrer">edge-cases.md</a></h2>'
+      + ' · <a href="/pipeline/edge-cases" target="_blank" rel="noreferrer" data-stop="1">edge-cases.md</a></h2>'
       + '<div class="ob-list">' + obList.map(f => '<div class="ob-item"><span class="ob-kind">' + esc(f.kind) + '</span>'
         + (f.url ? '<a class="ob-ref" href="' + esc(f.url) + '" target="_blank" rel="noreferrer">' + esc(f.ref) + '</a>'
           : '<span class="ob-ref">' + esc(f.ref) + '</span>')
@@ -1741,6 +1816,13 @@ function renderPipeline(d) {
 }
 
 function wirePipeline(data) {
+  for (const el of document.querySelectorAll('#sprint-band [data-sprint-toggle]')) {
+    el.onclick = (ev) => { ev.stopPropagation(); toggleSprintFold(el.dataset.sprintToggle); };
+  }
+  const obHead = document.querySelector('#offboard-zone [data-ob-toggle]');
+  if (obHead) {
+    obHead.onclick = (ev) => { if (ev.target.closest('a')) return; ev.stopPropagation(); toggleOffBoardFold(); };
+  }
   for (const b of document.querySelectorAll('#sprint-band [data-sprint-sort]')) {
     b.onclick = (ev) => {
       ev.stopPropagation();
@@ -1850,6 +1932,7 @@ async function pipePoll() {
     // text and the cursor carried across.
     if (seen !== pipeSeen) {
       pipeSeen = seen;
+      lastPipe = d;
       renderPipeline(d);
     }
     tickClocks();
