@@ -8,6 +8,8 @@ A card moves to `grilled` only when the grill outcome has been folded back into 
 **No spec reaches `ticketed` without passing the grill — no exceptions for polish.** A spec
 that arrives fully written and owner-approved (e.g. a partner's prepared package) is grilled
 exactly like a draft; approval of the product behavior is not approval of the technical cut.
+The CTO intake reglament (`autopase-ops/CTO-REGLAMENT.md` §1) defers to this document —
+owner's decision 2026-08-29, after AUTO-DETAIL-FINANCE-CARDS-R1 was cut without a grill.
 
 Status of this document: the **method** (§1–§2) is in live use, run by the CTO window.
 The **artifact publishing pipeline** (§3–§5) is implemented — the worker under
@@ -17,7 +19,7 @@ credentials (docs/ARTIFACT.md lists the exact token scopes).
 
 ## 1. Method: a panel of independent lenses
 
-The spec is interrogated by a panel of independent Fable agents (one per lens,
+The spec is interrogated by a panel of independent agents (one per lens, strong model,
 run in parallel). Two hard rules for every lens:
 
 - **Check the spec against the real code, not against imagination.** Every blocker must have
@@ -100,8 +102,10 @@ external access. These are the only legitimate `owner-question` findings, and
 they carry **no default decision** — a deadline produces a reminder, not an
 assumed answer.
 
-**Not an owner checkpoint:** production DB writes. They run under the product
-repo's documented backup regime: a verified restore net, a restore point
+**Not an owner checkpoint:** production DB writes (owner decision 2026-08-25:
+"take the live database off me — back it up properly and restore"). They run
+under the backup regime documented in the product repo
+(`docs/ops/DB-BACKUP-RESTORE.md`): a verified restore net, a restore point
 taken right before every write, and the owner *informed* after a restore,
 never *asked* before a write.
 

@@ -330,7 +330,7 @@ busy lane → `development`, the lane running the project's local check →
 `local_check`, PR open → `ci_pr`, PR merged → `done` — never
 backwards, never out of `stuck`, and not at all while a source is stale.
 
-**QA tickets.** An issue labelled `qa` that references the
+**QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
 are written (TICKETING.md §2.11). The board lists it apart from the units as
 `qaTickets` (`sprint.qa` / `sprint.qaOpen` in the counts, the `qa` table in the
