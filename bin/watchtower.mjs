@@ -778,7 +778,9 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
 // labelled `umbrella` are umbrellas, not units; issues labelled `wave-next`
 // are deliberately parked for a later wave and do not hold a card back.
 // Umbrella states from the same issue list: a sprint reaches done only once
-// its umbrella is closed, and "not in the list" is unknown, never closed.
+// its umbrella is closed, and "not in the list" is unknown, never closed. An
+// umbrella is whatever the unit tickets reference (the label is optional —
+// #1515 carries none), so the state of every referenced issue is kept.
 let umbrellaStates = new Map();
 const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
@@ -790,9 +792,11 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     '--json', 'number,title,body,url,labels,createdAt,state,closedAt'], 90000);
   if (out === null) throw new Error('gh issue list (units) did not answer');
   const states = new Map();
+  const issueState = new Map();
   for (const it of JSON.parse(out)) {
+    issueState.set(it.number, String(it.state ?? 'OPEN').toUpperCase());
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
-    if (labels.includes('umbrella')) { states.set(it.number, String(it.state ?? 'OPEN').toUpperCase()); continue; }
+    if (labels.includes('umbrella')) { states.set(it.number, issueState.get(it.number)); continue; }
     if (labels.includes('wave-next')) continue;
     const refs = new Set();
     for (const m of `${it.title}\n${it.body ?? ''}`.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
@@ -808,6 +812,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
       });
     }
   }
+  for (const n of byUmbrella.keys()) if (issueState.has(n)) states.set(n, issueState.get(n));
   umbrellaStates = states;
   return byUmbrella;
 });
