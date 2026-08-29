@@ -2,7 +2,7 @@
 
 Date: 2026-08-27. Status: accepted (step 1 shipped; steps 2–3 pending).
 
-Superseded in part: the acceptance stage
+Superseded in part by [decision 10](../DECISIONS.md) (2026-08-29): the acceptance stage
 no longer exists — where this record says "acceptance" / "accepted", read "done".
 
 ## Context
@@ -18,7 +18,7 @@ An Opus design panel (three lenses + judge, 2026-08-27) examined the real data
 and settled where the truth lives:
 
 - **The umbrella issue body is NOT the scope.** It freezes on the day it is
-  written: an umbrella has listed four units while the stream reached fifteen.
+  written: #1300 still lists four units while the stream reached fifteen.
 - **The count line in PROGRAM-STATE.md is NOT the scope.** It is the same
   human announcement the owner rejected, written by the reporting window
   itself, observed 6 minutes to 24 hours behind reality.
