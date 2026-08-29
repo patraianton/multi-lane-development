@@ -124,7 +124,7 @@ subscription is assigned, and the dependency order is written down.
    along the sprint's briefs (the user's path, all locales, console clean). Their
    findings become tickets.
 3. Only after both QA agents report and findings are triaged is the sprint handed to
-   acceptance (Zhenya) — the notification is sent by the CTO/owner, tagging the acceptor.
+   acceptance — the notification is sent by the CTO/owner, tagging the acceptor.
 
 **Exit to `done`:** merged + deployed + probed + QA reported. A card with a prod-action
 ticket is `done` only when that ticket was closed by hand on visible production content.
