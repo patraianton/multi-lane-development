@@ -4,6 +4,21 @@ Running log of binding process decisions, newest first. When a decision graduate
 contract doc (EXECUTION/GRILL/TICKETING), it gets a "folded into" note but stays here as
 the record of when and why.
 
+## 2026-08-30 (morning) — QA runs twice: the fixes get their own final walk
+
+21. **A second, final QA round after the fix round (owner, 2026-08-30 ~09:55: "after the
+    first QA, after the fixes are done, we run a second, final QA").** Round 1 walks
+    production after the last unit lands and files its findings; the fixes are merged;
+    then a fresh agent walks production again over every surface a fix touched, every
+    surface round 1 did not reach, and the open `(unsure)` findings. The sprint is handed
+    to acceptance only when a round comes back with zero product findings; a fix filed by
+    round 2 gets its own re-walk. Folded into RUNBOOK stage 7 and MANDATE item 10.
+    Why: AUTO-DETAIL-FINANCE-CARDS-R1 — round 1 (QA-A/QA-B, 29.08 evening) filed 14
+    findings; 13 fixes merged the same night, 7 of them after both walkers had finished;
+    the closing summary said "done" while nobody had seen the fixes on production and the
+    sold/gone shelf (a U9 surface) had never been walked at all. A fix seen only by its
+    tests and its reviewer has not been seen by anyone.
+
 ## 2026-08-29 (evening) — review is not a column: it runs alongside CI, and the board shows it running
 
 20. **The Review column (decision 17) is folded back into CI/PR; the reviewer reads the

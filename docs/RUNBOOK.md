@@ -141,23 +141,32 @@ brief for a lane. Green CI on the exact head + GO = merge; the merged card moves
 acceptance — and to `done` when its ticket is closed by a person after the merge
 (decisions 13, 19).
 
-## 7. QA — one run per sprint, before `done`; not a stage
+## 7. QA — two runs per sprint (walk, fix, final walk), before `done`; not a stage
 
 **Who:** the CTO window + QA agents.
 
 1. Every review finding not taken into the unit's round becomes its own backlog ticket
    THE MOMENT it is found. Tail bundles filed after handover are a violation.
-2. **QA runs once per sprint, never per unit.** It opens only after the sprint's LAST
-   unit is on production — until then a merged unit waits in `merged`. QA is not a column
+2. **QA runs per sprint, never per unit — and it runs TWICE.** Round 1 opens only after
+   the sprint's LAST unit is on production — until then a merged unit waits in `merged`. QA is not a column
    on the board (decision 19): its findings are `qa`-labelled tickets of the sprint, born
    in `ticketed` and travelling the road like units. Then two Codex computer-use agents on two free Mac lanes,
    in parallel and independently, walk PRODUCTION in a real browser along the sprint's
    briefs (the user's path, all locales, console clean). Their findings become tickets.
    A lane's own browser proof on Preview is part of its unit, not QA.
-3. Only after both QA agents report and findings are triaged is the sprint handed to
+3. **Round 2 — the final QA (owner, 2026-08-30: "after the first QA, after the fixes are
+   done, we run a second, final QA").** Once every round-1 fix is merged AND live on
+   production, a fresh QA agent walks production again: every surface a fix touched, every
+   surface round 1 marked pending or did not reach, plus the open `(unsure)` findings — same
+   method (real browser, all locales, all viewports, counted content, console clean).
+   Round 1 proves the sprint; round 2 proves the fixes — a fix seen only by its tests and
+   its reviewer has not been seen by anyone. Findings are tickets as in round 1. If round 2
+   files a fix, that fix gets its own re-walk of the surfaces it touched; the loop ends when
+   a round comes back with zero product findings. Only then is the sprint handed to
    acceptance — the notification is sent by the CTO/owner, tagging the acceptor.
 
-**Exit to `done`:** merged + deployed + probed + QA reported. A card with a prod-action
+**Exit to `done`:** merged + deployed + probed + QA round 1 reported + fixes merged + QA round 2
+(final) clean. A card with a prod-action
 ticket is `done` only when that ticket was closed by hand on visible production content.
 
 ## `stuck`
