@@ -195,6 +195,13 @@ function trimPath(p) {
   return s;
 }
 
+// Probe snapshots carry Windows paths even when the board itself runs on
+// Linux. Use the Windows separator rules after normalizing both path styles so
+// a card title is the checkout folder, not the whole `C:\\...` path.
+function folderOfPath(p) {
+  return path.win32.basename(trimPath(p));
+}
+
 // State files are read and written by bin/state-file.mjs: one atomic write queue
 // shared with the pipeline, so two parts of the board never race over a file.
 
@@ -944,7 +951,7 @@ function projectOf(cwd, ws) {
   if (m) return m[1];
   const repo = ws?.worktree?.repo_name;
   if (repo) return String(repo);
-  return path.basename(raw);
+  return folderOfPath(raw);
 }
 
 // The onboarding list: every project herdr currently has windows in, with how
@@ -1979,7 +1986,7 @@ async function collect() {
   // Windows the owner asked never to show (the `hide` setting).
   const hidden = [];
   panes = panes.filter(p => {
-    const folder = path.basename(normPath(p.cwd));
+    const folder = folderOfPath(p.cwd).toLowerCase();
     const wsLabel = String(wsById.get(p.workspace_id)?.label ?? '').toLowerCase();
     if (hide.includes(folder) || hide.includes(wsLabel)) { hidden.push(folder || wsLabel); return false; }
     return true;
@@ -1993,7 +2000,7 @@ async function collect() {
     const tab = tabById.get(p.tab_id);
     const tabCount = ws?.tab_count ?? 1;
     const tabLabel = tab?.label && !/^\d+$/.test(tab.label) ? tab.label : null;
-    return (tabCount > 1 && tabLabel) || meta?.label || ws?.label || path.basename(normPath(p.cwd));
+    return (tabCount > 1 && tabLabel) || meta?.label || ws?.label || folderOfPath(p.cwd);
   };
   const hiddenKeys = new Set(hand.hidden.filter(h => h.cwd).map(h => cardKey(h.tab, h.cwd)));
   // Records of the older shape (without a working directory) hide the whole tab.
@@ -2050,7 +2057,7 @@ async function collect() {
     const ws = wsById.get(p.workspace_id);
     const meta = wsMeta.get(p.workspace_id);
     const cwd = String(p.cwd ?? '');
-    const folder = path.basename(normPath(cwd));
+    const folder = folderOfPath(cwd);
     const agent = agentByPane.get(p.pane_id) ?? null;
     const status = KNOWN_STATUSES.has(p.agent_status) ? p.agent_status : 'unknown';
     const tabCount = ws?.tab_count ?? 1;
@@ -2285,7 +2292,7 @@ async function collect() {
     const { branch } = await checkoutBranch(cwd);
     for (const l of lanesFor(allLanes, branch)) {
       const key = `${l.host}|${l.lane}`;
-      if (!laneOwners[key]) laneOwners[key] = `${path.basename(normPath(cwd)) || nameOf(p)} (hidden from the board)`;
+      if (!laneOwners[key]) laneOwners[key] = `${folderOfPath(cwd) || nameOf(p)} (hidden from the board)`;
     }
   }
 
