@@ -159,6 +159,109 @@ test('the board launches a reviewer off the writer lane and sets the unit review
   }
 });
 
+test('a no-review unit gets no reviewer while its ordinary sibling does', async () => {
+  const OTHER = 'def12345abcdef0123456789abcdef0123456789';
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-no-review-skip-tools-'));
+  let board;
+  try {
+    const ticket = {
+      number: 1625,
+      title: 'UNIT-U2: ordinary sibling',
+      url: 'https://github.com/acme/web/issues/1625',
+      body: 'Part of #1600.\n\nReview this exact head.',
+    };
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      `if (args[0] === 'issue' && args[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});`,
+    ].join('\n'));
+    const fakeSsh = await executable(toolsDir, 'ssh', '#!/usr/bin/env node\n');
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
+    const twoUnitFacts = {
+      ...FACTS,
+      prs: [
+        {
+          // Green and verdict-free: without the label this PR would be first
+          // in the reviewer queue. `mergeable` UNKNOWN keeps the merge away.
+          ...FACTS.prs[0],
+          mergeable: 'UNKNOWN',
+        },
+        {
+          ...FACTS.prs[0],
+          number: 1633,
+          url: 'https://github.com/acme/web/pull/1633',
+          branch: 'feat/1625',
+          headSha: OTHER,
+          title: 'Review fixture #4',
+          body: 'Ticket: #1625',
+          ci: { color: 'green', text: 'CI green (1)', headSha: OTHER },
+        },
+      ],
+      unitIssues: {
+        1600: [
+          { ...FACTS.unitIssues[1600][0], labels: ['no-review'] },
+          {
+            number: 1625,
+            title: 'UNIT-U2: ordinary sibling',
+            url: 'https://github.com/acme/web/issues/1625',
+            state: 'OPEN',
+            branch: 'feat/1625',
+            labels: [],
+          },
+        ],
+      },
+    };
+    const at = new Date().toISOString();
+    const ledger = {
+      dispatched: {
+        '1625:develop:1': {
+          card: 'old', title: 'REVIEW sprint', unit: 'U2', ticket: 1625,
+          branch: 'feat/1625', lane: 'mac/lane-6', host: 'mac', base: 'main',
+          kind: 'develop', round: 1, head: null, at, result: 'launched', error: null,
+        },
+      },
+    };
+    board = await startBoard({
+      port: 15026,
+      config: {
+        source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
+        hosts: { mac: { target: 'mock-mac' } },
+      },
+      files: {
+        'sprint-facts.json': twoUnitFacts,
+        'fleet-launch.json': FLEET,
+        'auto-dispatch.json': ledger,
+      },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+        WATCHTOWER_SSH: fakeSsh,
+        WATCHTOWER_SCP: fakeScp,
+      }),
+    });
+    const sprintId = await createTicketed(board);
+    const api = await until(board.base, body => {
+      const card = body.cards.find(candidate => candidate.parent === sprintId && candidate.ticket === 1625);
+      return card?.review?.running === true;
+    });
+
+    const journal = JSON.parse(await readFile(path.join(board.dir, 'auto-dispatch.json'), 'utf8'));
+    assert.equal(journal.dispatched['1625:review:def12345'].result, 'launched');
+    assert.ok(!Object.keys(journal.dispatched).some(key => key.startsWith('1624:review')),
+      'the labelled unit never enters the review journal');
+    assert.ok(api.autoDispatch.some(row => row.kind === 'review R1' && row.unit === 'U2 #1625'));
+    assert.ok(!api.autoDispatch.some(row => row.kind.startsWith('review') && row.unit.includes('#1624')),
+      'the table shows no planned or waiting review for the labelled unit');
+    const labelledCard = api.cards.find(card => card.parent === sprintId && card.ticket === 1624);
+    assert.notEqual(labelledCard.review?.running, true);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a launched review journal repairs a missing board badge', async () => {
   const at = '2026-08-30T10:00:00.000Z';
   const ledger = {

@@ -202,6 +202,85 @@ test('a GO naming another head does not call gh or create a merge journal key', 
   }
 });
 
+test('a no-review label merges one green check without any verdict', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-no-review-merge-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    const noReviewFacts = facts();
+    noReviewFacts.prs[0].verdict = null;
+    noReviewFacts.prs[0].verdicts = [];
+    noReviewFacts.prs[0].verdictOnHead = null;
+    noReviewFacts.prs[0].verdictRounds = 0;
+    noReviewFacts.unitIssues[1600][0].labels = ['no-review'];
+    board = await startBoard({
+      port: 15024,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': noReviewFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+    const journal = await journalUntil(path.join(board.dir, 'auto-dispatch.json'),
+      value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merged');
+    assert.equal(journal.dispatched['1624:merge:abc12345'].pr, 1632);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const ghCalls = await calls(callsFile);
+    const merge = ghCalls.find(args => args[0] === 'pr' && args[1] === 'merge');
+    assert.ok(merge, 'the squash merge ran with no verdict comment anywhere');
+    assert.equal(merge[merge.indexOf('--match-head-commit') + 1], HEAD);
+    assert.match(board.output(), /merge: PR #1632 squash-merged at abc12345/);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('without the label the same verdict-free facts still wait for the verdict', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-verdict-gate-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    const gatedFacts = facts();
+    gatedFacts.prs[0].verdict = null;
+    gatedFacts.prs[0].verdicts = [];
+    gatedFacts.prs[0].verdictOnHead = null;
+    gatedFacts.prs[0].verdictRounds = 0;
+    board = await startBoard({
+      port: 15025,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': gatedFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    const sprintId = await createTicketed(board);
+    await until(board.base, body => body.cards.some(card => card.parent === sprintId
+      && card.ticket === 1624 && card.stage === 'ci_pr'));
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.deepEqual(await calls(callsFile), []);
+    await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')));
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('hold-merge produces only the owner table line, even while other merge facts are missing', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-held-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
@@ -213,7 +292,8 @@ test('hold-merge produces only the owner table line, even while other merge fact
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     const heldFacts = facts();
-    heldFacts.unitIssues[1600][0].labels = ['hold-merge'];
+    // no-review beside it changes nothing: hold-merge always wins.
+    heldFacts.unitIssues[1600][0].labels = ['hold-merge', 'no-review'];
     heldFacts.prs[0].ci = { color: 'red', text: 'CI red (1)', headSha: HEAD };
     heldFacts.prs[0].mergeable = 'UNKNOWN';
     const previousFailure = {
