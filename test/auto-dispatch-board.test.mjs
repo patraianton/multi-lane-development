@@ -4,10 +4,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { startBoard, postJson, getJson } from './helpers.mjs';
+import { executable, startBoard, postJson, getJson } from './helpers.mjs';
 
 const TICKETED_UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const MERGED_UMBRELLA = 'https://github.com/acme/web/issues/2600';
@@ -120,13 +120,6 @@ async function createTicketed(board, { title, umbrella }) {
   return id;
 }
 
-async function executable(dir, name, text) {
-  const file = path.join(dir, name);
-  await writeFile(file, text);
-  await chmod(file, 0o755);
-  return file;
-}
-
 test('off by default: a ticketed sprint dispatches its first units and the env switch is ignored', async () => {
   const board = await startBoard({
     port: 14985,
@@ -144,13 +137,13 @@ test('off by default: a ticketed sprint dispatches its first units and the env s
     const api = await until(board.base, body => (body.autoDispatch ?? []).filter(row => row.state === 'would dispatch').length === 2);
     assert.equal(api.cards.find(card => card.id === id).stage, 'ticketed', 'no unit was already started, so this proves dispatch begins in ticketed');
     assert.deepEqual(api.autoDispatch.filter(row => row.state === 'would dispatch'), [
-      { card: 'AUTO-SALON sprint', unit: 'U1 #1516', lane: 'mac/lane-6', base: 'main', state: 'would dispatch' },
-      { card: 'AUTO-SALON sprint', unit: 'U2 #1517', lane: 'lanes-01/lane-3', base: 'main', state: 'would dispatch' },
+      { kind: 'develop', card: 'AUTO-SALON sprint', unit: 'U1 #1516', lane: 'mac/lane-6', base: 'main', state: 'would dispatch' },
+      { kind: 'develop', card: 'AUTO-SALON sprint', unit: 'U2 #1517', lane: 'lanes-01/lane-3', base: 'main', state: 'would dispatch' },
     ], 'the build goes to a full lane; label no-build lets the default-branch unit use the light lane');
     assert.equal(api.summary.autoDispatchOn, false, 'only autoDispatch:true in settings enables sends');
 
     const text = await (await fetch(board.base + '/api/pipeline')).text();
-    assert.match(text, /AUTO-SALON sprint,U1 #1516,mac\/lane-6,main,would dispatch/);
+    assert.match(text, /develop,AUTO-SALON sprint,U1 #1516,mac\/lane-6,main,would dispatch/);
     assert.match(board.output(), /auto-dispatch: would dispatch U1 #1516 -> mac\/lane-6 from main \(autoDispatch: true in the settings to send\)/);
     assert.doesNotMatch(board.output(), /WATCHTOWER_AUTO_DISPATCH=1 to send/);
     assert.equal((board.output().match(/would dispatch U1 #1516/g) ?? []).length, 1, 'the dry-run hint is logged once, not every sweep');
@@ -186,7 +179,7 @@ test('a merged sprint dispatches QA; qa-run waits for merged dependencies and us
       throw new Error(`${error.message}\nboard output:\n${board.output()}`);
     }
     assert.deepEqual(after.autoDispatch.find(row => row.unit === 'QA #2604'), {
-      card: 'AUTO-SHOP sprint', unit: 'QA #2604', lane: 'mac/lane-6', base: 'main', state: 'would dispatch',
+      kind: 'develop', card: 'AUTO-SHOP sprint', unit: 'QA #2604', lane: 'mac/lane-6', base: 'main', state: 'would dispatch',
     }, 'qa-run ignores the dependency head as a base and selects the browser host');
     assert.equal(after.autoDispatch.find(row => row.unit === 'QA #2602').lane, 'lanes-01/lane-1', 'ordinary QA work in merged still uses ordinary capacity');
   } finally {
@@ -205,7 +198,8 @@ test('autoDispatch:true writes launching first, then a rules-backed task and kin
       body: 'Part of #1515.\n\nBuild the first unit exactly as ticketed.',
     };
     const fakeGh = await executable(toolsDir, 'gh', `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'issue' && a[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});\n`);
-    const slowSsh = await executable(toolsDir, 'ssh', '#!/bin/sh\nsleep 1\nexit 0\n');
+    const slowSsh = await executable(toolsDir, 'ssh', '#!/usr/bin/env node\nsetTimeout(() => {}, 1000);\n');
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
     const fleet = {
       prompt: FLEET.prompt,
       hosts: { mac: { ...FLEET.hosts.mac, check: 'npm run host-check' } },
@@ -229,7 +223,7 @@ test('autoDispatch:true writes launching first, then a rules-backed task and kin
         WATCHTOWER_SPRINT_SWEEP_MS: '300',
         WATCHTOWER_GH: fakeGh,
         WATCHTOWER_SSH: slowSsh,
-        WATCHTOWER_SCP: '/bin/true',
+        WATCHTOWER_SCP: fakeScp,
       }),
     });
     await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
@@ -265,7 +259,7 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-no-rules-tools-'));
   let board;
   try {
-    await executable(toolsDir, 'git', '#!/bin/sh\nexit 1\n');
+    const fakeGit = await executable(toolsDir, 'git', '#!/usr/bin/env node\nprocess.exit(1);\n');
     const facts = {
       ...TICKETED_FACTS,
       lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
@@ -281,12 +275,10 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
       config: { source: 'probe', autoDispatch: true, hosts: { mac: { target: 'unused' } } },
       files: { 'sprint-facts.json': facts, 'fleet-launch.json': fleet },
       env: dir => ({
-        PATH: `${toolsDir}${path.delimiter}${process.env.PATH}`,
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
         WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
         WATCHTOWER_SPRINT_SWEEP_MS: '300',
-        WATCHTOWER_SSH: '/bin/true',
-        WATCHTOWER_SCP: '/bin/true',
+        WATCHTOWER_GIT: fakeGit,
       }),
     });
     await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
@@ -294,7 +286,7 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
       && row.state === 'held: docs/RULES.md is not committed'));
     assert.equal(api.summary.autoDispatchOn, true);
     assert.deepEqual(api.autoDispatch.find(row => row.unit === 'U1 #1516'), {
-      card: 'AUTO-SALON sprint', unit: 'U1 #1516', lane: 'mac/lane-6', base: '-',
+      kind: 'develop', card: 'AUTO-SALON sprint', unit: 'U1 #1516', lane: 'mac/lane-6', base: '-',
       state: 'held: docs/RULES.md is not committed',
     });
     await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')), 'the rules hold happens before the launching write');
