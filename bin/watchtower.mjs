@@ -36,6 +36,7 @@ import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs'
 import { idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
   planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
+  launchFailureHolds, launchFailureHoldLine,
 } from './auto-dispatch.mjs';
 import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
@@ -527,9 +528,18 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   await judgeDispatchedLanes(facts);
   await readyAcceptanceSweep(sprints);
   await offBoardSweep(facts);
-  await idleLaneSweep(sprints, facts);
   const mergeRows = await mergeSweep(sprints);
-  await autoDispatchSweep(sprints, facts, mergeRows);
+  let idleSwept = false;
+  const sweepIdle = async attemptedTickets => {
+    idleSwept = true;
+    await idleLaneSweep(sprints, facts, { excludeTickets: attemptedTickets });
+  };
+  try {
+    await autoDispatchSweep(sprints, facts, mergeRows, { beforeLaunch: sweepIdle });
+  } finally {
+    // A scheduler preparation error must not silence an unrelated idle alarm.
+    if (!idleSwept) await sweepIdle([]);
+  }
   return { sprints: sprints.size, ...sync };
 });
 
@@ -645,10 +655,10 @@ const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
 let idleNotice = '';
-async function idleLaneSweep(sprints, facts) {
+async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
-  const findings = idleLaneFindings(cards, sprints, { at });
+  const findings = idleLaneFindings(cards, sprints, { at, excludeTickets });
   const ledger = await readJsonSoft(IDLE_JSON, { seen: {} });
   const r = idleLedger(ledger, findings, at, { graceMs: IDLE_GRACE_MS, repeatMs: IDLE_REPEAT_MS });
   await writeJsonAtomic(IDLE_JSON, r.ledger);
@@ -675,16 +685,23 @@ async function idleLaneSweep(sprints, facts) {
 // launcher from the fleet registry. Off by default: unless autoDispatch is true
 // in the settings, the sweep only says what it would do (the log and table).
 // The journal state/auto-dispatch.json keeps a task from being sent twice and
-// holds a failed launch for ten minutes.
+// keeps failed-launch host cooldowns and retry rounds durable.
 const DISPATCH_JSON = path.join(STATE_DIR, 'auto-dispatch.json');
 const DISPATCH_DIR = path.join(STATE_DIR, 'auto-dispatch'); // this machine's copy of every task file sent
 const FLEET_LAUNCH_FILE = process.env.WATCHTOWER_FLEET_LAUNCH_FILE || path.join(STATE_DIR, 'fleet-launch.json');
 const SCP = process.env.WATCHTOWER_SCP || (process.platform === 'win32' ? path.join(path.dirname(SSH), 'scp.exe') : 'scp');
 const dispatchNotices = new Set();
+const dispatchHoldNotices = new Set();
 function dispatchNote(line) {
   if (dispatchNotices.has(line)) return;
   dispatchNotices.add(line);
   console.log(line);
+}
+function dispatchHoldNote(hold) {
+  const identity = `${hold?.failureKey ?? ''}:${hold?.failureAt ?? ''}`;
+  if (dispatchHoldNotices.has(identity)) return;
+  dispatchHoldNotices.add(identity);
+  console.log(launchFailureHoldLine(hold));
 }
 function autoDispatchNeedsOwner() {
   return config.autoDispatch && !config.telegramOwnerChatId;
@@ -710,7 +727,7 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
     const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url'], 60000);
     try { ticket = raw === null ? null : JSON.parse(raw); } catch { ticket = null; }
   }
-  if (!ticket?.body) return { result: 'failed', error: 'the ticket body could not be read (gh issue view)', ran: [] };
+  if (!ticket?.body) return { result: 'held', error: 'the ticket body could not be read (gh issue view)', ran: [] };
   const specDir = specDirFor({ card: (await listPipelineCards()).find(c => c.id === pair.card.id), umbrella: pair.umbrella, programs: programsSource.value, specsDir: config.specsDir });
   let localSpec = null;
   if (specDir) { try { if ((await stat(specDir)).isDirectory()) localSpec = specDir; } catch { localSpec = null; } }
@@ -789,7 +806,8 @@ async function reconcileReviewBadges(cards, sprints, ledger) {
   }
 }
 
-async function autoDispatchSweep(sprints, facts, mergeRows = []) {
+async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch = null } = {}) {
+  const attemptedTickets = new Set();
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
   const ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
@@ -803,6 +821,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
   const develop = planDispatchFull(cards, sprints, {
     ledger, at, fleet, facts,
     takenLanes: reviews.map(pair => pair.lane),
+    takenTickets: reviews.map(pair => pair.unit.ticket),
     needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
   });
   // Reviews reserve capacity first. planDispatchFull reserves those lanes
@@ -810,8 +829,18 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
   // the launch loop cannot depend on a producer's incidental ordering.
   const fixes = develop.pairs.filter(pair => pair.kind === 'fix');
   const developments = develop.pairs.filter(pair => pair.kind === 'develop');
-  const pairs = [...reviews, ...fixes, ...developments];
-  const holds = develop.holds;
+  const seenTickets = new Set();
+  const pairs = [...reviews, ...fixes, ...developments].filter(pair => {
+    const ticket = String(pair.unit.ticket);
+    if (seenTickets.has(ticket)) return false;
+    seenTickets.add(ticket);
+    return true;
+  });
+  const failureHolds = launchFailureHolds(ledger, { at });
+  const holds = [...develop.holds];
+  for (const hold of failureHolds) {
+    if (!holds.some(item => item.failureKey && item.failureKey === hold.failureKey)) holds.push(hold);
+  }
   const rowsWithMerges = rows => {
     const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
     return [
@@ -830,7 +859,8 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
       at, on: false,
       rows: rowsWithMerges(dispatchRows({ pairs: [], holds: [...holds, ...ownerHolds], ledger, at })),
     });
-    return;
+    if (beforeLaunch) await beforeLaunch(attemptedTickets);
+    return attemptedTickets;
   }
   const rules = await readRules({
     root: ROOT,
@@ -846,7 +876,8 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
       at, on: config.autoDispatch,
       rows: rowsWithMerges(dispatchRows({ pairs: [], holds: [...holds, ...rulesHolds], ledger, at })),
     });
-    return;
+    if (beforeLaunch) await beforeLaunch(attemptedTickets);
+    return attemptedTickets;
   }
   if (!config.autoDispatch) {
     for (const p of pairs) {
@@ -854,33 +885,45 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
       dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket}${kind} -> ${p.lane} from ${baseLine(p.base)} (autoDispatch: true in the settings to send)`);
     }
     setAutoDispatch({ at, on: false, rows: rowsWithMerges(dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' })) });
-    return;
+    if (beforeLaunch) await beforeLaunch(attemptedTickets);
+    return attemptedTickets;
   }
   if (!fleet) {
     dispatchNote(`auto-dispatch: on, but ${FLEET_LAUNCH_FILE} is missing — nothing is sent (docs/fleet-launch.example.json)`);
     setAutoDispatch({ at, on: true, rows: rowsWithMerges(dispatchRows({ pairs, holds, ledger, at, state: 'held: no fleet-launch.json' })) });
-    return;
+    if (beforeLaunch) await beforeLaunch(attemptedTickets);
+    return attemptedTickets;
   }
+  for (const pair of pairs) attemptedTickets.add(pair.unit.ticket);
+  if (beforeLaunch) await beforeLaunch(attemptedTickets);
+  for (const hold of failureHolds) dispatchHoldNote(hold);
   const repo = config.repo;
   let next = ledger;
   for (const p of pairs) {
     const label = `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
-    next = recordDispatch(next, p, { result: 'launching' }, at);
+    // Each pair can follow minutes of work by earlier pairs, so its crash
+    // recovery window starts immediately before its own remote attempt.
+    const attemptAt = new Date().toISOString();
+    next = recordDispatch(next, p, { result: 'launching' }, attemptAt);
     await writeJsonAtomic(DISPATCH_JSON, next);
     let outcome;
-    try { outcome = await dispatchOne(p, { fleet, repo, at, rules }); }
-    catch (e) { outcome = { result: 'failed', error: String(e?.message || e), ran: [] }; }
-    next = recordDispatch(next, p, outcome, at);
+    try { outcome = await dispatchOne(p, { fleet, repo, at: attemptAt, rules }); }
+    catch (e) { outcome = { result: 'held', error: String(e?.message || e), ran: [] }; }
+    // Host cooldown starts when the launch command actually fails, not when
+    // this sweep began (bundle copies and remote timeouts can take minutes).
+    const outcomeAt = new Date().toISOString();
+    next = recordDispatch(next, p, outcome, outcomeAt);
     await writeJsonAtomic(DISPATCH_JSON, next);
     if (p.kind === 'review' && outcome.result === 'launched') {
       const unitCard = (await listPipelineCards()).find(card => card.parent === p.card.id && card.ticket === p.unit.ticket);
       if (unitCard) {
-        await setCardReview(unitCard.id, { running: true, round: p.round, since: at, by: p.lane }, at);
+        await setCardReview(unitCard.id, { running: true, round: p.round, since: outcomeAt, by: p.lane }, outcomeAt);
       }
     }
     console.log(`auto-dispatch: ${outcome.result.toUpperCase()} ${label}${outcome.error ? ' — ' + outcome.error : ''}`);
   }
   setAutoDispatch({ at, on: true, rows: rowsWithMerges(dispatchRows({ pairs: [], holds, ledger: next, at })) });
+  return attemptedTickets;
 }
 
 // --------------------------------------------------------------- merge sweep
