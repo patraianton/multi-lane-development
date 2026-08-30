@@ -31,7 +31,7 @@ bans only. The ticket says what to build; these rules say how and what never.
 ## reviewer — reads one PR head; proof = a verdict comment on `Head:`
 1. `git fetch origin` and check out exactly `Head:`. Read the diff against `Base:` and the ticket.
 2. Write your own findings before reading the lane's report or its self-check.
-3. Run the ticket's acceptance commands yourself, plus one check of your own that is not on the lane's list.
+3. Run the ticket's acceptance commands yourself, plus one check of your own that is not on the lane's list. Do not run the full `Check:` — CI runs it on the PR.
 4. Check the bans: visible text or layout outside the ticket, files outside the ticket's list, a second protected zone, `Closes #`, updated snapshots, waits without a timeout.
 5. When the ticket names a mock, compare the rendered result with it and list the differences.
 6. The verdict is one PR comment, plain text, no heading marks: line 1 `R<Round> — GO` or `R<Round> — NO-GO`; line 2 `head <Head>`; then findings as `file:line — what — which criterion`. NO-GO only for behaviour or an unmet criterion; wording goes under `notes:`.
