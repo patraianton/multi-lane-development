@@ -39,11 +39,11 @@ function shortSha(sha) {
   return sha ? String(sha).slice(0, 8) : '';
 }
 
-function sameHead(prefix, head) {
-  const short = String(prefix ?? '').toLowerCase();
-  const full = String(head ?? '').toLowerCase();
-  return /^[0-9a-f]{7,40}$/.test(short) && /^[0-9a-f]{7,40}$/.test(full)
-    && full.startsWith(short);
+function sameHead(a, b) {
+  const x = String(a ?? '').toLowerCase();
+  const y = String(b ?? '').toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(x) && /^[0-9a-f]{7,40}$/.test(y)
+    && (x.startsWith(y) || y.startsWith(x));
 }
 
 function kindOf(pair) {
@@ -67,13 +67,26 @@ function isQaRun(unit) {
   return Boolean(unit?.qaRun) || labelsOf(unit).includes('qa-run');
 }
 
-// Stable identity for a task and the file the lane receives. A review is tied
-// to the PR head it reads: another head is another task even when its round is
-// unchanged in stale facts. Develop and fix retain their round identity.
+const DISPATCH_PRIORITY = new Map([['review', 0], ['fix', 1], ['develop', 2]]);
+
+// All task producers feed one stable queue. Producers already walk cards in
+// board order and units in umbrella order, so equal-kind entries deliberately
+// keep their input order.
+export function sortDispatchQueue(queue = []) {
+  return [...queue].sort((a, b) =>
+    (DISPATCH_PRIORITY.get(kindOf(a)) ?? 99) - (DISPATCH_PRIORITY.get(kindOf(b)) ?? 99));
+}
+
+// Initial review/fix work is tied to the PR head. A judged no-proof retry is
+// explicitly tied to its next round instead, while develop always uses round.
 export function dispatchKey(pair) {
+  if (typeof pair?.journalKey === 'string' && pair.journalKey) return pair.journalKey;
+  const ticket = pair?.unit?.ticket;
   const kind = kindOf(pair);
-  const identity = kind === 'review' && pair?.head ? shortSha(pair.head) : roundOf(pair);
-  return `${pair?.unit?.ticket}:${kind}:${identity}`;
+  if ((kind === 'review' || kind === 'fix') && pair?.head && !pair?.retryOf) {
+    return `${ticket}:${kind}:${shortSha(pair.head)}`;
+  }
+  return `${ticket}:${kind}:${roundOf(pair)}`;
 }
 
 export function taskFileName(pair) {
@@ -142,6 +155,244 @@ export function baseLine(b) {
 
 // ------------------------------------------------------------ the planner
 
+const RED_CHECK = new Set([
+  'FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED',
+  'STARTUP_FAILURE', 'ERROR',
+]);
+
+function journalParts(key, entry) {
+  const bits = String(key ?? '').split(':');
+  const kind = entry?.kind ?? (bits.length >= 2 ? bits[1] : 'develop');
+  const suffix = bits[2] ?? '';
+  const headKey = (kind === 'review' || kind === 'fix') && /^[0-9a-f]{7,40}$/i.test(suffix);
+  const parsedRound = headKey ? NaN : Number(suffix);
+  return {
+    ticket: entry?.ticket ?? (bits[0] && /^\d+$/.test(bits[0]) ? Number(bits[0]) : null),
+    kind,
+    round: Number.isInteger(Number(entry?.round)) && Number(entry.round) > 0
+      ? Number(entry.round)
+      : (Number.isInteger(parsedRound) && parsedRound > 0 ? parsedRound : 1),
+    head: entry?.head ?? (headKey ? suffix : null),
+  };
+}
+
+function entriesFor(journal, ticket, kind = null) {
+  const out = [];
+  let order = 0;
+  for (const [key, entry] of Object.entries(journal ?? {})) {
+    const p = journalParts(key, entry);
+    if (String(p.ticket) !== String(ticket) || (kind && p.kind !== kind)) { order++; continue; }
+    out.push({ key, entry: entry ?? {}, ...p, order: order++ });
+  }
+  return out;
+}
+
+function entryForHead(journal, ticket, kind, head) {
+  const matches = entriesFor(journal, ticket, kind)
+    .filter(x => sameHead(x.head, head));
+  matches.sort((a, b) => {
+    const ta = Date.parse(a.entry?.at ?? '') || 0;
+    const tb = Date.parse(b.entry?.at ?? '') || 0;
+    return ta - tb || a.order - b.order;
+  });
+  return matches.at(-1)?.entry ?? null;
+}
+
+// A judged task is retried under the next round key. This is shared by
+// develop/fix now and by the parallel review planner when it lands.
+export function noProofRetry(ledger, ticket, kind, head = null) {
+  const failed = entriesFor(ledger?.dispatched ?? ledger ?? {}, ticket, kind)
+    .filter(x => x.entry?.judged === 'no-proof')
+    .filter(x => !head || (kind !== 'review' && kind !== 'fix') || sameHead(x.head, head))
+    .sort((a, b) => a.round - b.round || a.order - b.order);
+  const last = failed.at(-1);
+  if (!last) return null;
+  return {
+    round: last.round + 1,
+    previousKey: last.key,
+    previousLane: last.entry?.lane ?? null,
+    avoidHost: last.entry?.host || String(last.entry?.lane ?? '').split('/')[0] || null,
+  };
+}
+
+function latestAttemptHost(journal, ticket) {
+  const attempts = entriesFor(journal, ticket)
+    .filter(x => ['develop', 'review', 'fix'].includes(x.kind))
+    .filter(x => x.entry?.host || x.entry?.lane);
+  attempts.sort((a, b) => {
+    const ta = Date.parse(a.entry?.at ?? '') || 0;
+    const tb = Date.parse(b.entry?.at ?? '') || 0;
+    return ta - tb || a.order - b.order;
+  });
+  const last = attempts.at(-1)?.entry;
+  return last?.host || String(last?.lane ?? '').split('/')[0] || null;
+}
+
+function heldLaneNames(journal, now, holdMs, launchingMs) {
+  return new Set(Object.values(journal ?? {})
+    .filter(e => {
+      const age = now - (Date.parse(e?.at ?? '') || 0);
+      return (e?.result === 'launched' && !e?.judged && age < holdMs)
+        || (e?.result === 'launching' && age < launchingMs);
+    })
+    .map(e => e?.lane)
+    .filter(Boolean));
+}
+
+// sprint.free intentionally omits an idle lane still bound to an unmerged
+// branch. Once that lane's launch has been judged no-proof it is nevertheless
+// valid retry capacity, as long as the lane-table probe says it is healthy,
+// idle and part of the fleet.
+function laneNamesFor(sprint, retry = false) {
+  const names = new Set(Array.isArray(sprint?.free) ? sprint.free : []);
+  if (retry) {
+    for (const lane of sprint?.laneTable ?? []) {
+      if (!lane?.hostOk || lane.busy || !lane.fleet || !lane.host || !lane.lane) continue;
+      names.add(`${lane.host}/${lane.lane}`);
+    }
+  }
+  return [...names];
+}
+
+function unitCardFor(cards, cardId, ticket) {
+  return (cards ?? []).find(candidate => candidate?.parent === cardId
+    && Number(candidate.ticket) === Number(ticket));
+}
+
+function failedCheckNames(pr) {
+  if (Array.isArray(pr?.ci?.failedNames) && pr.ci.failedNames.length) {
+    return pr.ci.failedNames.map(String);
+  }
+  const rollup = [pr?.statusCheckRollup, pr?.checkRollup, pr?.rollup, pr?.checks, pr?.ci?.rollup]
+    .find(Array.isArray) ?? [];
+  const names = [];
+  for (const item of rollup) {
+    const state = String(item?.conclusion ?? item?.state ?? item?.status ?? '').toUpperCase();
+    if (!RED_CHECK.has(state)) continue;
+    const name = item?.name ?? item?.context ?? item?.workflowName;
+    if (name != null && String(name)) names.push(String(name));
+  }
+  return names;
+}
+
+function redOnHead(pr, head) {
+  const color = String(pr?.ci?.color ?? pr?.ciColor ?? '').toLowerCase();
+  if (color !== 'red') return false;
+  const ciHead = pr?.ci?.headSha ?? pr?.rollupHeadSha ?? null;
+  return !ciHead || sameHead(ciHead, head);
+}
+
+function fixNeed(unit, fixEntries) {
+  const pr = unit?.pr;
+  const head = String(pr?.headSha ?? '');
+  const verdict = pr?.verdictOnHead;
+  if (verdict?.go === false) {
+    const n = Number(verdict.round);
+    const round = Number.isInteger(n) && n > 0 ? n : 1;
+    return {
+      round,
+      sections: [{ title: `VERDICT R${round} — verbatim`, body: String(verdict.body ?? '') }],
+    };
+  }
+  const round = fixEntries.length + 1;
+  if (redOnHead(pr, head)) {
+    const names = failedCheckNames(pr);
+    return {
+      round,
+      sections: [{ title: `CI — red checks on ${head}: ${names.join(', ') || 'failed checks'}`, body: '' }],
+    };
+  }
+  if (String(pr?.mergeable ?? '').toUpperCase() === 'CONFLICTING') {
+    return {
+      round,
+      sections: [{ title: `CONFLICT — merge origin/main into ${branchOf(unit)}`, body: '' }],
+    };
+  }
+  return null;
+}
+
+// Fixes are planned independently so the review planner can feed the same
+// queue without coupling the two parallel tickets. `taken` is an integration
+// seam for higher-priority review pairs. The public ticket arguments remain
+// cards/sprints/ledger/fleet; the remaining options mirror planDispatchFull.
+export function planFixes({
+  cards = [], sprints = new Map(), ledger = null, fleet = null, at = null,
+  needsBuild = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS,
+  launchingMs = LAUNCHING_HOLD_MS, taken = [],
+} = {}) {
+  const now = Date.parse(at ?? '') || Date.now();
+  const journal = ledger?.dispatched ?? {};
+  const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
+  const occupied = new Set(taken);
+  const pairs = [];
+  for (const card of cards ?? []) {
+    if (card?.parent || !ACTIVE.has(card?.stage)) continue;
+    const sprint = sprints?.get?.(card.id);
+    if (!sprint || (Array.isArray(sprint.stale) && sprint.stale.length)) continue;
+    const cardRef = { id: card.id, title: String(card.title ?? '') };
+    for (const unit of [...(sprint.units ?? []), ...(sprint.qaTickets ?? [])]) {
+      if (unitCardFor(cards, card.id, unit?.ticket)?.stage === 'stuck') continue;
+      const pr = unit?.pr;
+      const head = String(pr?.headSha ?? '');
+      if (!head || unit?.merged || ['CLOSED', 'MERGED'].includes(String(pr?.state ?? '').toUpperCase())) continue;
+      const fixEntries = entriesFor(journal, unit.ticket, 'fix');
+      const retry = noProofRetry(journal, unit.ticket, 'fix', head);
+      const retryEntry = retry ? journal[retry.previousKey] : null;
+      const savedSections = Array.isArray(retryEntry?.sections)
+        ? retryEntry.sections.map(section => ({
+          title: String(section?.title ?? ''), body: String(section?.body ?? ''),
+        }))
+        : [];
+      // Once a lane was judged no-proof, the retry is owed even if a flaky CI
+      // fact turns green or a comment disappears before the next sweep. Its
+      // original verbatim task context is part of the durable launch record.
+      const need = retry && savedSections.length
+        ? { round: retry.round, sections: savedSections }
+        : fixNeed(unit, fixEntries);
+      if (!need) continue;
+
+      const previous = entryForHead(journal, unit.ticket, 'fix', head);
+      const headGuard = journal[`${unit.ticket}:fix:${shortSha(head)}`];
+      // no-proof is explicitly re-queued as another round; every other live
+      // launch on this head is the ticket's head-key guard.
+      if (headGuard && headGuard.judged !== 'no-proof') continue;
+      if (previous && previous !== headGuard && previous.judged !== 'no-proof') {
+        const age = now - (Date.parse(previous.at ?? '') || 0);
+        if (previous.result === 'launched') continue;
+        if (previous.result === 'launching' && age < launchingMs) continue;
+        if (age < retryMs) continue;
+      }
+
+      const build = needsBuild ? needsBuild(unit) !== false : true;
+      const lanes = [];
+      for (const name of laneNamesFor(sprint, Boolean(retry))) {
+        const lane = laneLauncher(fleet, name);
+        if (!lane || lane.reserved || heldLanes.has(lane.name) || occupied.has(lane.name)) continue;
+        if (lane.noBuilds && build) continue;
+        lanes.push(lane);
+      }
+      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+      const lastHost = retry?.avoidHost ?? latestAttemptHost(journal, unit.ticket);
+      const lane = lanes.find(candidate => candidate.host !== lastHost) ?? lanes[0];
+      if (!lane) continue;
+      occupied.add(lane.name);
+      pairs.push({
+        card: cardRef,
+        umbrella: sprint.umbrella ?? null,
+        unit: {
+          unit: unit.unit || '', ticket: unit.ticket, title: unit.title || '', url: unit.url || '', branch: branchOf(unit),
+          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit),
+        },
+        lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
+        base: baseFor(unit, sprint), kind: 'fix', round: retry?.round ?? need.round, head,
+        role: 'fixer', sections: need.sections,
+        ...(retry ? { retryOf: retry.previousKey } : {}),
+      });
+    }
+  }
+  return pairs;
+}
+
 // cards: the pipeline's cards; sprints: Map(card id -> sprint facts);
 // ledger: the journal ({ dispatched: { ticket: entry } }); fleet: the launch
 // config; needsBuild(unit): false for a unit a light lane may take (default:
@@ -151,26 +402,36 @@ export function baseLine(b) {
 export function planDispatchFull(cards, sprints, { ledger = null, at = null, fleet = null, needsBuild = null, takenLanes = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS } = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
+  const higherPriority = new Set(takenLanes ?? []);
+  const fixes = planFixes({
+    cards, sprints, ledger, fleet, at, needsBuild, retryMs, holdMs, launchingMs,
+    taken: higherPriority,
+  });
+  const fixLanes = new Set(fixes.map(pair => pair.lane));
+  const developSprints = new Map();
+  for (const [id, sprint] of sprints?.entries?.() ?? []) {
+    developSprints.set(id, { ...sprint, free: (sprint?.free ?? []).filter(name => !fixLanes.has(name)) });
+  }
   const pairs = [];
   const holds = [];
-  const heldLanes = new Set(Object.values(journal)
-    .filter(e => {
-      const age = now - (Date.parse(e?.at ?? '') || 0);
-      return (e?.result === 'launched' && age < holdMs)
-        || (e?.result === 'launching' && age < launchingMs);
-    })
-    .map(e => e.lane));
+  const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
   // Higher-priority planners (review, then fix) reserve their lanes before
   // develop work is paired.
-  const taken = new Set(takenLanes ?? []);
+  const taken = new Set([...higherPriority, ...fixLanes]);
   for (const card of cards ?? []) {
     if (card?.parent || !ACTIVE.has(card?.stage)) continue;
-    const s = sprints?.get?.(card.id);
+    const s = developSprints.get(card.id);
     if (!s) continue;
     if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not free
     const cardRef = { id: card.id, title: String(card.title ?? '') };
     const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])]
-      .filter(u => startableOnBoard(u, card.id, cards))
+      .filter(u => {
+        if (unitCardFor(cards, card.id, u?.ticket)?.stage === 'stuck') return false;
+        if (startableOnBoard(u, card.id, cards)) return true;
+        const retry = noProofRetry(journal, u.ticket, 'develop');
+        if (!retry) return false;
+        return isQaRun(u) ? Boolean(u.open) : !u.pr && !u.merged;
+      })
       .filter(u => !isQaRun(u) || (u.deps ?? []).every(d => d.met === true));
     if (!waiting.length) continue;
     const free = Array.isArray(s.free) ? s.free : [];
@@ -183,9 +444,19 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       lanes.push(l);
     }
     lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+    const retryLanes = [...lanes];
+    const regularNames = new Set(free);
+    for (const name of laneNamesFor(s, true)) {
+      if (regularNames.has(name)) continue;
+      const lane = laneLauncher(fleet, name);
+      if (!lane || lane.reserved || heldLanes.has(lane.name)) continue;
+      retryLanes.push(lane);
+    }
+    retryLanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
     for (const u of waiting) {
       const hold = reason => holds.push({ card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '', reason });
-      const pairIdentity = { unit: u, kind: 'develop', round: 1 };
+      const retry = noProofRetry(journal, u.ticket, 'develop');
+      const pairIdentity = { unit: u, kind: 'develop', round: retry?.round ?? 1 };
       const key = dispatchKey(pairIdentity);
       // A plain-number entry is the pre-T1 spelling of develop round 1.
       const prev = journal[key] ?? journal[String(u.ticket)];
@@ -201,9 +472,12 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (base.error) { hold(base.error); continue; }
       const qaRun = isQaRun(u);
       const build = qaRun ? false : (needsBuild ? needsBuild(u) !== false : true);
-      const lane = lanes.find(l => !taken.has(l.name) && (!l.noBuilds || !build) && (!qaRun || l.browser));
+      const lanePool = retry ? retryLanes : lanes;
+      const eligible = l => !taken.has(l.name) && (!l.noBuilds || !build) && (!qaRun || l.browser);
+      const lane = (retry?.avoidHost ? lanePool.find(l => eligible(l) && l.host !== retry.avoidHost) : null)
+        ?? lanePool.find(eligible);
       if (!lane) {
-        const left = lanes.filter(l => !taken.has(l.name));
+        const left = lanePool.filter(l => !taken.has(l.name));
         if (qaRun && left.length && !left.some(l => l.browser)) {
           hold(`qa-run needs a browser: true host; free lanes: ${left.map(l => l.name).join(', ')}`);
         } else {
@@ -220,11 +494,11 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
           qa: Boolean(u.qa), qaRun, labels: labelsOf(u),
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
-        base, kind: 'develop', round: 1, head: null, role: qaRun ? 'qa' : 'lane',
+        base, kind: 'develop', round: retry?.round ?? 1, head: null, role: qaRun ? 'qa' : 'lane',
       });
     }
   }
-  return { pairs, holds };
+  return { pairs: sortDispatchQueue([...fixes, ...pairs]), holds };
 }
 
 export function planDispatch(cards, sprints, opts = {}) {
@@ -270,16 +544,13 @@ function lastWriterLane(journal, ticket) {
 // review is planned per lane, in sprint/card and unit order, before develop
 // work. The caller passes the resulting lane names to planDispatchFull as
 // `takenLanes` when composing the complete queue.
-export function planReviews({ cards = [], sprints = null, ledger = null, fleet = null, at = null, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS } = {}) {
+export function planReviews({
+  cards = [], sprints = null, ledger = null, fleet = null, at = null,
+  retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS,
+} = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
-  const heldLanes = new Set(Object.values(journal)
-    .filter(entry => {
-      const age = now - (Date.parse(entry?.at ?? '') || 0);
-      return (entry?.result === 'launched' && age < holdMs)
-        || (entry?.result === 'launching' && age < launchingMs);
-    })
-    .map(entry => entry.lane));
+  const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
   const taken = new Set();
   const pairs = [];
 
@@ -287,32 +558,43 @@ export function planReviews({ cards = [], sprints = null, ledger = null, fleet =
     if (card?.parent || !ACTIVE.has(card?.stage)) continue;
     const sprint = sprints?.get?.(card.id);
     if (!sprint || (Array.isArray(sprint.stale) && sprint.stale.length)) continue;
-    const lanes = [];
-    for (const name of Array.isArray(sprint.free) ? sprint.free : []) {
-      const lane = laneLauncher(fleet, name);
-      if (!lane || lane.reserved || heldLanes.has(lane.name)) continue;
-      lanes.push(lane);
-    }
-    lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
     const cardRef = { id: card.id, title: String(card.title ?? '') };
 
     for (const unit of [...(sprint.units ?? []), ...(sprint.qaTickets ?? [])]) {
       const pr = unit?.pr;
       const head = String(pr?.headSha ?? '');
-      const unitCard = cards.find(candidate => candidate?.parent === card.id
-        && Number(candidate.ticket) === Number(unit?.ticket));
+      const unitCard = unitCardFor(cards, card.id, unit?.ticket);
       // A parked child remains parked. The pure planner does not otherwise
       // require pipeline children: its input contract is the sprint PR facts.
       if (unitCard?.stage === 'stuck') continue;
       if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(pr.verdictOnHead?.head, head)) continue;
-      const identity = { unit, kind: 'review', head };
-      if (Object.prototype.hasOwnProperty.call(journal, dispatchKey(identity))) continue;
+      const retry = noProofRetry(journal, unit.ticket, 'review', head);
+      const headGuard = journal[`${unit.ticket}:review:${shortSha(head)}`];
+      const previous = entryForHead(journal, unit.ticket, 'review', head);
+      if (headGuard && headGuard.judged !== 'no-proof') continue;
+      if (previous && previous !== headGuard && previous.judged !== 'no-proof') {
+        const age = now - (Date.parse(previous.at ?? '') || 0);
+        if (previous.result === 'launched') continue;
+        if (previous.result === 'launching' && age < launchingMs) continue;
+        if (age < retryMs) continue;
+      }
+
+      const lanes = [];
+      for (const name of laneNamesFor(sprint, Boolean(retry))) {
+        const lane = laneLauncher(fleet, name);
+        if (!lane || lane.reserved || heldLanes.has(lane.name) || taken.has(lane.name)) continue;
+        lanes.push(lane);
+      }
+      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
       const authorLane = lastWriterLane(journal, unit.ticket);
-      const lane = lanes.find(candidate => !taken.has(candidate.name) && candidate.name !== authorLane);
+      const eligible = candidate => candidate.name !== authorLane;
+      const lane = (retry?.avoidHost ? lanes.find(candidate => eligible(candidate) && candidate.host !== retry.avoidHost) : null)
+        ?? lanes.find(eligible);
       if (!lane) continue;
 
       const rawRound = Number(pr.verdictRounds);
-      const round = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
+      const firstRound = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
+      const round = retry?.round ?? firstRound;
       const base = baseFor(unit, sprint);
       taken.add(lane.name);
       pairs.push({
@@ -325,6 +607,7 @@ export function planReviews({ cards = [], sprints = null, ledger = null, fleet =
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: base.error ? { ref: 'main', sha: null, pr: null, ticket: null, unit: null } : base,
         kind: 'review', round, head, role: 'reviewer',
+        ...(retry ? { retryOf: retry.previousKey } : {}),
       });
     }
   }
@@ -333,23 +616,31 @@ export function planReviews({ cards = [], sprints = null, ledger = null, fleet =
 
 // ------------------------------------------------------------ the journal
 
-// Develop/fix use "<ticket>:<kind>:<round>"; review uses
-// "<ticket>:review:<head8>". A pre-T1 plain ticket key reads as develop round
-// 1. Result is launching | launched | failed | held.
+// Initial review/fix attempts are keyed by head8; develop attempts and
+// judged-no-proof retries are keyed by round. A pre-T1 plain ticket key reads
+// as develop round 1. Result is launching | launched | failed | held.
 export function recordDispatch(ledger, pair, outcome, at) {
   const now = Date.parse(at ?? '') || Date.now();
   const dispatched = {};
   for (const [k, e] of Object.entries(ledger?.dispatched ?? {})) {
     const t = Date.parse(e?.at ?? '') || 0;
-    // Head-keyed review/merge decisions remain authoritative for as long as
-    // that head can stay open. Time-pruning either would permit a duplicate
-    // review or reset the merge retry ceiling after an unrelated launch.
-    if (['review', 'merge'].includes(entryKind(k, e)) || now - t <= JOURNAL_KEEP_MS) dispatched[k] = e;
+    const kind = entryKind(k, e);
+    const suffix = String(k).split(':')[2] ?? '';
+    const fixHeadGuard = kind === 'fix' && /^[0-9a-f]{7,40}$/i.test(suffix);
+    // Head guards remain authoritative for as long as that head can stay
+    // open. Time-pruning one would permit a duplicate review/fix; merge also
+    // retains its retry ceiling after unrelated launches.
+    if (kind === 'review' || kind === 'merge' || fixHeadGuard || now - t <= JOURNAL_KEEP_MS) dispatched[k] = e;
   }
   dispatched[dispatchKey(pair)] = {
     card: pair.card.id, title: pair.card.title, unit: pair.unit.unit, ticket: pair.unit.ticket,
     branch: pair.unit.branch, lane: pair.lane, host: pair.host ?? null, base: baseLine(pair.base),
     kind: kindOf(pair), round: roundOf(pair), head: pair.head ?? null,
+    role: pair.role ?? null, qaRun: Boolean(pair.unit.qaRun), labels: [...(pair.unit.labels ?? [])],
+    sections: (pair.sections ?? []).map(section => ({
+      title: String(section?.title ?? ''), body: String(section?.body ?? ''),
+    })),
+    ...(pair.retryOf ? { retryOf: pair.retryOf } : {}),
     at: new Date(now).toISOString(), result: outcome.result, error: outcome.error ?? null,
   };
   return { dispatched };
@@ -421,7 +712,7 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
 export function taskText({
   pair, ticket, role = pair?.role || (isQaRun(pair?.unit) ? 'qa' : 'lane'),
   kind = kindOf(pair), round = roundOf(pair), head = pair?.head ?? null,
-  rules, check = DEFAULT_CHECK, sections = [], kitchen = '', taskFile = '',
+  rules, check = DEFAULT_CHECK, sections = pair?.sections ?? [], kitchen = '', taskFile = '',
   specRemote = null, repo = '', at = null,
 }) {
   if (!rules?.sha || typeof rules?.text !== 'string') throw new Error('task rules with sha and text are required');

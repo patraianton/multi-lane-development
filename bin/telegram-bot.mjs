@@ -151,6 +151,9 @@ function validateConfig(raw, { requireToken }) {
   const missing = [];
   const botToken = String(raw.botToken ?? raw.token ?? '').trim();
   const chatId = raw.chatId === 0 || raw.chatId ? String(raw.chatId).trim() : '';
+  const ownerChatId = raw.ownerChatId === 0 || raw.ownerChatId
+    ? String(raw.ownerChatId).trim()
+    : '';
   const boardUrl = trimSlash(raw.boardUrl);
   const apiToken = String(raw.apiToken ?? '').trim();
   if (requireToken && !botToken) missing.push('botToken');
@@ -174,7 +177,7 @@ function validateConfig(raw, { requireToken }) {
   if (!founders.some(f => f.owner)) {
     throw new Error('Telegram config needs at least one founder with owner: true.');
   }
-  return { botToken, chatId, boardUrl, apiToken, founders };
+  return { botToken, chatId, ownerChatId, boardUrl, apiToken, founders };
 }
 
 async function loadConfigFile() {
@@ -350,6 +353,11 @@ function stuckText(cfg, card, digest) {
   ]);
 }
 
+function readyText(card) {
+  const umbrella = String(card?.links?.ticket ?? '').trim();
+  return `Sprint ${cardTitleOf(card)} is ready for acceptance — ${umbrella}`;
+}
+
 function idleLanesText(cfg, card, finding) {
   const queued = (finding?.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
   const mins = Math.round((finding?.ageMs ?? 0) / 60000);
@@ -427,7 +435,7 @@ async function tg(cfg, method, payload, { abortMs = 20_000 } = {}) {
   return data.result;
 }
 
-async function sendMessage(cfg, { name, text, keyboard }) {
+async function sendMessage(cfg, { name, text, keyboard, chatId = cfg.chatId }) {
   const clipped = clipText(text);
   if (useDryRun()) {
     printDryRun(name, clipped, keyboard ?? null);
@@ -437,7 +445,7 @@ async function sendMessage(cfg, { name, text, keyboard }) {
     throw new Error('Telegram config has no botToken — refusing to send.');
   }
   const payload = {
-    chat_id: cfg.chatId,
+    chat_id: chatId,
     text: clipped,
     disable_web_page_preview: true,
   };
@@ -477,6 +485,16 @@ export async function notifyStuck(card, digest) {
   return sendMessage(cfg, {
     name: 'notifyStuck',
     text: stuckText(cfg, card, digest),
+  });
+}
+
+export async function notifyReady(card) {
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
+  needCard(card);
+  return sendMessage(cfg, {
+    name: 'notifyReady',
+    text: readyText(card),
+    chatId: cfg.ownerChatId || cfg.chatId,
   });
 }
 

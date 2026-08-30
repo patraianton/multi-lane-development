@@ -7,10 +7,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
-  planDispatch, planDispatchFull, planReviews, baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
+  planDispatch, planDispatchFull, planReviews, planFixes, sortDispatchQueue,
+  baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
   taskText, specDirFor, launchPlan, runLaunch, commentLine, dispatchKey, taskFileName,
   RETRY_MS, LAUNCHING_HOLD_MS,
 } from '../bin/auto-dispatch.mjs';
+import { judgeLanes } from '../bin/lane-judge.mjs';
 
 const FLEET = {
   prompt: 'Прочитай {taskFile} и выполни целиком',
@@ -96,6 +98,247 @@ test('ticketed and merged sprints dispatch, and a missing branch defaults to fea
   }
 });
 
+test('a NO-GO fix carries the verdict verbatim and prefers another host', () => {
+  const head = 'abc12345def0000000000000000000000000000000';
+  const body = `R1 — NO-GO\nhead ${head}\n\nKeep this paragraph exactly.\n`;
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'],
+    units: [{
+      unit: 'U2', ticket: 2002, title: 'FIN-U2', branch: 'feat/fin-u2', state: 'pr no-go', deps: [],
+      pr: {
+        number: 2102, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE', verdictRounds: 1,
+        verdictOnHead: { round: 1, go: false, head, body },
+      },
+    }],
+    qaTickets: [],
+  });
+  const ledger = { dispatched: {
+    '2002:review:1': {
+      ticket: 2002, kind: 'review', round: 1, head, host: 'lanes-01', lane: 'lanes-01/lane-2',
+      result: 'launched', at: '2026-08-29T11:00:00.000Z',
+    },
+  } };
+  const [pair] = planFixes({ cards, sprints: new Map([['cs', one]]), ledger, fleet: FLEET, at: '2026-08-29T12:00:00.000Z' });
+  assert.deepEqual([pair.kind, pair.role, pair.round, pair.head, pair.lane], ['fix', 'fixer', 1, head, 'mac/lane-6']);
+  assert.equal(dispatchKey(pair), '2002:fix:abc12345', 'the initial fix guard is the PR head');
+  assert.equal(taskFileName(pair), 'TASK-2002-FIX-R1.md');
+  assert.deepEqual(pair.sections, [{ title: 'VERDICT R1 — verbatim', body }]);
+  const text = taskText({ pair, ticket: { number: 2002, title: 'FIN-U2', body: 'ticket body' }, rules: RULES });
+  assert.match(text, new RegExp(`\\n# VERDICT R1 — verbatim\\n\\n${body.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`));
+});
+
+test('a no-proof fix retries under the next round key and keeps the verdict section round', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const head = 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1';
+  const body = `R1 — NO-GO\nhead ${head}\n\nPlease correct it.`;
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'],
+    units: [{
+      unit: 'U8', ticket: 2008, title: 'FIN-U8', branch: 'feat/fin-u8', state: 'pr no-go', deps: [],
+      pr: {
+        number: 2108, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE',
+        verdictOnHead: { round: 1, go: false, head, body },
+      },
+    }],
+    qaTickets: [],
+  });
+  const source = new Map([['cs', one]]);
+  const [initial] = planFixes({ cards, sprints: source, fleet: FLEET, at });
+  const initialKey = dispatchKey(initial);
+  assert.equal(initialKey, '2008:fix:f1f1f1f1');
+  const launched = recordDispatch({ dispatched: {} }, initial, { result: 'launched' }, at);
+  launched.dispatched[initialKey] = { ...launched.dispatched[initialKey], judged: 'no-proof' };
+
+  const [retry] = planFixes({
+    cards, sprints: source, ledger: launched, fleet: FLEET, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.deepEqual(
+    [retry.round, retry.retryOf, retry.sections[0].title, dispatchKey(retry)],
+    [2, initialKey, 'VERDICT R1 — verbatim', '2008:fix:2'],
+  );
+  const retried = recordDispatch(launched, retry, { result: 'launched' }, '2026-08-29T12:01:00.000Z');
+  assert.deepEqual(Object.keys(retried.dispatched), ['2008:fix:f1f1f1f1', '2008:fix:2']);
+
+  const triggerGone = new Map([['cs', sprint({
+    ...one,
+    units: [{
+      ...one.units[0],
+      state: 'pr green',
+      pr: { ...one.units[0].pr, verdictOnHead: null, ci: { color: 'green' }, mergeable: 'MERGEABLE' },
+    }],
+  })]]);
+  const [stillOwed] = planFixes({
+    cards, sprints: triggerGone, ledger: launched, fleet: FLEET, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.deepEqual(
+    [stillOwed.round, stillOwed.retryOf, stillOwed.sections],
+    [2, initialKey, initial.sections],
+    'a no-proof fix retry survives transient disappearance of its original trigger',
+  );
+
+  const failed = recordDispatch(launched, retry, { result: 'failed' }, '2026-08-29T12:01:00.000Z');
+  const [retryAfterFailure] = planFixes({
+    cards, sprints: source, ledger: failed, fleet: FLEET, at: '2026-08-29T12:12:00.000Z',
+  });
+  assert.deepEqual(
+    [retryAfterFailure.round, retryAfterFailure.retryOf, dispatchKey(retryAfterFailure)],
+    [2, initialKey, '2008:fix:2'],
+    'a failed launch of retry R2 is retried as R2 after the retry delay',
+  );
+  const retained = recordDispatch(launched, retry, { result: 'failed' }, '2026-09-30T12:00:00.000Z');
+  assert.ok(retained.dispatched[initialKey], 'the initial fix head guard is not time-pruned while that head may remain open');
+});
+
+test('a no-proof fix on an old head does not turn the new head into a retry', () => {
+  const oldHead = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+  const head = 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2';
+  const one = sprint({
+    free: ['mac/lane-6'],
+    units: [{
+      unit: 'U9', ticket: 2009, title: 'FIN-U9', branch: 'feat/fin-u9', state: 'pr no-go', deps: [],
+      pr: {
+        number: 2109, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE',
+        verdictOnHead: { round: 2, go: false, head, body: `R2 — NO-GO\nhead ${head}` },
+      },
+    }],
+    qaTickets: [],
+  });
+  const ledger = { dispatched: {
+    '2009:fix:a1a1a1a1': {
+      ticket: 2009, kind: 'fix', round: 1, head: oldHead, host: 'lanes-01', lane: 'lanes-01/lane-1',
+      result: 'launched', judged: 'no-proof', at: '2026-08-29T12:00:00.000Z',
+    },
+  } };
+  const [pair] = planFixes({
+    cards, sprints: new Map([['cs', one]]), ledger, fleet: FLEET, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.equal(pair.retryOf, undefined);
+  assert.deepEqual([pair.round, pair.sections[0].title, dispatchKey(pair)], [2, 'VERDICT R2 — verbatim', '2009:fix:b2b2b2b2']);
+});
+
+test('a red check on the current head makes a CI fix section with failed names', () => {
+  const head = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
+  const one = sprint({
+    free: ['mac/lane-6'],
+    units: [{
+      unit: 'U4', ticket: 2004, title: 'FIN-U4', branch: 'feat/fin-u4', state: 'pr red', deps: [],
+      pr: { number: 2104, headSha: head, verdictOnHead: null, ci: { color: 'red', failedNames: ['lint', 'node 22'] }, mergeable: 'MERGEABLE' },
+    }],
+    qaTickets: [],
+  });
+  const [pair] = planFixes({ cards, sprints: new Map([['cs', one]]), fleet: FLEET });
+  assert.deepEqual([pair.kind, pair.round, pair.sections[0].body], ['fix', 1, '']);
+  assert.equal(pair.sections[0].title, `CI — red checks on ${head}: lint, node 22`);
+});
+
+test('a conflicting PR makes a CONFLICT fix section', () => {
+  const head = 'd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2';
+  const one = sprint({
+    free: ['mac/lane-6'],
+    units: [{
+      unit: 'U5', ticket: 2005, title: 'FIN-U5', branch: 'feat/fin-u5', state: 'pr open', deps: [],
+      pr: { number: 2105, headSha: head, verdictOnHead: null, ci: { color: 'green' }, mergeable: 'CONFLICTING' },
+    }],
+    qaTickets: [],
+  });
+  const [pair] = planFixes({ cards, sprints: new Map([['cs', one]]), fleet: FLEET });
+  assert.deepEqual(pair.sections, [{ title: 'CONFLICT — merge origin/main into feat/fin-u5', body: '' }]);
+  assert.deepEqual([pair.kind, pair.role, pair.head], ['fix', 'fixer', head]);
+});
+
+test('the dispatch queue sorts review, then fix, then develop', () => {
+  const queue = sortDispatchQueue([
+    { kind: 'develop', unit: { ticket: 3 } },
+    { kind: 'fix', unit: { ticket: 2 } },
+    { kind: 'review', unit: { ticket: 1 } },
+  ]);
+  assert.deepEqual(queue.map(pair => [pair.kind, pair.unit.ticket]), [
+    ['review', 1], ['fix', 2], ['develop', 3],
+  ]);
+});
+
+test('scarce lanes are assigned in review, fix, develop priority before pairing', () => {
+  const reviewHead = 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1';
+  const fixHead = 'e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2';
+  const reviewUnit = {
+    ...sprint().units[0],
+    pr: { ...sprint().units[0].pr, headSha: reviewHead, draft: false, verdictOnHead: null, verdictRounds: 0 },
+  };
+  const fixUnit = {
+    ...sprint().units[1],
+    pr: {
+      ...sprint().units[1].pr, headSha: fixHead, draft: false, ci: { color: 'green' }, mergeable: 'MERGEABLE',
+      verdictOnHead: { round: 1, go: false, head: fixHead, body: `R1 — NO-GO\nhead ${fixHead}` }, verdictRounds: 1,
+    },
+  };
+  const developUnit = sprint().units.find(unit => unit.ticket === 1583);
+  const source = new Map([['cs', sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6', 'mac/lane-7'],
+    units: [reviewUnit, fixUnit, developUnit], qaTickets: [],
+  })]]);
+  const reviews = planReviews({ cards, sprints: source, fleet: FLEET });
+  const rest = planDispatchFull(cards, source, { fleet: FLEET, takenLanes: reviews.map(pair => pair.lane) }).pairs;
+  const queue = sortDispatchQueue([...reviews, ...rest]);
+  assert.deepEqual(queue.map(pair => pair.kind), ['review', 'fix', 'develop']);
+  assert.deepEqual(queue.map(pair => pair.lane), ['lanes-01/lane-1', 'mac/lane-6', 'mac/lane-7']);
+});
+
+test('a NO-GO fix on H1 leads to review R2 on changed head H2', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const h1 = 'a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3';
+  const h2 = 'b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4';
+  const body = `R1 — NO-GO\nhead ${h1}\n\nPreserve this exact review comment.`;
+  const unit = {
+    unit: 'U10', ticket: 2010, title: 'FIN-U10', branch: 'feat/fin-u10', state: 'pr no-go', deps: [],
+    pr: {
+      number: 2110, headSha: h1, draft: false, ci: { color: 'green' }, mergeable: 'MERGEABLE', verdictRounds: 1,
+      verdictOnHead: { round: 1, go: false, head: h1, body },
+    },
+  };
+  const firstSprint = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unit], qaTickets: [],
+  });
+  const [fix] = planFixes({ cards, sprints: new Map([['cs', firstSprint]]), fleet: FLEET, at });
+  assert.equal(dispatchKey(fix), '2010:fix:a3a3a3a3');
+  assert.equal(taskFileName(fix), 'TASK-2010-FIX-R1.md');
+  const fixText = taskText({ pair: fix, ticket: { number: 2010, title: 'FIN-U10', body: 'ticket body' }, rules: RULES });
+  assert.match(fixText, /# VERDICT R1 — verbatim\n\nR1 — NO-GO[\s\S]*Preserve this exact review comment\./);
+  const changed = {
+    ...unit,
+    state: 'pr green',
+    pr: { ...unit.pr, branch: unit.branch, headSha: h2, verdictOnHead: null, verdictRounds: 1 },
+  };
+  const launched = recordDispatch({ dispatched: {} }, fix, { result: 'launched' }, at);
+  const firstFree = judgeLanes({
+    journal: launched,
+    lanes: { at: '2026-08-29T12:00:30.000Z', items: [{ host: fix.host, lane: fix.laneName, busy: false }] },
+    prs: { at: '2026-08-29T12:00:30.000Z', items: [changed.pr] },
+    tickets: { at: '2026-08-29T12:00:30.000Z', items: [{ number: unit.ticket, state: 'OPEN' }] },
+    now: '2026-08-29T12:01:00.000Z',
+  });
+  assert.equal(firstFree.journal.dispatched[dispatchKey(fix)].judged, undefined, 'free is observed before absence or proof is judged');
+  const judged = judgeLanes({
+    journal: firstFree.journal,
+    lanes: { at: '2026-08-29T12:01:30.000Z', items: [{ host: fix.host, lane: fix.laneName, busy: false }] },
+    prs: { at: '2026-08-29T12:01:30.000Z', items: [changed.pr] },
+    tickets: { at: '2026-08-29T12:01:30.000Z', items: [{ number: unit.ticket, state: 'OPEN' }] },
+    now: '2026-08-29T12:02:00.000Z',
+  });
+  assert.equal(judged.journal.dispatched[dispatchKey(fix)].judged, 'ok', 'the changed head is the fix proof');
+  assert.deepEqual(judged.failures, []);
+
+  const nextSprint = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'], units: [changed], qaTickets: [],
+  });
+  const [review] = planReviews({
+    cards, sprints: new Map([['cs', nextSprint]]), ledger: judged.journal, fleet: FLEET, at: '2026-08-29T12:02:00.000Z',
+  });
+  assert.deepEqual(
+    [review.round, review.head, dispatchKey(review), review.lane !== fix.lane],
+    [2, h2, '2010:review:b4b4b4b4', true],
+  );
+});
+
 test('a light lane (no builds) is never chosen for a unit that needs a build', () => {
   const s = sprint({ free: ['lanes-01/lane-3'] });
   const { pairs, holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET });
@@ -115,7 +358,7 @@ test('no launcher for a lane, a reserved lane, a stale source → nothing is sen
   assert.equal(planDispatch(cards, new Map([['cs', sprint()]]), { fleet: null }).length, 0, 'no fleet config, no launch');
 });
 
-test('the journal uses round keys for develop and a head key for review; launched is final and failed waits ten minutes', () => {
+test('the journal uses develop round keys and review head keys; launched is final and failed waits ten minutes', () => {
   const at = '2026-08-29T12:00:00.000Z';
   const s = sprint();
   const pairs = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, at });
@@ -171,6 +414,70 @@ test('a legacy plain-number journal key is develop round 1, and launching recove
   assert.equal(planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: young }).length, 0);
   const stale = new Date(Date.parse(at) + LAUNCHING_HOLD_MS + 1000).toISOString();
   assert.deepEqual(planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: stale }).map(p => p.unit.ticket), [1583]);
+
+  // A lane judged no-proof is a new develop round even when the unit facts do
+  // not look ordinarily startable any more; another host is preferred.
+  const noProofUnit = { ...one.units[0], state: 'on lane' };
+  const retrySource = new Map([['cs', sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'], units: [noProofUnit], qaTickets: [],
+  })]]);
+  const judged = { dispatched: {
+    '1583:develop:1': {
+      ticket: 1583, kind: 'develop', round: 1, branch: 'feat/fin-u3b',
+      host: 'lanes-01', lane: 'lanes-01/lane-2', result: 'launched', judged: 'no-proof', at,
+    },
+  } };
+  const [retry] = planDispatch(cards, retrySource, { fleet: FLEET, ledger: judged, at: '2026-08-29T12:01:00.000Z' });
+  assert.deepEqual([retry.round, retry.lane, dispatchKey(retry)], [2, 'mac/lane-6', '1583:develop:2']);
+  const recorded = recordDispatch(judged, retry, { result: 'launched' }, '2026-08-29T12:01:00.000Z');
+  assert.deepEqual(Object.keys(recorded.dispatched), ['1583:develop:1', '1583:develop:2']);
+
+  const sameLaneSource = new Map([['cs', sprint({
+    free: [],
+    laneTable: [{ host: 'lanes-01', lane: 'lane-2', hostOk: true, busy: false, fleet: true }],
+    units: [noProofUnit], qaTickets: [],
+  })]]);
+  const [sameLaneRetry] = planDispatch(cards, sameLaneSource, {
+    fleet: FLEET, ledger: judged, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.deepEqual(
+    [sameLaneRetry.round, sameLaneRetry.lane, dispatchKey(sameLaneRetry)],
+    [2, 'lanes-01/lane-2', '1583:develop:2'],
+    'when no other host is free, the now-idle original lane can retry the next round',
+  );
+});
+
+test('a stuck unit card cannot receive develop or fix R4 after three no-proof rounds', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const stuckCards = [...cards, { id: 'u3b', parent: 'cs', ticket: 1583, title: 'U3b #1583', stage: 'stuck' }];
+  const developUnit = { ...sprint().units.find(unit => unit.ticket === 1583), state: 'on lane' };
+  const developLedger = { dispatched: Object.fromEntries([1, 2, 3].map(round => [
+    `1583:develop:${round}`,
+    {
+      ticket: 1583, kind: 'develop', round, host: 'lanes-01', lane: 'lanes-01/lane-2',
+      result: 'launched', judged: 'no-proof', at,
+    },
+  ])) };
+  const developSource = new Map([['cs', sprint({
+    free: ['mac/lane-6'], units: [developUnit], qaTickets: [],
+  })]]);
+  assert.deepEqual(planDispatch(stuckCards, developSource, { fleet: FLEET, ledger: developLedger }), []);
+
+  const head = 'c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5';
+  const fixUnit = {
+    ...developUnit,
+    pr: {
+      number: 2200, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE',
+      verdictOnHead: { round: 1, go: false, head, body: `R1 — NO-GO\nhead ${head}` },
+    },
+  };
+  const fixLedger = { dispatched: {
+    '1583:fix:c5c5c5c5': { ticket: 1583, kind: 'fix', round: 1, head, result: 'launched', judged: 'no-proof', at },
+    '1583:fix:2': { ticket: 1583, kind: 'fix', round: 2, head, result: 'launched', judged: 'no-proof', at },
+    '1583:fix:3': { ticket: 1583, kind: 'fix', round: 3, head, result: 'launched', judged: 'no-proof', at },
+  } };
+  const fixSource = new Map([['cs', sprint({ free: ['mac/lane-6'], units: [fixUnit], qaTickets: [] })]]);
+  assert.deepEqual(planFixes({ cards: stuckCards, sprints: fixSource, ledger: fixLedger, fleet: FLEET }), []);
 });
 
 test('a verdict on the current PR head suppresses review planning', () => {
@@ -239,7 +546,7 @@ test('the pure review planner does not require spawned pipeline child cards', ()
   assert.deepEqual(planReviews({ cards: rootCards, sprints: source, fleet: FLEET }).map(pair => pair.unit.ticket), [1575]);
 });
 
-test('any journal entry for a review head prevents a second launch', () => {
+test('any journal entry for a review head prevents a second launch unless it was judged no-proof', () => {
   const head = 'aefd5925e0000000000000000000000000000000';
   const unit = {
     ...sprint().units[0],
@@ -250,6 +557,23 @@ test('any journal entry for a review head prevents a second launch', () => {
     const ledger = { dispatched: { '1575:review:aefd5925': { ticket: 1575, kind: 'review', head, result } } };
     assert.equal(planReviews({ cards, sprints: source, ledger, fleet: FLEET }).length, 0, result);
   }
+  const previousKey = '1575:review:aefd5925';
+  const judged = { dispatched: {
+    [previousKey]: {
+      ticket: 1575, kind: 'review', round: 1, head, host: 'lanes-01', lane: 'lanes-01/lane-1',
+      result: 'launched', judged: 'no-proof', at: '2026-08-29T12:00:00.000Z',
+    },
+  } };
+  const retrySource = new Map([['cs', sprint({
+    units: [unit], qaTickets: [], free: ['lanes-01/lane-1', 'mac/lane-6'],
+  })]]);
+  const [retry] = planReviews({
+    cards, sprints: retrySource, ledger: judged, fleet: FLEET, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.deepEqual(
+    [retry.round, retry.retryOf, retry.lane, dispatchKey(retry)],
+    [2, previousKey, 'mac/lane-6', '1575:review:2'],
+  );
 });
 
 test('review pairs precede develop pairs and reserve their lanes', () => {
@@ -435,6 +759,12 @@ test('qa-run waits for merged or closed dependencies, uses origin/main, and need
   assert.equal(pair.lane, 'mac/lane-6');
   assert.deepEqual([pair.role, pair.kind, pair.round, pair.head], ['qa', 'develop', 1, null]);
   assert.deepEqual(pair.base, { ref: 'main', sha: null, pr: null, ticket: null, unit: null });
+  const qaLedger = recordDispatch({ dispatched: {} }, pair, { result: 'launched' }, '2026-08-29T12:00:00.000Z');
+  assert.deepEqual(
+    [qaLedger.dispatched['1605:develop:1'].role, qaLedger.dispatched['1605:develop:1'].qaRun, qaLedger.dispatched['1605:develop:1'].labels],
+    ['qa', true, ['qa-run']],
+    'qa-run proof identity survives the journal round-trip',
+  );
 
   const noBrowser = { ...FLEET, hosts: { ...FLEET.hosts, mac: { ...FLEET.hosts.mac, browser: false } } };
   const held = planDispatchFull([card], new Map([['cs', ready]]), { fleet: noBrowser });
