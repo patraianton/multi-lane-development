@@ -158,6 +158,43 @@ test('one branch pinned by three tickets: the lane building it shows on every on
   assert.deepEqual(s.units.map(u => [u.ticket, u.lane?.lane ?? null]), [[1599, 'lane-1']], 'the other lane binds as before');
 });
 
+test('a unit without a pinned branch defaults to feat/<ticket>', () => {
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const unitIssues = new Map([[1515, [
+    { number: 1600, title: 'SALON-U1: default branch', url: 'u/1600', state: 'OPEN', branch: '', labels: ['qa-run'] },
+  ]]]);
+  const lanes = [{ host: 'lanes-01', lane: 'lane-1', busy: true, branch: 'feat/1600' }];
+  const prs = [{ number: 1601, url: 'pr/1601', branch: 'refs/heads/feat/1600' }];
+
+  const unit = sprintFactsFor([card], { lanes, prs, unitIssues }).get('csprint').qaTickets[0];
+  assert.equal(unit.branch, 'feat/1600');
+  assert.deepEqual(unit.labels, ['qa-run']);
+  assert.equal(unit.qa, true, 'qa-run is QA scope rather than an ordinary work unit');
+  assert.equal(unit.depsMerged, true, 'qa-run never starts from an open dependency PR');
+  assert.equal(unit.lane.lane, 'lane-1', 'the default branch binds the lane');
+  assert.equal(unit.pr.number, 1601, 'the default branch binds the PR');
+});
+
+test('an idle lane parked on a merged branch is free but keeps its table binding', () => {
+  const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
+  const unitIssues = new Map([[1515, [
+    { number: 1601, title: 'SALON-U1: merged', url: 'u/1601', state: 'OPEN', branch: 'feat/merged' },
+    { number: 1602, title: 'SALON-U2: still building', url: 'u/1602', state: 'OPEN', branch: 'feat/building' },
+  ]]]);
+  const lanes = [
+    { host: 'lanes-01', lane: 'lane-1', busy: false, branch: 'feat/merged' },
+    { host: 'lanes-01', lane: 'lane-2', busy: false, branch: 'feat/building' },
+  ];
+  const mergedPrs = [{ number: 1603, url: 'pr/1603', branch: 'feat/merged', mergedAt: '2026-08-30T08:00:00Z' }];
+
+  const sprint = sprintFactsFor([card], { lanes, mergedPrs, unitIssues }).get('csprint');
+  assert.deepEqual(sprint.free, ['lanes-01/lane-1'], 'an unmerged branch still reserves its idle lane');
+  assert.deepEqual(sprint.laneTable.map(l => [l.lane, l.branch, l.unit]), [
+    ['lane-1', 'feat/merged', 'U1'],
+    ['lane-2', 'feat/building', 'U2'],
+  ]);
+});
+
 test('a close with no merge behind it counts as accepted only once it is older than the auto-close window', () => {
   // The issue list refreshes faster than the merged-PR list: for a minute a
   // ticket the PR just auto-closed looks closed with no merge — a person's

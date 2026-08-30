@@ -161,7 +161,7 @@ export function setIdleLanes(next) {
 }
 
 // Auto-dispatch (decision 16): what the board is about to send to a free
-// lane — or would send, while WATCHTOWER_AUTO_DISPATCH is off — and what the
+// lane — or would send, while autoDispatch is false in settings — and what the
 // journal says happened lately. rows: [{ card, unit, lane, base, state }].
 let AUTO_DISPATCH = { at: null, on: false, rows: [] };
 export function setAutoDispatch(next) {
@@ -1443,8 +1443,8 @@ function renderToonPipeline(v) {
     + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
     + ' after a short grace the board alarms the owner and the CTO window');
   help.push('auto-dispatch: the board itself sends a startable unit to a free assigned lane'
-    + ' (task file = ticket + common brief + base, spec bundle shipped, launcher from the fleet)'
-    + ' — state "would dispatch" while WATCHTOWER_AUTO_DISPATCH is off, else dispatched/failed/held'
+    + ' (task file = ticket + committed role rules + base, spec bundle shipped, launcher from the fleet)'
+    + ' — state "would dispatch" while autoDispatch is false in settings, else dispatched/failed/held'
     + ' from the journal state/auto-dispatch.json');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));

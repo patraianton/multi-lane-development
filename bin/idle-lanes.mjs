@@ -7,7 +7,12 @@
 // Pure: watchtower.mjs feeds it the sprint facts and the ledger; tests feed
 // fixtures.
 
-const ACTIVE = new Set(['development', 'local_check', 'ci_pr']);
+const ACTIVE = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
+
+function isQaRun(unit) {
+  const labels = Array.isArray(unit?.labels) ? unit.labels.map(label => String(label).toLowerCase()) : [];
+  return Boolean(unit?.qaRun) || labels.includes('qa-run');
+}
 
 // A queued unit can start when every dependency inside the sprint is merged,
 // closed, or at least carries an open PR (a unit starts from the head of its
@@ -15,6 +20,10 @@ const ACTIVE = new Set(['development', 'local_check', 'ci_pr']);
 // outside the sprint, holds it.
 export function startable(unit) {
   if (!unit) return false;
+  if (isQaRun(unit)) {
+    if (!unit.open || unit.merged || unit.pr || unit.lane) return false;
+    return (unit.deps ?? []).every(d => d?.met === true);
+  }
   if (unit.qa) {
     if (!unit.open || unit.merged || unit.pr || unit.lane) return false;
   } else if (unit.state !== 'queued') return false;
@@ -36,16 +45,15 @@ export function unitCardOf(cards, sprintCardId, unit) {
 // Startable by the facts AND by the board: right after a merge the live
 // sources can lag one sweep — the open PR is gone, the merged PR and the
 // closed ticket not yet seen — and the unit looks queued for a minute. The
-// card remembers: a work unit whose card has left `ticketed`, or carries a PR,
-// has started and is never dispatched again; a QA ticket's card sits in `qa`
-// from birth, so for it only a PR or a lane on the card counts.
+// card remembers: a unit whose card has left `ticketed`, carries a PR, or (for
+// a QA ticket) carries a lane has started and is never dispatched again. Both
+// ordinary and QA unit cards wait in `ticketed` before their first dispatch.
 export function startableOnBoard(unit, sprintCardId, cards) {
   if (!startable(unit)) return false;
   const uc = unitCardOf(cards, sprintCardId, unit);
   if (!uc) return true;
   if (uc.links?.pr) return false;
-  if (unit.qa) return !uc.lane;
-  return uc.stage === 'ticketed';
+  return uc.stage === 'ticketed' && (!(unit.qa || isQaRun(unit)) || !uc.lane);
 }
 
 // cards: the pipeline's cards; sprints: Map(card id -> sprint facts).

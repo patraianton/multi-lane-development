@@ -12,6 +12,7 @@
     },
     "mac": {
       "kitchen": "~/kitchens/autopase.lv",
+      "browser": true,
       "shell": "export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH;",
       "launch": "maclane {n} \"{prompt}\""
     }
