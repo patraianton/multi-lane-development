@@ -59,7 +59,8 @@ export function startableOnBoard(unit, sprintCardId, cards) {
 // cards: the pipeline's cards; sprints: Map(card id -> sprint facts).
 // One finding per active sprint card that has at least one free assigned lane
 // and at least one startable unit.
-export function idleLaneFindings(cards, sprints, { at = null } = {}) {
+export function idleLaneFindings(cards, sprints, { at = null, excludeTickets = [] } = {}) {
+  const excluded = new Set([...excludeTickets].map(ticket => String(ticket)));
   const out = [];
   for (const card of cards ?? []) {
     if (card?.parent || !ACTIVE.has(card?.stage)) continue;
@@ -68,7 +69,8 @@ export function idleLaneFindings(cards, sprints, { at = null } = {}) {
     if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not idle
     const free = Array.isArray(s.free) ? s.free : [];
     if (!free.length) continue;
-    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])].filter(u => startableOnBoard(u, card.id, cards))
+    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])]
+      .filter(u => !excluded.has(String(u?.ticket)) && startableOnBoard(u, card.id, cards))
       .map(u => ({ unit: u.unit || '', ticket: u.ticket, title: u.title || '' }));
     if (!waiting.length) continue;
     out.push({
