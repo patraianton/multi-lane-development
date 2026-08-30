@@ -170,3 +170,80 @@ test('qa-run is judged ok when its ticket is closed', () => {
   assert.match(result.judgments[0].reason, /ticket #101 is closed/);
   assert.deepEqual(result.failures, []);
 });
+
+// A lane another window took over is the same evidence as a freed lane: the
+// board's own run is gone. Incident 2026-08-30: lane-4 was stopped by number
+// and stayed busy on a foreign branch for 1 h 40 min.
+function takeover({ lane = { host: 'host-a', lane: 'lane-1', busy: true, branch: 'feat/vx-a10' }, record = {}, laneAt = '2026-08-30T12:25:00.000Z' } = {}) {
+  return {
+    journal: {
+      version: 1,
+      dispatched: {
+        '101:develop:1': entry({
+          base: 'feat/100@75507510 (PR #1730)',
+          firstSeenFree: undefined,
+          ...record,
+        }),
+      },
+    },
+    lanes: { at: laneAt, items: [lane] },
+    prs: { at: '2026-08-30T12:24:00.000Z', items: [] },
+    tickets: { at: '2026-08-30T12:24:00.000Z', items: [] },
+    now: laneAt,
+  };
+}
+
+test('a taken-over lane is judged like a freed one', () => {
+  const first = judgeLanes(takeover());
+  assert.equal(first.journal.dispatched['101:develop:1'].firstSeenFree, '2026-08-30T12:25:00.000Z',
+    'the first sweep only stamps — the same two-sweep debounce a freed lane gets');
+  assert.deepEqual(first.judgments, []);
+
+  const second = judgeLanes({
+    ...takeover(),
+    journal: first.journal,
+    prs: { at: '2026-08-30T12:25:30.000Z', items: [] },
+    tickets: { at: '2026-08-30T12:25:30.000Z', items: [] },
+    now: '2026-08-30T12:26:00.000Z',
+  });
+  assert.equal(second.journal.dispatched['101:develop:1'].judged, 'no-proof');
+  assert.equal(second.journal.dispatched['101:develop:1'].judgeReason,
+    'no open or merged PR on feat/101 after host-a/lane-1 was taken over by feat/vx-a10');
+  assert.equal(second.failures.length, 1);
+  assert.deepEqual(second.retries.map(r => [r.key, r.avoidHost]), [['101:develop:2', 'host-a']]);
+});
+
+test('a busy lane is only a takeover when the work is not ours', () => {
+  const cases = [
+    ['the trunk', { branch: 'main' }],
+    ['a detached reviewer checkout', { branch: 'HEAD' }],
+    ['our own branch', { branch: 'feat/101' }],
+    ['our base branch', { branch: 'feat/100' }],
+    ['our own TASK on a foreign branch', { branch: 'feat/vx-a10', task: 'TASK-101.md' }],
+    ['a host that did not answer', { branch: 'feat/vx-a10', hostOk: false }],
+    ['a remembered lane', { branch: 'feat/vx-a10', remembered: true }],
+  ];
+  for (const [why, over] of cases) {
+    const result = judgeLanes(takeover({ lane: { host: 'host-a', lane: 'lane-1', busy: true, ...over } }));
+    assert.equal(result.journal.dispatched['101:develop:1'].firstSeenFree, undefined, why);
+    assert.equal(result.journal.dispatched['101:develop:1'].judged, undefined, why);
+    assert.deepEqual(result.judgments, [], why);
+  }
+  const early = judgeLanes(takeover({ laneAt: '2026-08-30T12:12:00.000Z' }));
+  assert.equal(early.journal.dispatched['101:develop:1'].firstSeenFree, undefined,
+    'inside the 20-minute grace a slow checkout still shows the previous occupant');
+});
+
+test('the TASK file outranks the branch', () => {
+  const busy = { host: 'host-a', lane: 'lane-1', busy: true, branch: 'feat/101', task: 'TASK-1701-R2.md' };
+  const first = judgeLanes(takeover({ lane: busy }));
+  const second = judgeLanes({
+    ...takeover({ lane: busy }),
+    journal: first.journal,
+    prs: { at: '2026-08-30T12:25:30.000Z', items: [] },
+    tickets: { at: '2026-08-30T12:25:30.000Z', items: [] },
+    now: '2026-08-30T12:26:00.000Z',
+  });
+  assert.equal(second.journal.dispatched['101:develop:1'].judged, 'no-proof');
+  assert.match(second.journal.dispatched['101:develop:1'].judgeReason, /was taken over by TASK-1701$/);
+});

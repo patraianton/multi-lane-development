@@ -57,6 +57,33 @@ function laneIsFree(value) {
   return ['free', 'idle', 'ready', 'available'].includes(state);
 }
 
+// A checkout on one of these says nothing about whose work runs on the lane.
+const TRUNK_BRANCHES = new Set(['', 'main', 'master', 'head']);
+
+function taskTicketOf(item) {
+  const m = /TASK-(\d+)/.exec(String(item?.task ?? ''));
+  return m ? m[1] : null;
+}
+
+function baseBranchOf(entry) {
+  return String(entry?.base ?? '').split('@')[0].split(' ')[0].trim();
+}
+
+// Other work on the lane the board sent to is the same evidence as a freed
+// lane: the board's own run is gone. The live `TASK-<n>` is the strongest fact
+// (the Mac probe reads it from the running command); where the lane cannot say
+// — hzlane prints no task — the branch decides, and anything that could still
+// be ours (our branch, our base, a trunk) is not a takeover.
+function takenOverBy(item, entry, laneAt, graceMs) {
+  if (!item || item.busy !== true || item.hostOk === false || item.remembered === true) return '';
+  if (!(laneAt - timeOf(entry?.at) >= graceMs)) return '';
+  const taskTicket = taskTicketOf(item);
+  if (taskTicket) return taskTicket === String(entry?.ticket) ? '' : `TASK-${taskTicket}`;
+  const branch = branchOf(item);
+  if (TRUNK_BRANCHES.has(branch.toLowerCase())) return '';
+  return (branch === branchOf(entry) || branch === baseBranchOf(entry)) ? '' : branch;
+}
+
 function sameHead(left, right) {
   const a = String(left ?? '').trim().toLowerCase();
   const b = String(right ?? '').trim().toLowerCase();
@@ -164,7 +191,7 @@ function roundOf(entry) {
 // Returns an immutable journal update and effects for the caller:
 //   judgments: completed decisions; failures: failCard inputs; retries: queue
 //   identities with the previous host explicitly de-preferred.
-export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, now = null } = {}) {
+export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, now = null, takeoverMs = 20 * 60 * 1000 } = {}) {
   const nowMs = Number.isFinite(timeOf(now)) ? timeOf(now) : Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const laneFacts = snapshot(lanes);
@@ -176,11 +203,14 @@ export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, n
   const retries = [];
 
   const free = new Set(laneFacts.items.filter(laneIsFree).map(laneNameOf));
+  const byLane = new Map(laneFacts.items.map(item => [laneNameOf(item), item]));
   const ticketsByNumber = new Map(ticketFacts.items.map(ticket => [ticketNumber(ticket), ticket]));
 
   for (const [key, original] of Object.entries(journal?.dispatched ?? {})) {
     if (!original || original.result !== 'launched' || original.judged != null) continue;
-    if (!free.has(String(original.lane ?? ''))) continue;
+    const laneName = String(original.lane ?? '');
+    const takenBy = free.has(laneName) ? '' : takenOverBy(byLane.get(laneName), original, laneFacts.at, takeoverMs);
+    if (!free.has(laneName) && !takenBy) continue;
 
     const launchedAt = timeOf(original.at);
     if (Number.isFinite(laneFacts.at) && Number.isFinite(launchedAt) && laneFacts.at <= launchedAt) continue;
@@ -196,7 +226,8 @@ export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, n
 
     const proof = proofFor(original, prFacts.items, ticketsByNumber.get(Number(original.ticket)));
     const judged = proof.ok ? 'ok' : 'no-proof';
-    const reason = proof.ok ? proof.reason : `${proof.reason} after ${original.lane} freed`;
+    const reason = proof.ok ? proof.reason
+      : `${proof.reason} after ${original.lane} ${takenBy ? 'was taken over by ' + takenBy : 'freed'}`;
     const decision = {
       key,
       card: original.card ?? null,

@@ -616,7 +616,7 @@ export function planFixes({
 // every unit needs a build, so a `noBuilds` lane is never chosen by itself).
 // Returns { pairs, holds }: pairs = { card, umbrella, unit, lane, host,
 // laneName, n, base } one per lane; holds = why a startable unit was not paired.
-export function planDispatchFull(cards, sprints, { ledger = null, at = null, fleet = null, needsBuild = null, takenLanes = null, takenTickets = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS } = {}) {
+export function planDispatchFull(cards, sprints, { ledger = null, at = null, fleet = null, facts = null, needsBuild = null, takenLanes = null, takenTickets = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS } = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
   const higherPriority = new Set(takenLanes ?? []);
@@ -633,6 +633,10 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
   const pairs = [];
   const holds = [];
   const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
+  // While main's own check is red, a lane starting from main only rediscovers
+  // it: on 2026-08-30 eight runs came back with the same QUESTION. Unknown or
+  // green is never red, so a missing answer never stops the board.
+  const mainRed = facts?.mainCi?.red === true ? facts.mainCi : null;
   // Higher-priority planners (review, then fix) reserve their lanes before
   // develop work is paired.
   const taken = new Set([...higherPriority, ...fixLanes]);
@@ -696,6 +700,12 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (entryBlocksDispatch(prev, now, launchingMs)) continue;
       const base = baseFor(u, s);
       if (base.error) { hold(base.error); continue; }
+      // `main` here covers develop and qa-run alike; a unit on a sibling's open
+      // PR head is left alone, and `main-fix` is the ticket cut to repair main.
+      if (mainRed && base.ref === 'main' && !labelsOf(u).includes('main-fix')) {
+        hold(`main is red since ${mainRed.createdAt} (${mainRed.url})`);
+        continue;
+      }
       const qaRun = isQaRun(u);
       const build = qaRun ? false : (needsBuild ? needsBuild(u) !== false : true);
       const lanePool = retry?.expandLanes ? retryLanes : lanes;

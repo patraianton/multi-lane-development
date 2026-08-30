@@ -51,6 +51,7 @@ import {
   notifyStuck,
   notifyReady,
   notifyIdleLanes,
+  notifyOwner,
   notifyDone,
 } from './telegram-bot.mjs';
 import {
@@ -276,6 +277,10 @@ async function herdrText(args) {
   return null;
 }
 
+// A source that fails silently fails forever. One line per distinct message,
+// so a flapping source cannot flood the log.
+const sourceErrorNotices = new Set();
+
 // Every source refreshes at its own pace in the background: the page polls
 // /data every 3 seconds and never waits for ssh or for GitHub.
 function makeSource(name, everyMs, fn) {
@@ -292,6 +297,11 @@ function makeSource(name, everyMs, fn) {
       } catch (e) {
         src.ok = false;
         src.error = String(e?.message || e);
+        const notice = `${name}: ${src.error}`;
+        if (!sourceErrorNotices.has(notice)) {
+          sourceErrorNotices.add(notice);
+          console.log(`source ${notice}`);
+        }
       } finally {
         src.at = Date.now();
         src.tookMs = Date.now() - started;
@@ -484,6 +494,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: new Map(Object.entries(f.ciJobs ?? {}).map(([k, v]) => [Number(k), v])),
       ciRunners: f.ciRunners ?? [],
       umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
+      mainCi: f.mainCi ?? null,
       openIssues: f.openIssues ?? [],
       staleSources: f.staleSources ?? [],
       sourceAt: {
@@ -497,7 +508,8 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // The pipeline page never runs the windows sweep, so the slow sources are
     // refreshed here too (each on its own interval) — a board showing only
     // the pipeline still sees lanes, PRs and tickets move.
-    await Promise.all([lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource, ciRunnersSource]
+    await Promise.all([lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource,
+      ciRunnersSource, mainCiSource]
       .map(src => src.tick()).filter(Boolean));
     // CI jobs read the PR list this sweep just refreshed; a failure here is
     // information missing, never a reason to hold a card.
@@ -511,6 +523,9 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: ciJobsSource.value ?? new Map(),
       ciRunners: ciRunnersSource.value ?? [],
       umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
+      // Fails open by construction: a failed tick is null, and null is never
+      // red, so one GitHub hiccup releases the hold instead of freezing work.
+      mainCi: mainCiSource.ok ? (mainCiSource.value ?? null) : null,
       openIssues: unitIssuesSource.ok ? openWorkIssues : null,
       staleSources,
       sourceAt: {
@@ -521,6 +536,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       },
     };
   }
+  await mainCiWatch(facts.mainCi);
   const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
   setCardSprints(sprints);
   const sync = await syncSprintUnits(sprints);
@@ -528,7 +544,12 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   await judgeDispatchedLanes(facts);
   await readyAcceptanceSweep(sprints);
   await offBoardSweep(facts);
-  const mergeRows = await mergeSweep(sprints);
+  // The try/finally below covers only the dispatch step: without this, an
+  // exception in the merge step also cancels this tick's dispatch and idle sweeps.
+  const mergeRows = await mergeSweep(sprints).catch(e => {
+    console.log(`merge: sweep failed — ${String(e?.message || e)}`);
+    return [];
+  });
   let idleSwept = false;
   const sweepIdle = async attemptedTickets => {
     idleSwept = true;
@@ -655,6 +676,35 @@ const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
 let idleNotice = '';
+
+// One line to the owner about the board itself, once per distinct key. Kept in
+// memory: a restart may repeat one alarm, which is cheaper than a state file.
+const alarmed = new Set();
+async function alarmOwner(key, line) {
+  if (alarmed.has(key)) return;
+  alarmed.add(key);
+  console.log(`ALARM ${line}`);
+  if (!config.telegramOn) return;
+  try { await notifyOwner(line); }
+  catch (e) { console.log(`alarm: telegram failed: ${e.message}`); }
+}
+
+// main's own check turning red or green is the only board-level state change
+// the owner hears about. Unknown (the source failed) is never a transition;
+// null at start, so a board restarted while main is red still announces it.
+let mainWasRed = null;
+async function mainCiWatch(mainCi) {
+  if (!mainCi) return;
+  const red = mainCi.red === true;
+  const first = mainWasRed === null;
+  if (!first && red === mainWasRed) return;
+  mainWasRed = red;
+  if (first && !red) return; // a board that starts on a green main says nothing
+  await alarmOwner(`main:${red ? 'red' : 'green'}:${mainCi.headSha}`, red
+    ? `main is red since ${mainCi.createdAt} (${mainCi.url}) — the board holds every lane task based on main`
+    : `main is green again at ${String(mainCi.headSha).slice(0, 8)} — dispatch resumes`);
+}
+
 async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
@@ -710,13 +760,21 @@ function autoDispatchNeedsOwner() {
 // "busy" is exit 2 with a line, and the plan reads both. Never throws.
 function execCmd(bin, args, timeout = 60000) {
   return new Promise((resolve) => {
-    execExternal(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
-      (err, stdout, stderr) => {
-        const errText = String(stderr ?? '').trim();
-        const out = `${stdout ?? ''}${stderr ? '\n' + stderr : ''}`.trim();
-        if (!err) return resolve({ code: 0, out, stderr: errText });
-        resolve({ code: typeof err.code === 'number' ? err.code : -1, out: out || err.message, stderr: errText });
-      });
+    // An argument list the OS refuses (spawn ENAMETOOLONG) throws right here,
+    // synchronously. That must read as an ordinary failed command, not as an
+    // exception escaping the sweep between two journal writes.
+    try {
+      execExternal(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
+        (err, stdout, stderr) => {
+          const errText = String(stderr ?? '').trim();
+          const out = `${stdout ?? ''}${stderr ? '\n' + stderr : ''}`.trim();
+          if (!err) return resolve({ code: 0, out, stderr: errText });
+          resolve({ code: typeof err.code === 'number' ? err.code : -1, out: out || err.message, stderr: errText });
+        });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      resolve({ code: -1, out: msg, stderr: msg });
+    }
   });
 }
 const bins = { ssh: SSH, scp: SCP, gh: GH };
@@ -841,6 +899,11 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   for (const hold of failureHolds) {
     if (!holds.some(item => item.failureKey && item.failureKey === hold.failureKey)) holds.push(hold);
   }
+  // A unit the planner has a reason to hold is not waiting "with nothing in the
+  // way". One rule for every reason at once — light lane, cooling host, qa-run
+  // without a browser, a base error, a red main — and the reason stays on the
+  // dispatch table.
+  for (const hold of holds) if (hold.ticket != null) attemptedTickets.add(hold.ticket);
   const rowsWithMerges = rows => {
     const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
     return [
@@ -930,6 +993,10 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
 
 const MERGE_ATTEMPTS = 3;
 const MERGE_ACTIVE_STAGES = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
+// The one refusal the board can clear itself: `main` requires branches to be
+// up to date before merging (branch protection, `strict`). One update a sweep,
+// and the attempts cap bounds what one head can cost.
+const STALE_BASE = /not up to date|out.of.date|base branch was modified|behind/i;
 
 function mergeKey(ticket, head) {
   return `${ticket}:merge:${String(head ?? '').slice(0, 8)}`;
@@ -1009,6 +1076,9 @@ async function mergeSweep(sprints) {
   let ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
   const cards = await listPipelineCards();
   const plannedMergeGroups = mergeGroups(sprints, cards);
+  // Every merge that lands makes every other ready PR behind, and each update
+  // costs a fresh pr-ci and a fresh review round. One branch per sweep.
+  let updatedThisSweep = false;
   for (const group of plannedMergeGroups) {
     const held = group.items.some(({ unit }) =>
       (unit.labels ?? []).some(label => String(label).toLowerCase() === 'hold-merge'));
@@ -1029,7 +1099,14 @@ async function mergeSweep(sprints) {
     if (previous.some(entry => entry.result === 'merged')) continue;
     const attempts = Math.max(0, ...previous.map(entry => Number(entry.attempts) || 0));
     if (attempts >= MERGE_ATTEMPTS) {
-      // The terminal failure remains visible through its recent journal row.
+      // The terminal failure remains visible through its recent journal row —
+      // and the owner hears it once, so a dead merge is never 45 min of silence.
+      // The switch silences it too: a board that merges nothing gives up nothing.
+      if (config.autoDispatch) {
+        const last = previous.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+        await alarmOwner(`merge-gaveup:${group.pr.number}:${String(group.pr.headSha).slice(0, 8)}`,
+          `the board gave up merging PR #${group.pr.number} after ${MERGE_ATTEMPTS} attempts: ${last?.error ?? 'no reason recorded'}`);
+      }
       continue;
     }
 
@@ -1054,22 +1131,44 @@ async function mergeSweep(sprints) {
 
     await writeResult('merging');
     const fixed = bodyFix(group.pr.body);
+    // A PR body runs to tens of thousands of characters; on a command line that
+    // is an OS error, not a merge. It travels as a file next to the task files.
+    await mkdir(DISPATCH_DIR, { recursive: true });
+    const bodyFile = path.join(DISPATCH_DIR, 'merge-body.md');
+    await writeFile(bodyFile, fixed.body, 'utf8');
     let outcome = { code: 0, out: '' };
     if (fixed.changed) {
       outcome = await execCmd(bins.gh,
-        ['pr', 'edit', String(group.pr.number), '--repo', repo, '--body', fixed.body], 60000);
+        ['pr', 'edit', String(group.pr.number), '--repo', repo, '--body-file', bodyFile], 60000);
     }
     if (outcome.code === 0) {
       outcome = await execCmd(bins.gh,
         ['pr','merge', String(group.pr.number), '--repo', repo, '--squash',
-          '--match-head-commit', String(group.pr.headSha), '--subject', String(group.pr.title ?? ''), '--body', fixed.body],
+          '--match-head-commit', String(group.pr.headSha), '--subject', String(group.pr.title ?? ''), '--body-file', bodyFile],
         90000);
     }
     if (outcome.code === 0) {
       await writeResult('merged');
       console.log(`merge: PR #${group.pr.number} squash-merged at ${group.pr.headSha}`);
     } else {
-      await writeResult('merge-failed', outcome.stderr || outcome.out || `exit ${outcome.code}`);
+      const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
+      await writeResult('merge-failed', why);
+      console.log(`merge: PR #${group.pr.number} failed at ${String(group.pr.headSha).slice(0, 8)} — ${why}`);
+      // Refused because the branch fell behind main: the board clears that
+      // itself — no lane. The push re-triggers pr-ci and the next review round,
+      // and the new head starts a fresh attempt budget.
+      if (!updatedThisSweep && STALE_BASE.test(why)) {
+        updatedThisSweep = true;
+        const upd = await execCmd(bins.gh, ['pr', 'update-branch', String(group.pr.number), '--repo', repo], 60000);
+        console.log(`merge: PR #${group.pr.number} is behind main — ${upd.code === 0
+          ? 'branch updated; the check and the review run again'
+          : 'update-branch failed: ' + (upd.stderr || upd.out)}`);
+        // The table says what happened, not what was tried: an update the board
+        // could not make must never read there as a repaired branch.
+        rows.push(mergeTableRow(group, upd.code === 0
+          ? 'behind main — branch updated'
+          : 'behind main — update-branch failed'));
+      }
     }
   }
   return rows;
@@ -1401,6 +1500,24 @@ const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
   if (out === null) throw new Error('gh api actions/runners did not answer');
   // Slot names on top of runner names, from the registry in the settings.
   return JSON.parse(out).map(r => fleetSlot(config.ciSlots, r));
+});
+
+// main's own health — the fact the board lacked on 2026-08-30, when it kept
+// dispatching from a red main and every lane came back with a QUESTION. The
+// workflow FILE name is used so a renamed display title cannot kill the guard.
+// Only `success` and `failure` are answers: the latest run may be cancelled or
+// still going, and neither may read as green nor hide a red run behind it.
+const MAIN_CI_CONCLUSIONS = new Set(['success', 'failure']);
+const mainCiSource = makeSource('main-ci', 60000, async () => {
+  const repo = config.repo;
+  if (!repo) return null;
+  const out = await runText(GH, ['run', 'list', '--repo', repo, '--branch', 'main',
+    '--workflow', 'pr-ci.yml', '--limit', '5',
+    '--json', 'conclusion,headSha,url,createdAt'], 60000);
+  if (out === null) throw new Error('gh run list did not answer');
+  const run = JSON.parse(out)
+    .find(r => MAIN_CI_CONCLUSIONS.has(String(r?.conclusion ?? '').toLowerCase())) ?? null;
+  return run ? { ...run, red: String(run.conclusion).toLowerCase() === 'failure' } : null;
 });
 
 // Where each open PR's checks run: for PRs whose CI is queued or in progress,

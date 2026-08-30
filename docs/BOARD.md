@@ -39,7 +39,7 @@ U2b #1685 on hostinger/lane-4 by lane number (`state/edge-cases.md`).
 
 | Kind | The board starts it when | Role | Proof the board waits for |
 |---|---|---|---|
-| develop | a ticket is open, has no lane and no PR, its dependencies are merged, closed or on one open PR | `lane` (`qa-run` label → `qa`, Mac only, merged dependencies only) | an open PR on the ticket's branch (`qa-run`: the ticket closed) |
+| develop | a ticket is open, has no lane and no PR, its dependencies are merged, closed or on one open PR, and main's latest `pr-ci` run is not red | `lane` (`qa-run` label → `qa`, Mac only, merged dependencies only) | an open PR on the ticket's branch (`qa-run`: the ticket closed) |
 | review | an open, non-draft PR has no verdict on its current head | `reviewer`, another lane than the writer's | a comment `R<n> — GO|NO-GO` + `head <sha>` for that head |
 | fix | the PR head has `NO-GO`, a red check, or GitHub says `CONFLICTING` | `fixer` | a new head on the PR |
 
@@ -51,7 +51,11 @@ dependency's open PR. An existing branch is continued from.
 
 A ticket labelled `hold-merge` is never merged by the board (migrations, schema, auth, deploy/env, payments, the
 scraper — the cutter labels them); the owner merges it by hand. A ticket labelled `no-build` may go to the light
-lane (lane-3).
+lane (lane-3). A ticket labelled `main-fix` is dispatched even while `main` is red — it is the ticket that repairs it.
+
+While `main`'s own `pr-ci` is red the board holds every lane task that would branch from `main` — the table says
+`held: main is red since <time> (<run url>)`. Reviews, fix rounds and merges keep running: they are what makes
+`main` green again. An unknown or stale answer is not red — a GitHub hiccup never stops the board.
 
 ## 4. The task file
 
@@ -68,15 +72,25 @@ see the working copy; edit the rules, commit, and the next task carries the new 
 - The verdict is plain text in a PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
   the head line, or with another head, it is not a verdict.
 - The board merges with `gh pr merge --squash` when the check is green on the exact head, GO is on that head,
-  the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge` label. Before merging it rewrites
-  `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not accepted.
+  the PR is not draft, GitHub says mergeable, the ticket has no `hold-merge` label, and GitHub does not refuse the
+  merge because the branch has fallen behind `main`. It refuses because `main` requires branches to be up to date
+  (branch protection, `strict`, administrators included); the board then sends `gh pr update-branch` itself — no
+  lane — and `pr-ci` and the reviewer run again on the new head. At most one branch is updated per sweep. Before
+  merging it rewrites `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not
+  accepted. The squash subject and body go to `gh` as a file, never on the command line.
 - `NO-GO`, a red check or a conflict → a fix task on the same branch; then the reviewer runs again on the new head.
+- A merge GitHub refuses is written to the journal as `merge-failed` with GitHub's own message and a `merge:` line
+  in the log; after three attempts the owner gets one line. The board never abandons a merge in silence. An
+  update the board could not make says `behind main — update-branch failed` on the table, never that the branch
+  was updated.
 
 ## 6. Failure, stuck, the owner
 
 One counter per card, `consecutiveFails`: +1 on `NO-GO`, on a red check, and on a lane the board sent that is
-free again without its proof. The task re-enters the queue as the next round, another host first. The third
-failure in a row → `stuck`. A comment on the ticket whose first line starts with `QUESTION` → `stuck` at once.
+free again — or that other work has taken over — without its proof. A lane is taken over when, twenty minutes
+after the launch, it is busy on someone else's `TASK-<n>` or, where the lane cannot say, on a branch that is
+neither the unit's, nor its base, nor a trunk. The task re-enters the queue as the next round, another host
+first. The third failure in a row → `stuck`. A comment on the ticket whose first line starts with `QUESTION` → `stuck` at once.
 `stuck` → one Telegram line to the owner. To return the card:
 
 ```
@@ -98,9 +112,11 @@ POST /pipeline/card/unstuck { "id": "<card id>" }     # the counter resets, the 
 
 ## 8. Messages
 
-To the owner (private chat with the bot): `stuck`, idle lanes (a free lane with a non-empty queue for 5 minutes),
-ready for acceptance. To the partner group: a page is ready; a sprint is done. The board only sends; nothing polls
-the bot from the board.
+To the owner (private chat with the bot): `stuck`; idle lanes (a free lane with a non-empty queue for 5 minutes
+AND no reason from the planner — a unit the planner holds is not idle, its reason stands in the auto-dispatch
+table); `main` turned red and `main` is green again; a merge the board gave up on after three attempts; ready for
+acceptance. To the partner group: a page is ready; a sprint is done. The board only sends; nothing polls the bot
+from the board.
 
 ## 9. Settings
 
@@ -112,6 +128,9 @@ telegram: { botToken, chatId, ownerChatId }   — the group and the owner's priv
 check: "bash ../ci-local-and-stamp.sh"  — the default full local check written into task files
 repo, project, specsDir, hosts, lanes, ciSlots — as before (FLEET.md)
 ```
+
+No new setting and no new state file. Main's health is read from GitHub once a minute and never stored;
+`autoDispatch` remains the only switch.
 
 `state/fleet-launch.json`: per host `kitchen`, `launch` (`hzlane {n} "{prompt}"` / `maclane {n} "{prompt}"`),
 optional `shell`, `check`, `browser: true` (the Mac — QA walks); per lane `host`, `n`, optional `noBuilds`,
@@ -127,7 +146,10 @@ threads (`/usr/local/bin/hzlane` on codex-dev and hostinger, `~/.local/bin/macla
   the task files: `state/auto-dispatch/`. The log: `state/board.log`, every line with a time.
 - The dispatch table on the page and in `GET /api/pipeline` (`autoDispatch` rows) shows every decision: launched,
   held (and why), would-dispatch when the switch is off, merged.
-- GitHub auto-merge is off in the product repo; the board's `gh` is the machine's default login.
+- GitHub auto-merge is off in the product repo; branch protection on `main` — set and changed by hand by the
+  owner — requires the `pr-ci` check AND that branches are up to date before merging (`strict`), administrators
+  included, so no dispatcher — the board, a hand, another window — can merge a branch that has not been rebuilt on
+  the current `main`. The board's `gh` is the machine's default login.
 
 ## 11. Switch-on checklist
 

@@ -1066,3 +1066,38 @@ test('laneLauncher reads the fleet config for a free lane name', () => {
   assert.equal(laneLauncher(FLEET, 'lane-3'), null);
   assert.equal(laneLauncher({ hosts: {}, lanes: { 'lane-9': { host: 'x' } } }, 'x/lane-9'), null, 'a host without a launcher');
 });
+
+test('a red main holds every unit that branches from main', () => {
+  const mainCi = {
+    red: true,
+    createdAt: '2026-08-30T14:34:15Z',
+    url: 'https://github.com/acme/web/actions/runs/1',
+    headSha: '339ca1e1339ca1e1',
+  };
+  const mainFix = {
+    unit: 'U8', ticket: 1590, title: 'FIN-U8: repair main', branch: 'feat/fin-u8',
+    state: 'queued', deps: [], labels: ['main-fix'],
+  };
+  const s = sprint({
+    free: ['mac/lane-6', 'mac/lane-7', 'mac/lane-8'],
+    units: [...sprint().units, mainFix],
+  });
+  const sprints = new Map([['cs', s]]);
+
+  const red = planDispatchFull(cards, sprints, { fleet: FLEET, facts: { mainCi } });
+  assert.deepEqual(red.pairs.map(p => [p.unit.ticket, baseLine(p.base)]), [
+    [1583, 'feat/fin-u3a@b34d212d (PR #1602 of U3a)'],
+    [1590, 'main'],
+  ], 'a unit on a dependency PR head is untouched; a main-fix ticket repairs main from main');
+  assert.deepEqual(red.holds.filter(h => h.ticket === 1599).map(h => h.reason), [
+    'main is red since 2026-08-30T14:34:15Z (https://github.com/acme/web/actions/runs/1)',
+  ]);
+
+  const green = planDispatchFull(cards, sprints, { fleet: FLEET });
+  assert.deepEqual(green.pairs.map(p => p.unit.ticket), [1583, 1590, 1599]);
+  for (const facts of [{ mainCi: { red: false } }, { mainCi: null }, null]) {
+    const open = planDispatchFull(cards, sprints, { fleet: FLEET, facts });
+    assert.deepEqual(open.pairs.map(p => p.unit.ticket), [1583, 1590, 1599],
+      'unknown or green is never red — one GitHub hiccup does not stop the board');
+  }
+});

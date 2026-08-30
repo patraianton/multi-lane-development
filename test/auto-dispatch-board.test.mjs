@@ -438,3 +438,139 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
     await rm(toolsDir, { recursive: true, force: true });
   }
 });
+
+test('a held unit is not an idle lane', async () => {
+  // The only free lane is the light one and the only queued unit needs a
+  // build: the planner already says why, so the watch has nothing to alarm on.
+  const facts = {
+    ...TICKETED_FACTS,
+    lanes: [{ host: 'lanes-01', lane: 'lane-3', busy: false, since: null, branch: 'main' }],
+    unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
+  };
+  const board = await startBoard({
+    port: 15016,
+    config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+      WATCHTOWER_IDLE_GRACE_MIN: '1',
+      WATCHTOWER_IDLE_REPEAT_MIN: '1',
+    }),
+  });
+  try {
+    const cardId = await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    await writeFile(path.join(board.dir, 'idle-lanes.json'), JSON.stringify({
+      seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
+    }, null, 2));
+
+    const api = await until(board.base, body => (body.autoDispatch ?? []).some(row => row.unit === 'U1 #1516'
+      && row.state === 'held: only light lanes (no builds) are free: lanes-01/lane-3'));
+    assert.deepEqual(api.idleLanes, [], 'a unit the planner holds is not waiting with nothing in the way');
+    await new Promise(resolve => setTimeout(resolve, 900));
+    assert.doesNotMatch(board.output(), /idle lanes: ALARM/);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('the idle watch still alarms when the planner produced neither a pair nor a reason', async () => {
+  const facts = {
+    ...TICKETED_FACTS,
+    lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
+    unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
+  };
+  const board = await startBoard({
+    port: 15017,
+    config: { source: 'probe' },
+    files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+      WATCHTOWER_IDLE_GRACE_MIN: '1',
+      WATCHTOWER_IDLE_REPEAT_MIN: '1',
+    }),
+  });
+  try {
+    const cardId = await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
+    const old = new Date(Date.now() - 5 * 60_000).toISOString();
+    await writeFile(path.join(board.dir, 'idle-lanes.json'), JSON.stringify({
+      seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
+    }, null, 2));
+    await until(board.base, () => /idle lanes: ALARM[^\n]*U1 #1516/.test(board.output()));
+  } finally {
+    await board.stop();
+  }
+});
+
+test('main red holds develop, announces once, and resumes', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-main-red-tools-'));
+  let board;
+  try {
+    const ticket = {
+      number: 1516,
+      title: 'SALON-U1: first unit',
+      url: 'https://github.com/acme/web/issues/1516',
+      body: 'Part of #1515.\n\nBuild the first unit exactly as ticketed.',
+    };
+    const fakeGh = await executable(toolsDir, 'gh', `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'issue' && a[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});\n`);
+    const fakeSsh = await executable(toolsDir, 'ssh', '#!/usr/bin/env node\n');
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
+    const fleet = {
+      prompt: FLEET.prompt,
+      hosts: { mac: FLEET.hosts.mac },
+      lanes: { 'lane-6': FLEET.lanes['lane-6'] },
+    };
+    const mainCi = {
+      conclusion: 'failure', red: true,
+      createdAt: '2026-08-30T14:34:15Z',
+      url: 'https://github.com/acme/web/actions/runs/1',
+      headSha: '339ca1e1339ca1e1339ca1e1339ca1e1339ca1e1',
+    };
+    const redFacts = {
+      ...TICKETED_FACTS,
+      lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
+      unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
+      mainCi,
+    };
+    board = await startBoard({
+      port: 15018,
+      config: {
+        source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
+        hosts: { mac: { target: 'mock-mac' } },
+      },
+      files: { 'sprint-facts.json': redFacts, 'fleet-launch.json': fleet },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '300',
+        WATCHTOWER_GH: fakeGh,
+        WATCHTOWER_SSH: fakeSsh,
+        WATCHTOWER_SCP: fakeScp,
+      }),
+    });
+    await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
+
+    const held = 'held: main is red since 2026-08-30T14:34:15Z (https://github.com/acme/web/actions/runs/1)';
+    await until(board.base, body => (body.autoDispatch ?? []).some(row => row.unit === 'U1 #1516' && row.state === held));
+    await new Promise(resolve => setTimeout(resolve, 900));
+    await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')), 'a red main sends no lane task');
+    const redLine = /ALARM main is red since 2026-08-30T14:34:15Z/g;
+    assert.equal((board.output().match(redLine) ?? []).length, 1, 'one line per transition, not one per sweep');
+    assert.equal((board.output().match(/--- notifyOwner ---/g) ?? []).length, 1);
+
+    await writeFile(path.join(board.dir, 'sprint-facts.json'),
+      JSON.stringify({ ...redFacts, mainCi: { ...mainCi, conclusion: 'success', red: false } }, null, 2));
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    await readJsonUntil(journalFile, value => value?.dispatched?.['1516:develop:1']?.result === 'launched');
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal((board.output().match(/ALARM main is green again at 339ca1e1/g) ?? []).length, 1);
+    assert.equal((board.output().match(redLine) ?? []).length, 1);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
