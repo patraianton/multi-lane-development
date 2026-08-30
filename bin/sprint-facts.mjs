@@ -83,6 +83,13 @@ function sameBranch(a, b) {
   return Boolean(x) && x === y;
 }
 
+function sameHead(prefix, head) {
+  const short = String(prefix ?? '').toLowerCase();
+  const full = String(head ?? '').toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(short) && /^[0-9a-f]{7,40}$/.test(full)
+    && full.startsWith(short);
+}
+
 function unitOrder(u) {
   const n = Number(String(u.unit).slice(1));
   return Number.isFinite(n) && u.unit ? n : 9999;
@@ -115,8 +122,8 @@ function unitState(u) {
   if (u.accepted) return 'accepted';
   if (u.merged) return 'merged';
   if (u.pr) {
-    if (u.pr.verdict?.go === false) return 'pr no-go';
-    if (u.pr.verdict?.go === true) return 'pr go';
+    if (u.pr.verdictOnHead?.go === false) return 'pr no-go';
+    if (u.pr.verdictOnHead?.go === true) return 'pr go';
     if (u.pr.ci?.color === 'green') return 'pr green';
     if (u.pr.ci?.color === 'red') return 'pr red';
     return 'pr open';
@@ -233,8 +240,33 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       if (u.branch) {
         const open = prs.find(p => sameBranch(p.branch, u.branch));
         if (open) {
+          const verdicts = Array.isArray(open.verdicts) ? open.verdicts : [];
+          const suppliedVerdict = Object.hasOwn(open, 'verdictOnHead')
+            ? open.verdictOnHead
+            : [...verdicts, open.verdict].filter(Boolean).findLast(verdict => sameHead(verdict?.head, open.headSha));
+          const verdictOnHead = sameHead(suppliedVerdict?.head, open.headSha) ? suppliedVerdict : null;
+          const rawRounds = Number(open.verdictRounds);
+          const verdictRounds = Number.isInteger(rawRounds) && rawRounds >= 0
+            ? rawRounds
+            : (verdicts.length || (open.verdict ? 1 : 0));
           // headSha: the commit a dependent unit starts from (auto-dispatch).
-          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft), headSha: open.headSha ?? null, verdict: open.verdict ?? null };
+          u.pr = {
+            number: open.number,
+            url: open.url ?? '',
+            ci: open.ci ?? null,
+            draft: Boolean(open.draft),
+            headSha: open.headSha ?? null,
+            mergeable: open.mergeable ?? 'UNKNOWN',
+            labels: Array.isArray(open.labels) ? open.labels : [],
+            title: open.title ?? '',
+            body: open.body ?? '',
+            verdict: open.verdict ?? null,
+            verdicts,
+            // Old fact files can lack the head-specific field. Reconstruct it
+            // only from a headed verdict that names this PR's current head.
+            verdictOnHead,
+            verdictRounds,
+          };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.
           const jobs = ciJobs.get(open.number) ?? [];

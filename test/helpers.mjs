@@ -3,12 +3,38 @@
 // the live board (4878) is never touched.
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+// Test command fakes are JavaScript so they work on every board host. Windows
+// needs a PATHEXT-visible wrapper; elsewhere the Node shebang is executable.
+export async function executable(dir, name, text) {
+  if (process.platform === 'win32') {
+    const scriptName = `${name}.watchtower-fake.mjs`;
+    const script = path.join(dir, scriptName);
+    const wrapper = path.join(dir, `${name}.watchtower-fake.cmd`);
+    // The board puts the argv JSON in a per-child environment variable. That
+    // avoids cmd.exe reparsing bodies containing spaces, newlines or `&`.
+    const source = String(text).replace(/^#![^\r\n]*(?:\r?\n|$)/, '');
+    await writeFile(script, [
+      '#!/usr/bin/env node',
+      "const encoded = process.env.WATCHTOWER_FAKE_ARGS_B64 || '';",
+      "if (encoded) process.argv.push(...JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')));",
+      'delete process.env.WATCHTOWER_FAKE_ARGS_B64;',
+      source,
+    ].join('\n'));
+    await writeFile(wrapper, `@"${process.execPath}" "%~dp0${scriptName}"\r\n`);
+    return wrapper;
+  }
+  const file = path.join(dir, name);
+  await writeFile(file, text);
+  await chmod(file, 0o755);
+  return file;
+}
 
 // Start `node bin/watchtower.mjs` on the given port with a fresh state
 // directory. `config` becomes state/autopase-board.json — pass a function to

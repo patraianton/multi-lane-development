@@ -29,13 +29,14 @@ import {
 } from './serve.mjs';
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
-  sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
+  sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
 import {
-  planDispatchFull, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
+  planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
 } from './auto-dispatch.mjs';
+import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
@@ -143,6 +144,7 @@ const HERDR_CANDIDATES = [
 ];
 const SSH = process.env.WATCHTOWER_SSH || 'C:\\Windows\\System32\\OpenSSH\\ssh.exe';
 const GH = process.env.WATCHTOWER_GH || 'gh';
+const GIT = process.env.WATCHTOWER_GIT || 'git';
 
 const KNOWN_STATUSES = new Set(['blocked', 'done', 'working', 'idle', 'unknown']);
 
@@ -181,9 +183,37 @@ function trimPath(p) {
 // shared with the pipeline, so two parts of the board never race over a file.
 
 // Running an external command. Never throws — returns text or null.
+// Portable test fakes use a marked .cmd launcher on Windows. Pass their argv
+// through the child environment so cmd.exe never reparses PR bodies or other
+// arbitrary values. Ordinary binaries stay on execFile's shell-free path.
+function commandInvocation(bin, args, options) {
+  if (process.platform === 'win32' && /\.watchtower-fake\.cmd$/i.test(String(bin))) {
+    const command = `call "${String(bin).replaceAll('"', '""')}"`;
+    return {
+      bin: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${command}"`],
+      options: {
+        ...options,
+        windowsVerbatimArguments: true,
+        env: {
+          ...process.env,
+          ...(options.env ?? {}),
+          WATCHTOWER_FAKE_ARGS_B64: Buffer.from(JSON.stringify(args), 'utf8').toString('base64'),
+        },
+      },
+    };
+  }
+  return { bin, args, options };
+}
+
+function execExternal(bin, args, options, callback) {
+  const call = commandInvocation(bin, args, options);
+  execFile(call.bin, call.args, call.options, callback);
+}
+
 function runText(bin, args, timeout = 60000) {
   return new Promise((resolve) => {
-    execFile(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
+    execExternal(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
       (err, stdout) => {
         const out = String(stdout ?? '');
         if (err && !out.trim()) return resolve(null);
@@ -414,6 +444,9 @@ function lanesWithMemory(hostResults, staleSources) {
 
 const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
 const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
+  // The scheduler runs with no page open. Re-read its safety switch on this
+  // cadence so turning auto-dispatch off also stops merges within one sweep.
+  await cfgSource.tick();
   let facts;
   if (process.env.WATCHTOWER_SPRINT_FACTS_FILE) {
     const f = await readJsonSoft(process.env.WATCHTOWER_SPRINT_FACTS_FILE, {});
@@ -454,7 +487,8 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
   await offBoardSweep(facts);
   await idleLaneSweep(sprints, facts);
-  await autoDispatchSweep(sprints, facts);
+  const mergeRows = await mergeSweep(sprints);
+  await autoDispatchSweep(sprints, facts, mergeRows);
   return { sprints: sprints.size, ...sync };
 });
 
@@ -519,11 +553,12 @@ function dispatchNote(line) {
 // "busy" is exit 2 with a line, and the plan reads both. Never throws.
 function execCmd(bin, args, timeout = 60000) {
   return new Promise((resolve) => {
-    execFile(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
+    execExternal(bin, args, { maxBuffer: 32 * 1024 * 1024, windowsHide: true, timeout },
       (err, stdout, stderr) => {
+        const errText = String(stderr ?? '').trim();
         const out = `${stdout ?? ''}${stderr ? '\n' + stderr : ''}`.trim();
-        if (!err) return resolve({ code: 0, out });
-        resolve({ code: typeof err.code === 'number' ? err.code : -1, out: out || err.message });
+        if (!err) return resolve({ code: 0, out, stderr: errText });
+        resolve({ code: typeof err.code === 'number' ? err.code : -1, out: out || err.message, stderr: errText });
       });
   });
 }
@@ -557,35 +592,81 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   const outcome = await runLaunch(plan, (bin, args, timeout) => execCmd(bins[bin] ?? bin, args, timeout));
   return { ...outcome, taskFile: plan.taskFile, rules: rules.sha, specDir: localSpec };
 }
-async function autoDispatchSweep(sprints, facts) {
+
+async function reconcileReviewBadges(cards, sprints, ledger) {
+  for (const [cardId, sprint] of sprints ?? new Map()) {
+    if (Array.isArray(sprint?.stale) && sprint.stale.length) continue;
+    for (const unit of [...(sprint?.units ?? []), ...(sprint?.qaTickets ?? [])]) {
+      const pr = unit?.pr;
+      const head = String(pr?.headSha ?? '');
+      if (!head || unit?.merged || pr?.draft || pr?.verdictOnHead) continue;
+      const entry = ledger?.dispatched?.[`${unit.ticket}:review:${head.slice(0, 8)}`];
+      if (entry?.result !== 'launched' || String(entry.head ?? '').toLowerCase() !== head.toLowerCase()) continue;
+      const unitCard = cards.find(card => card?.parent === cardId
+        && Number(card.ticket) === Number(unit.ticket));
+      if (unitCard?.stage !== 'ci_pr') continue;
+      const atMs = Date.parse(entry.at ?? '');
+      if (!Number.isFinite(atMs)) continue;
+      const since = new Date(atMs).toISOString();
+      const round = Number(entry.round) || 1;
+      const by = String(entry.lane ?? '');
+      if (unitCard.review?.running && unitCard.review.round === round
+          && unitCard.review.since === since && unitCard.review.by === by) continue;
+      await setCardReview(unitCard.id, { running: true, round, since, by }, since);
+    }
+  }
+}
+
+async function autoDispatchSweep(sprints, facts, mergeRows = []) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
   const ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+  // A successful launch is durable before the card write. If the process or
+  // disk failed between them, the next sweep restores the board-owned badge.
+  await reconcileReviewBadges(cards, sprints, ledger);
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
-  const { pairs, holds } = planDispatchFull(cards, sprints, {
+  const reviews = planReviews({ cards, sprints, ledger, fleet, at });
+  const develop = planDispatchFull(cards, sprints, {
     ledger, at, fleet, facts,
+    takenLanes: reviews.map(pair => pair.lane),
     needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
   });
-  const rules = await readRules({ root: ROOT, exec: runText });
+  const pairs = [...reviews, ...develop.pairs];
+  const holds = develop.holds;
+  const rowsWithMerges = rows => {
+    const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
+    return [
+      ...mergeRows,
+      ...rows.filter(row => row.kind !== 'merge' || !transient.has(`${row.unit}:${row.base}`)),
+    ];
+  };
+  const rules = await readRules({
+    root: ROOT,
+    exec: (bin, args, timeout) => runText(bin === 'git' ? GIT : bin, args, timeout),
+  });
   if (!rules) {
     const rulesHolds = pairs.map(p => ({
       card: p.card, unit: p.unit.unit, ticket: p.unit.ticket, lane: p.lane,
+      kind: p.kind, round: p.round,
       reason: 'docs/RULES.md is not committed',
     }));
     setAutoDispatch({
       at, on: config.autoDispatch,
-      rows: dispatchRows({ pairs: [], holds: [...holds, ...rulesHolds], ledger, at }),
+      rows: rowsWithMerges(dispatchRows({ pairs: [], holds: [...holds, ...rulesHolds], ledger, at })),
     });
     return;
   }
   if (!config.autoDispatch) {
-    for (const p of pairs) dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)} (autoDispatch: true in the settings to send)`);
-    setAutoDispatch({ at, on: false, rows: dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' }) });
+    for (const p of pairs) {
+      const kind = p.kind === 'review' ? ` review R${p.round}` : '';
+      dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket}${kind} -> ${p.lane} from ${baseLine(p.base)} (autoDispatch: true in the settings to send)`);
+    }
+    setAutoDispatch({ at, on: false, rows: rowsWithMerges(dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' })) });
     return;
   }
   if (!fleet) {
     dispatchNote(`auto-dispatch: on, but ${FLEET_LAUNCH_FILE} is missing — nothing is sent (docs/fleet-launch.example.json)`);
-    setAutoDispatch({ at, on: true, rows: dispatchRows({ pairs, holds, ledger, at, state: 'held: no fleet-launch.json' }) });
+    setAutoDispatch({ at, on: true, rows: rowsWithMerges(dispatchRows({ pairs, holds, ledger, at, state: 'held: no fleet-launch.json' })) });
     return;
   }
   const repo = streamsSource.value?.repo ?? config.repo;
@@ -599,9 +680,163 @@ async function autoDispatchSweep(sprints, facts) {
     catch (e) { outcome = { result: 'failed', error: String(e?.message || e), ran: [] }; }
     next = recordDispatch(next, p, outcome, at);
     await writeJsonAtomic(DISPATCH_JSON, next);
+    if (p.kind === 'review' && outcome.result === 'launched') {
+      const unitCard = (await listPipelineCards()).find(card => card.parent === p.card.id && card.ticket === p.unit.ticket);
+      if (unitCard) {
+        await setCardReview(unitCard.id, { running: true, round: p.round, since: at, by: p.lane }, at);
+      }
+    }
     console.log(`auto-dispatch: ${outcome.result.toUpperCase()} ${label}${outcome.error ? ' — ' + outcome.error : ''}`);
   }
-  setAutoDispatch({ at, on: true, rows: dispatchRows({ pairs: [], holds, ledger: next, at }) });
+  setAutoDispatch({ at, on: true, rows: rowsWithMerges(dispatchRows({ pairs: [], holds, ledger: next, at })) });
+}
+
+// --------------------------------------------------------------- merge sweep
+
+const MERGE_ATTEMPTS = 3;
+const MERGE_ACTIVE_STAGES = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
+
+function mergeKey(ticket, head) {
+  return `${ticket}:merge:${String(head ?? '').slice(0, 8)}`;
+}
+
+function mergeTableRow(group, state) {
+  const first = group.items.find(item => item.eligible) ?? group.items[0];
+  return {
+    kind: 'merge',
+    card: first.card.title || first.card.id,
+    unit: `PR #${group.pr.number}`,
+    lane: '-',
+    base: String(group.pr.headSha ?? '').slice(0, 8) || '-',
+    state,
+  };
+}
+
+function mergeGroups(sprints, cards) {
+  const groups = new Map();
+  const cardById = new Map((cards ?? []).map(card => [card.id, card]));
+  for (const [cardId, sprint] of sprints ?? new Map()) {
+    const stored = cardById.get(cardId);
+    const card = { id: cardId, title: String(stored?.title ?? '') };
+    const sprintEligible = Boolean(stored && !stored.parent
+      && MERGE_ACTIVE_STAGES.has(stored.stage)
+      && !(Array.isArray(sprint?.stale) && sprint.stale.length));
+    for (const unit of [...(sprint?.units ?? []), ...(sprint?.qaTickets ?? [])]) {
+      const pr = unit?.pr;
+      if (!pr?.number || !pr?.headSha || pr.open === false) continue;
+      const unitCard = (cards ?? []).find(candidate => candidate?.parent === cardId
+        && Number(candidate.ticket) === Number(unit?.ticket));
+      const eligible = Boolean(sprintEligible && unitCard?.stage === 'ci_pr' && !unit?.merged);
+      const key = `${pr.number}:${pr.headSha}`;
+      if (!groups.has(key)) groups.set(key, { pr, items: [] });
+      groups.get(key).items.push({ card, unit, pr, eligible });
+    }
+  }
+  return [...groups.values()].flatMap(group => {
+    const eligible = group.items.find(item => item.eligible);
+    if (!eligible) return [];
+    // Prefer the active association's current facts if another sprint carries
+    // the same PR through a stale or pre-ticket association.
+    return [{ ...group, pr: eligible.pr }];
+  });
+}
+
+function mergeEntry(item, group, { at, result, error = null, attempts }) {
+  return {
+    card: item.card.id,
+    title: item.card.title,
+    unit: item.unit.unit || '',
+    ticket: item.unit.ticket,
+    branch: item.unit.branch || '',
+    lane: null,
+    host: null,
+    base: String(group.pr.headSha).slice(0, 8),
+    kind: 'merge',
+    round: null,
+    head: group.pr.headSha,
+    pr: group.pr.number,
+    at,
+    result,
+    error,
+    attempts,
+  };
+}
+
+// A single writer owns both launch and merge journal entries. This runs before
+// dispatch planning so the next journal read includes the result of the merge.
+async function mergeSweep(sprints) {
+  const at = new Date().toISOString();
+  const repo = streamsSource.value?.repo ?? config.repo;
+  const rows = [];
+  if (!repo) return rows;
+
+  let ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+  const cards = await listPipelineCards();
+  const plannedMergeGroups = mergeGroups(sprints, cards);
+  for (const group of plannedMergeGroups) {
+    const held = group.items.some(({ unit }) =>
+      (unit.labels ?? []).some(label => String(label).toLowerCase() === 'hold-merge'));
+    if (held) {
+      rows.push(mergeTableRow(group, 'hold-merge — the owner merges by hand'));
+      continue;
+    }
+    // A shared PR is one side effect. If any ticket association is parked,
+    // stale, already merged or outside automation, none of its siblings may
+    // authorize that side effect alone.
+    if (group.items.some(item => !item.eligible)) continue;
+
+    const decision = canMerge({ pr: group.pr, unit: group.items[0].unit });
+    if (!decision.ok) continue;
+
+    const keys = group.items.map(({ unit }) => mergeKey(unit.ticket, group.pr.headSha));
+    const previous = keys.map(key => ledger.dispatched?.[key]).filter(Boolean);
+    if (previous.some(entry => entry.result === 'merged')) continue;
+    const attempts = Math.max(0, ...previous.map(entry => Number(entry.attempts) || 0));
+    if (attempts >= MERGE_ATTEMPTS) {
+      // The terminal failure remains visible through its recent journal row.
+      continue;
+    }
+
+    if (!config.autoDispatch) {
+      const line = `would merge PR #${group.pr.number}`;
+      dispatchNote(`merge: ${line} at ${String(group.pr.headSha).slice(0, 8)} (autoDispatch: true in the settings to send)`);
+      rows.push(mergeTableRow(group, line));
+      continue;
+    }
+
+    const nextAttempt = attempts + 1;
+    const writeResult = async (result, error = null) => {
+      const dispatched = { ...(ledger.dispatched ?? {}) };
+      for (let i = 0; i < group.items.length; i++) {
+        dispatched[keys[i]] = mergeEntry(group.items[i], group, {
+          at, result, error, attempts: nextAttempt,
+        });
+      }
+      ledger = { ...ledger, dispatched };
+      await writeJsonAtomic(DISPATCH_JSON, ledger);
+    };
+
+    await writeResult('merging');
+    const fixed = bodyFix(group.pr.body);
+    let outcome = { code: 0, out: '' };
+    if (fixed.changed) {
+      outcome = await execCmd(bins.gh,
+        ['pr', 'edit', String(group.pr.number), '--repo', repo, '--body', fixed.body], 60000);
+    }
+    if (outcome.code === 0) {
+      outcome = await execCmd(bins.gh,
+        ['pr','merge', String(group.pr.number), '--repo', repo, '--squash',
+          '--match-head-commit', String(group.pr.headSha), '--subject', String(group.pr.title ?? ''), '--body', fixed.body],
+        90000);
+    }
+    if (outcome.code === 0) {
+      await writeResult('merged');
+      console.log(`${at} merge: PR #${group.pr.number} squash-merged at ${group.pr.headSha}`);
+    } else {
+      await writeResult('merge-failed', outcome.stderr || outcome.out || `exit ${outcome.code}`);
+    }
+  }
+  return rows;
 }
 
 // ------------------------------------------------------ off the board
@@ -897,35 +1132,35 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = streamsSource.value?.repo ?? config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
-    '--json', 'number,title,headRefName,headRefOid,isDraft,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
+    '--json', 'number,title,body,headRefName,headRefOid,isDraft,mergeable,labels,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
   const list = JSON.parse(out);
-  return list.map(p => ({
-    number: p.number,
-    title: p.title,
-    branch: p.headRefName,
-    headSha: p.headRefOid ?? null,
-    draft: p.isDraft,
-    url: p.url,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-    author: p.author?.login ?? null,
-    ci: ciColor(p.statusCheckRollup),
-    verdict: prVerdict(p.comments),
-  }));
+  return list.map(p => {
+    const headSha = p.headRefOid ?? null;
+    const verdictFacts = prVerdictFacts(p.comments, headSha);
+    return {
+      number: p.number,
+      title: p.title ?? '',
+      body: p.body ?? '',
+      branch: p.headRefName,
+      headSha,
+      draft: p.isDraft,
+      mergeable: p.mergeable ?? 'UNKNOWN',
+      labels: (p.labels ?? []).map(label => String(label?.name ?? label)),
+      url: p.url,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      author: p.author?.login ?? null,
+      ci: { ...ciColor(p.statusCheckRollup), headSha },
+      ...verdictFacts,
+    };
+  });
 });
 
 // The review verdict is the first line of a PR comment, plain text:
 // "R1 — GO" / "R2 — NO-GO" (PROGRAM-ORCHESTRATION §6). The last one stands.
 export function prVerdict(comments) {
-  let v = null;
-  for (const c of comments ?? []) {
-    const first = String(c?.body ?? '').split(/\r?\n/)[0].trim();
-    const m = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(first);
-    if (!m) continue;
-    v = { round: Number(m[1]), go: m[2].toUpperCase() === 'GO', at: c.createdAt ?? null };
-  }
-  return v;
+  return latestPrVerdict(comments);
 }
 
 // The CI slot pool: the repo's self-hosted runners — who is online, who is
