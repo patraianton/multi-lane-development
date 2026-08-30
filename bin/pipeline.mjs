@@ -162,7 +162,7 @@ export function setIdleLanes(next) {
 
 // Auto-dispatch (decision 16): what the board is about to send to a free
 // lane — or would send, while autoDispatch is false in settings — and what the
-// journal says happened lately. rows: [{ card, unit, lane, base, state }].
+// journal says happened lately. rows: [{ kind, card, unit, lane, base, state }].
 let AUTO_DISPATCH = { at: null, on: false, rows: [] };
 export function setAutoDispatch(next) {
   AUTO_DISPATCH = {
@@ -299,8 +299,8 @@ function normCard(raw) {
   // Omit an empty notified map so cards that never sent look like they did
   // before this wave (byte-identical when Telegram is off).
   if (Object.keys(notified).length) card.notified = notified;
-  // The live review badge (decision 20): the stream window says a reviewer is
-  // reading the PR head; the board clears it on the verdict. Rounds already
+  // The live review badge (decision 20): the board says a reviewer is reading
+  // the PR head and clears it on the verdict. Rounds already
   // read are filed in `reviews` — the column's "review avg" is their mean.
   const rawReview = src.review && typeof src.review === 'object' && !Array.isArray(src.review) ? src.review : null;
   if (rawReview && (rawReview.running || rawReview.since)) {
@@ -859,13 +859,21 @@ async function commentCard(body) {
 // round — a new round number restarts its clock; { running: false } closes it
 // and files the round in card.reviews. The board closes it by itself when a
 // verdict newer than `since` lands on the PR (syncSprintUnits).
-function setReview(card, body, nowIso) {
+function setReview(card, body, nowIso, forceFresh = false) {
   const running = body.running === undefined ? true : Boolean(body.running);
   const round = body.round !== undefined ? (int(body.round) || null) : (card.review?.round ?? null);
   const by = body.by !== undefined ? str(body.by, LIMIT.author).trim() : (card.review?.by ?? '');
   if (!running) { closeReview(card, nowIso); return; }
-  const fresh = !card.review?.running || (round && card.review.round !== round);
+  const fresh = forceFresh || !card.review?.running || (round && card.review.round !== round);
   card.review = { running: true, round, since: fresh ? nowIso : (card.review.since ?? nowIso), by };
+}
+
+// The scheduler opens the same badge the HTTP update used to open from a
+// window. Supplying the launch timestamp keeps the badge clock tied to the
+// review task even when copying and starting the task took a few seconds.
+export async function setCardReview(id, review, at = null) {
+  const nowIso = isoOr(review?.since, isoOr(at, new Date().toISOString()));
+  return editCard(id, card => { setReview(card, review ?? {}, nowIso, true); });
 }
 
 function closeReview(card, untilIso) {
@@ -1261,10 +1269,18 @@ function unitPlan(cards, sprints) {
       // spoken, whichever way (decision 20).
       const head = str(u.pr?.headSha, LIMIT.slotish).trim();
       const legacyVerdict = u.pr?.verdict ?? null;
-      const onHeadVerdict = u.pr?.verdictOnHead ?? null;
-      const verdict = onHeadVerdict
-        ?? (!head || sameHead(legacyVerdict?.head, head) ? legacyVerdict : null);
-      const verdictMatchesHead = Boolean(onHeadVerdict) || !verdict?.head || !head || sameHead(verdict.head, head);
+      // Older stored/test facts had only `verdict`; live T2 facts always carry
+      // `verdictOnHead` (including null), so a verdict on a stale head can
+      // neither clear the badge nor count as a failure.
+      const hasVerdictOnHead = Boolean(u.pr && Object.hasOwn(u.pr, 'verdictOnHead'));
+      const verdict = hasVerdictOnHead
+        ? u.pr.verdictOnHead
+        : (!head || sameHead(legacyVerdict?.head, head) ? legacyVerdict : null);
+      // T2 has already validated the head-specific value with prefix-aware SHA
+      // matching. Legacy fixtures are checked here with the same rule.
+      const verdictMatchesHead = hasVerdictOnHead
+        ? Boolean(verdict)
+        : (!verdict?.head || !head || sameHead(verdict.head, head));
       const verdictAt = verdictMatchesHead ? (verdict?.at ?? null) : null;
       const reviewDone = Boolean(card?.review?.running && verdictAt && card.review.since
         && Date.parse(verdictAt) > Date.parse(card.review.since));
@@ -1567,7 +1583,8 @@ async function buildAgentPipeline(cards, full, port) {
       since: fmtDur(f.ageMs ?? 0),
     })),
     autoDispatch: AUTO_DISPATCH.rows.map(r => ({
-      card: clipText(r.card || '-', full), unit: r.unit || '-', lane: r.lane || '-', base: r.base || '-', state: clipText(r.state || '-', full),
+      kind: r.kind || 'develop', card: clipText(r.card || '-', full), unit: r.unit || '-',
+      lane: r.lane || '-', base: r.base || '-', state: clipText(r.state || '-', full),
     })),
   };
   if (full) {
@@ -1594,7 +1611,7 @@ function renderToonPipeline(v) {
       v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
     toonTable('idle-lanes', v.idleLanes, ['card', 'free', 'queued', 'since'],
       'no assigned lane sits free while a unit waits'),
-    toonTable('auto-dispatch', v.autoDispatch, ['card', 'unit', 'lane', 'base', 'state'],
+    toonTable('auto-dispatch', v.autoDispatch, ['kind', 'card', 'unit', 'lane', 'base', 'state'],
       `nothing to dispatch (auto-dispatch ${s.autoDispatchOn ? 'on' : 'off — dry-run'})`),
   ];
   if (v.specs) out.push(toonTable('specs', v.specs, ['id', 'spec'], 'no card has a spec'));
@@ -1606,7 +1623,7 @@ function renderToonPipeline(v) {
   }
   help.push('stages: spec, grilled, ticketed, development, local_check, ci_pr, merged, done;'
     + ' ci_pr — the PR is open: CI runs and the reviewer reads the same head at the same time (verdict R<n> — GO / NO-GO as the first line of a PR comment), then the merge; a NO-GO sends the card back to development for the fix round;'
-    + ' a stream window turns the review badge on when it starts a reader (POST /pipeline/card/update { id, review: { running: true, round: N, by } }) — the board turns it off on the verdict;'
+    + ' the board turns the review badge on when it starts a reader and turns it off on the verdict;'
     + ' merged — on main, the ticket not yet closed by a person after the merge (the PR\'s own auto-close does not count); a unit is done once it is,'
     + ' a sprint once every unit is, its qa-labelled tickets are closed and the umbrella is closed; QA itself is one run per sprint before done, not a stage — its findings are qa-labelled tickets that travel the road like units;'
     + ' stuck — three failures in a row, waiting for a human');
@@ -1622,7 +1639,8 @@ function renderToonPipeline(v) {
     + ' after a short grace the board alarms the owner and the CTO window');
   help.push('auto-dispatch: the board itself sends a startable unit to a free assigned lane'
     + ' (task file = ticket + committed role rules + base, spec bundle shipped, launcher from the fleet)'
-    + ' — state "would dispatch" while autoDispatch is false in settings, else dispatched/failed/held'
+    + ' — review rows run before develop rows, and merge rows show the board\'s merge decision;'
+    + ' state "would dispatch" while autoDispatch is false in settings, else dispatched/failed/held'
     + ' from the journal state/auto-dispatch.json');
   help.push('?format=json — the same shape as plain JSON');
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));

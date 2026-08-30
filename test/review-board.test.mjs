@@ -1,0 +1,227 @@
+// A successful reviewer launch is owned end to end by the board: head-keyed
+// journal entry, reviewer task file, and the live badge on the unit card.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { executable, getJson, postJson, startBoard } from './helpers.mjs';
+
+const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
+const UMBRELLA = 'https://github.com/acme/web/issues/1600';
+const FLEET = {
+  prompt: 'Read {taskFile} and do it whole',
+  hosts: { mac: { kitchen: '~/kitchens/web', launch: 'maclane {n} "{prompt}"' } },
+  lanes: {
+    'lane-6': { host: 'mac', n: 6 },
+    'lane-7': { host: 'mac', n: 7 },
+  },
+};
+const FACTS = {
+  lanes: [
+    { host: 'mac', lane: 'lane-6', busy: false, branch: 'main' },
+    { host: 'mac', lane: 'lane-7', busy: false, branch: 'main' },
+  ],
+  prs: [{
+    number: 1632,
+    url: 'https://github.com/acme/web/pull/1632',
+    branch: 'feat/1624',
+    headSha: HEAD,
+    title: 'Review fixture #3',
+    body: 'Ticket: #1624',
+    draft: false,
+    mergeable: 'MERGEABLE',
+    labels: [],
+    ci: { color: 'green', text: 'CI green (1)', headSha: HEAD },
+    verdict: null,
+    verdicts: [],
+    verdictOnHead: null,
+    verdictRounds: 0,
+  }],
+  mergedPrs: [],
+  openIssues: [],
+  unitIssues: {
+    1600: [{
+      number: 1624,
+      title: 'UNIT-U1: reviewer fixture',
+      url: 'https://github.com/acme/web/issues/1624',
+      state: 'OPEN',
+      branch: 'feat/1624',
+      labels: [],
+    }],
+  },
+  ciJobs: {},
+  ciRunners: [],
+  umbrellaStates: { 1600: 'OPEN' },
+  staleSources: [],
+};
+
+async function until(base, ready, ms = 8000) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    last = (await getJson(base, '/api/pipeline?format=json')).body;
+    if (ready(last)) return last;
+    if (Date.now() > deadline) throw new Error(`review fixture did not settle in ${ms}ms: ${JSON.stringify(last?.autoDispatch ?? [])}`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
+
+async function createTicketed(board) {
+  const made = await postJson(board.base, '/pipeline/card/create', { title: 'REVIEW sprint', spec: 'fixture' });
+  const id = made.body.card.id;
+  await postJson(board.base, '/pipeline/card/move', { id, to: 'grilled' });
+  await postJson(board.base, '/pipeline/card/update', { id, links: { ticket: UMBRELLA } });
+  await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' });
+  return id;
+}
+
+test('the board launches a reviewer off the writer lane and sets the unit review badge', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-review-tools-'));
+  let board;
+  try {
+    const ticket = {
+      number: 1624,
+      title: 'UNIT-U1: reviewer fixture',
+      url: 'https://github.com/acme/web/issues/1624',
+      body: 'Part of #1600.\n\nReview this exact head.',
+    };
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      `if (args[0] === 'issue' && args[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});`,
+    ].join('\n'));
+    const fakeSsh = await executable(toolsDir, 'ssh', '#!/usr/bin/env node\n');
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
+    const at = new Date().toISOString();
+    const ledger = {
+      dispatched: {
+        '1624:develop:1': {
+          card: 'old', title: 'REVIEW sprint', unit: 'U1', ticket: 1624,
+          branch: 'feat/1624', lane: 'mac/lane-6', host: 'mac', base: 'main',
+          kind: 'develop', round: 1, head: null, at, result: 'launched', error: null,
+        },
+      },
+    };
+    board = await startBoard({
+      port: 15015,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', hosts: { mac: { target: 'mock-mac' } } },
+      files: {
+        'sprint-facts.json': FACTS,
+        'fleet-launch.json': FLEET,
+        'auto-dispatch.json': ledger,
+      },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+        WATCHTOWER_SSH: fakeSsh,
+        WATCHTOWER_SCP: fakeScp,
+      }),
+    });
+    const sprintId = await createTicketed(board);
+    const api = await until(board.base, body => {
+      const card = body.cards.find(candidate => candidate.parent === sprintId && candidate.ticket === 1624);
+      return card?.review?.running === true ? true : false;
+    });
+    const unitCard = api.cards.find(card => card.parent === sprintId && card.ticket === 1624);
+    assert.deepEqual(
+      { running: unitCard.review.running, round: unitCard.review.round, by: unitCard.review.by },
+      { running: true, round: 1, by: 'mac/lane-7' },
+    );
+    assert.ok(unitCard.review.since);
+
+    const journal = JSON.parse(await readFile(path.join(board.dir, 'auto-dispatch.json'), 'utf8'));
+    assert.deepEqual(
+      [journal.dispatched['1624:review:abc12345'].result, journal.dispatched['1624:review:abc12345'].lane],
+      ['launched', 'mac/lane-7'],
+    );
+    assert.ok(api.autoDispatch.some(row => row.kind === 'review R1'
+      && row.unit === 'U1 #1624' && row.lane === 'mac/lane-7'));
+
+    const task = await readFile(path.join(board.dir, 'auto-dispatch', 'TASK-1624-REVIEW-R1.md'), 'utf8');
+    assert.match(task, /^Role: reviewer$/m);
+    assert.match(task, new RegExp(`^Head: ${HEAD}  Round: R1$`, 'm'));
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a launched review journal repairs a missing board badge', async () => {
+  const at = '2026-08-30T10:00:00.000Z';
+  const ledger = {
+    dispatched: {
+      '1624:review:abc12345': {
+        card: 'old', title: 'REVIEW sprint', unit: 'U1', ticket: 1624,
+        branch: 'feat/1624', lane: 'mac/lane-7', host: 'mac', base: 'main',
+        kind: 'review', round: 1, head: HEAD, at, result: 'launched', error: null,
+      },
+    },
+  };
+  const board = await startBoard({
+    port: 15010,
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web' },
+    files: { 'sprint-facts.json': FACTS, 'auto-dispatch.json': ledger },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '200',
+    }),
+  });
+  try {
+    const sprintId = await createTicketed(board);
+    const api = await until(board.base, body => {
+      const card = body.cards.find(candidate => candidate.parent === sprintId && candidate.ticket === 1624);
+      return card?.review?.running === true;
+    });
+    const unitCard = api.cards.find(card => card.parent === sprintId && card.ticket === 1624);
+    assert.deepEqual(unitCard.review, { running: true, round: 1, since: at, by: 'mac/lane-7' });
+    assert.deepEqual(JSON.parse(await readFile(path.join(board.dir, 'auto-dispatch.json'), 'utf8')), ledger);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('stale PR facts never restore a review badge from the journal', async () => {
+  const at = '2026-08-30T10:00:00.000Z';
+  const entry = {
+    card: 'old', title: 'REVIEW sprint', unit: 'U1', ticket: 1624,
+    branch: 'feat/1624', lane: 'mac/lane-7', host: 'mac', base: 'main',
+    kind: 'review', round: 1, head: HEAD, at, result: 'launching', error: null,
+  };
+  const board = await startBoard({
+    port: 15011,
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web' },
+    files: {
+      'sprint-facts.json': FACTS,
+      'auto-dispatch.json': { dispatched: { '1624:review:abc12345': entry } },
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '200',
+    }),
+  });
+  try {
+    const sprintId = await createTicketed(board);
+    await until(board.base, body => body.cards.some(card => card.parent === sprintId
+      && card.ticket === 1624 && card.stage === 'ci_pr'));
+
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify({
+      ...FACTS,
+      staleSources: ['pull-requests'],
+    }));
+    await until(board.base, body => body.cards.find(card => card.id === sprintId)?.sprint?.stale?.includes('pull-requests'));
+    await writeFile(path.join(board.dir, 'auto-dispatch.json'), JSON.stringify({
+      dispatched: { '1624:review:abc12345': { ...entry, result: 'launched' } },
+    }));
+
+    const api = await until(board.base, body => body.autoDispatch?.some(row => row.kind === 'review R1'
+      && String(row.state).startsWith('launched')));
+    const unitCard = api.cards.find(card => card.parent === sprintId && card.ticket === 1624);
+    assert.notEqual(unitCard.review?.running, true);
+  } finally {
+    await board.stop();
+  }
+});

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { startBoard, postJson, getJson } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
+const REVIEW_HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 
 const FACTS = {
   lanes: [
@@ -19,7 +20,7 @@ const FACTS = {
     { host: 'mac', lane: 'lane-a', busy: true, since: '03:10 ago', branch: 'feat/salon-u06-band', task: 'TASK-1523.md', check: { pid: '4242', since: '02:40 ago', cmd: 'node scripts/ci-local.mjs' } },
   ],
   prs: [
-    { number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', ci: { color: 'green', text: 'CI green (5)' } },
+    { number: 1540, url: 'https://github.com/acme/web/pull/1540', branch: 'feat/salon-u01-readiness', headSha: REVIEW_HEAD, ci: { color: 'green', text: 'CI green (5)', headSha: REVIEW_HEAD } },
     // Nobody's PR: no card carries its branch — off the board.
     { number: 1599, title: 'stray fix', url: 'https://github.com/acme/web/pull/1599', branch: 'fix/stray', ci: { color: 'none', text: 'no checks' } },
   ],
@@ -162,7 +163,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.deepEqual(listed.body.cards.find(c => c.id === by.U1.id).review.round, 1);
     const judged = {
       ...FACTS,
-      prs: FACTS.prs.map(p => p.number === 1540 ? { ...p, verdict: { round: 1, go: true, at: '2030-01-01T00:00:00Z' } } : p),
+      prs: FACTS.prs.map(p => p.number === 1540 ? { ...p, verdict: { round: 1, go: true, head: 'abc12345', at: '2030-01-01T00:00:00Z' } } : p),
     };
     await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(judged));
     const dark = await until(board.base, d => d.cards.find(c => c.id === by.U1.id)?.review?.running === false);
@@ -313,7 +314,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
 test('a red check on the current head counts once and records its reason', async () => {
   const green = failureFacts({ ci: { color: 'green', text: 'CI green (2)' } });
   const board = await startBoard({
-    port: 15001,
+    port: 15012,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': green },
     env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),
@@ -387,7 +388,7 @@ test('a red check on the current head counts once and records its reason', async
 test('a newer QUESTION comment sticks the unit with its first line and is ignored after unstuck', async () => {
   const facts = failureFacts();
   const board = await startBoard({
-    port: 15002,
+    port: 15013,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': facts },
     env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),

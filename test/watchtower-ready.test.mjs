@@ -89,6 +89,9 @@ test('the watchtower persists one readyAt notification and clears it for a later
     assert.equal(count(board.output(), '--- notifyReady ---'), 1);
     assert.match(board.output(), new RegExp(`Sprint Payments sprint is ready for acceptance — ${UMBRELLA}`));
 
+    const accepted = await postJson(board.base, '/pipeline/card/move', { id, to: 'done' });
+    assert.equal(accepted.body.card.stage, 'done', 'acceptance may finish before a later QA finding is observed');
+
     const laterFinding = {
       number: 1592, title: 'QA: found after the walk', url: 'https://github.com/acme/web/issues/1592',
       state: 'CLOSED', closedAt: '2026-08-30T11:10:00Z', branch: 'feat/1592',

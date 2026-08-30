@@ -1,0 +1,145 @@
+# BOARD — how the board works and how to run it
+
+The board is one Node process (`bin/watchtower.mjs`, no dependencies, Node ≥ 22) on the owner's Windows PC,
+`http://127.0.0.1:4878`. It is the scheduler of a coding-agent fleet: it reads facts (lanes, PRs, tickets),
+moves cards by those facts, puts work on free lanes, starts reviews, merges, counts failures and alarms the
+owner. The design and its reasons: `docs/specs/2026-08-30-board-is-the-scheduler.md`. The rules every agent
+gets: `docs/RULES.md`. The lanes: `docs/FLEET.md`. The HTTP API: `docs/API.md`.
+
+## 1. Who exists
+
+| Who | Does |
+|---|---|
+| the board | everything below, every 30 seconds, by itself |
+| 8 Codex lanes | one task per run: `lane` (write a ticket), `reviewer` (read one PR head), `fixer` (one round on an open PR), `qa` (walk production) |
+| the owner and his MLD session | spec intake (grill → questions page → tickets), the sprint order, stuck cards, the acceptance page |
+| the partner | writes specs, answers the questions page, accepts on one page per sprint |
+
+Nobody but the board starts a lane, a review or a merge. There is no orchestrator window.
+
+## 2. The road
+
+`spec → grilled → ticketed → development → local_check → ci_pr → merged → done`, plus `stuck` = needs the owner.
+
+- `spec`, `grilled`, `ticketed`: paper work, the MLD session. The board rings the partner group when a
+  questions page is linked (`links.artifact`) and marks the card answered when the page is ended.
+- From `ticketed` the board runs everything: unit cards (one per ticket referencing the umbrella) move by facts —
+  lane busy → `development`, local check → `local_check`, PR open → `ci_pr`, PR merged → `merged`, ticket closed
+  after the merge → `done`. The sprint card follows its units.
+- The board's work ends at **ready for acceptance** (every unit merged, every `qa` ticket merged or closed, the
+  latest QA walk closed with no finding after it): one Telegram line to the owner.
+
+## 3. Lane tasks and their proofs
+
+| Kind | The board starts it when | Role | Proof the board waits for |
+|---|---|---|---|
+| develop | a ticket is open, has no lane and no PR, its dependencies are merged, closed or on one open PR | `lane` (`qa-run` label → `qa`, Mac only, merged dependencies only) | an open PR on the ticket's branch (`qa-run`: the ticket closed) |
+| review | an open, non-draft PR has no verdict on its current head | `reviewer`, another lane than the writer's | a comment `R<n> — GO|NO-GO` + `head <sha>` for that head |
+| fix | the PR head has `NO-GO`, a red check, or GitHub says `CONFLICTING` | `fixer` | a new head on the PR |
+
+Queue order when lanes are few: **review, fix, develop**; sprints top to bottom as the owner orders the cards,
+units in umbrella order. A QA finding is a ticket, so it is develop.
+
+Branch = the ticket's `Branch:` line, else `feat/<ticket number>`. Base = `origin/main`, or the head of the one
+dependency's open PR. An existing branch is continued from.
+
+A ticket labelled `hold-merge` is never merged by the board (migrations, schema, auth, deploy/env, payments, the
+scraper — the cutter labels them); the owner merges it by hand. A ticket labelled `no-build` may go to the light
+lane (lane-3).
+
+## 4. The task file
+
+`TASK-<ticket>[-REVIEW-R<n>|-FIX-R<n>].md` in the lane's kitchen (a copy in `state/auto-dispatch/`): a header
+(sprint, umbrella, ticket, `Lane:`, `Branch:`, `Base:`, `Role:`, `Head:`/`Round:` for reviewer and fixer,
+`Check:`, `Rules: docs/RULES.md @ <sha>`, `Spec bundle:`), then the `common` section and the role's section of
+`docs/RULES.md` as committed in this repo (`git show HEAD:docs/RULES.md`; the sha is the last commit that touched
+the file), then the ticket verbatim, then — for the fixer — the verdict verbatim, the red check names, or
+"merge origin/main". No committed `docs/RULES.md` → nothing is dispatched and the table says so. The lanes never
+see the working copy; edit the rules, commit, and the next task carries the new sha.
+
+## 5. Review and merge
+
+- The verdict is plain text in a PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
+  the head line, or with another head, it is not a verdict.
+- The board merges with `gh pr merge --squash` when the check is green on the exact head, GO is on that head,
+  the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge` label. Before merging it rewrites
+  `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not accepted.
+- `NO-GO`, a red check or a conflict → a fix task on the same branch; then the reviewer runs again on the new head.
+
+## 6. Failure, stuck, the owner
+
+One counter per card, `consecutiveFails`: +1 on `NO-GO`, on a red check, and on a lane the board sent that is
+free again without its proof. The task re-enters the queue as the next round, another host first. The third
+failure in a row → `stuck`. A comment on the ticket whose first line starts with `QUESTION` → `stuck` at once.
+`stuck` → one Telegram line to the owner. To return the card:
+
+```
+POST /pipeline/card/unstuck { "id": "<card id>" }     # the counter resets, the facts place the card
+```
+
+(or move it from the page). Fix the ticket first — the board will send it again.
+
+## 7. QA and acceptance
+
+- The QA round-1 ticket is cut with the sprint from `docs/QA-TICKET.md` (label `qa-run`, depends on every unit).
+  When every unit is merged the board sends it to a Mac lane (a real browser on production). The walker files
+  findings as `qa` tickets (the full road: local check, PR, review, board merge) and, if there were any, the
+  round-2 ticket. Round 3 with findings → `QUESTION` → stuck.
+- Ready for acceptance → the owner's MLD session writes one Lavish page ("what was done, how to check",
+  *accepted / remarks*), publishes it with `node bin/lavish-publish.mjs publish <html> --card <id>`; the board
+  rings the partner group and marks the answer. *Accepted* → close the tickets and the umbrella; the cards reach
+  `done` by the facts.
+
+## 8. Messages
+
+To the owner (private chat with the bot): `stuck`, idle lanes (a free lane with a non-empty queue for 5 minutes),
+ready for acceptance. To the partner group: a page is ready; a sprint is done. The board only sends; nothing polls
+the bot from the board.
+
+## 9. Settings
+
+`state/autopase-board.json` (re-read every 30 s):
+
+```
+autoDispatch: true                      — the switch; false = the board only says what it would do
+telegram: { botToken, chatId, ownerChatId }   — the group and the owner's private chat; no ownerChatId = no dispatch
+check: "bash ../ci-local-and-stamp.sh"  — the default full local check written into task files
+repo, project, specsDir, hosts, lanes, ciSlots — as before (FLEET.md)
+```
+
+`state/fleet-launch.json`: per host `kitchen`, `launch` (`hzlane {n} "{prompt}"` / `maclane {n} "{prompt}"`),
+optional `shell`, `check`, `browser: true` (the Mac — QA walks); per lane `host`, `n`, optional `noBuilds`,
+`reserved`. The lane launchers on the servers run Codex with `model_reasoning_effort=ultra` and five helper
+threads (`/usr/local/bin/hzlane` on codex-dev and hostinger, `~/.local/bin/maclane` on the Mac).
+
+## 10. Running it
+
+- One process. Autostart: a Windows Scheduled Task at logon running `bin/watchtower-hidden.vbs` (no console
+  window). A second listener on 4878 is a bug; a second board on another port with the same `state/` is two
+  dispatchers.
+- The journal of every launch, review and merge: `state/auto-dispatch.json` (keys `<ticket>:<kind>:<round>`);
+  the task files: `state/auto-dispatch/`. The log: `state/board.log`, every line with a time.
+- The dispatch table on the page and in `GET /api/pipeline` (`autoDispatch` rows) shows every decision: launched,
+  held (and why), would-dispatch when the switch is off, merged.
+- GitHub auto-merge is off in the product repo; the board's `gh` is the machine's default login.
+
+## 11. Switch-on checklist
+
+1. `npm test` green on `main`; `docs/RULES.md` committed.
+2. Exactly one board process (`netstat -ano | findstr :4878`); the Scheduled Task registered.
+3. `state/autopase-board.json`: `autoDispatch: true`, the `telegram` block, `check`;
+   `state/fleet-launch.json`: `browser: true` on the Mac host.
+4. Product repo: auto-merge off; no PR armed; the canary sprint and stale tickets parked (label `wave-next` is
+   ignored by the board) so the off-board list is empty.
+5. Smoke test (spec §14): a throw-away umbrella + one trivial ticket in the product repo → the sprint card in
+   `ticketed` → within a minute a lane is launched → the PR opens → a reviewer lane is launched → `R1 — GO` +
+   `head` → the board merges → the card is `merged`; `state/auto-dispatch.json` holds exactly `<t>:develop:1`,
+   `<t>:review:<head8>`, `<t>:merge:<head8>`. Then set `autoDispatch: false` and see the rows turn to
+   "would dispatch".
+
+## 12. What was retired on 2026-08-30
+
+The CTO window and the stream window; the hook queue typed into windows; `bin/dev-launch.mjs`, `bin/ci-slot.mjs`,
+`bin/hooks.mjs`, `bin/stream-watch.mjs`; the hand-written `BRIEF-COMMON*.md` in spec folders; the env switch
+`WATCHTOWER_AUTO_DISPATCH`; the Telegram buttons and update loop. The old contracts are in `docs/history/` as
+sources, not norms.

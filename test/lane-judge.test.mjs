@@ -114,6 +114,21 @@ test('review with a countable verdict on the reviewed head is judged ok', () => 
   assert.deepEqual(result.retries, []);
 });
 
+test('review proof remains countable after the PR moves to the merged snapshot', () => {
+  const record = entry({ kind: 'review', head: HEAD });
+  const input = facts({
+    record,
+    prs: [{
+      branch: 'feat/101', headSha: HEAD, mergedAt: '2026-08-30T12:01:30.000Z',
+      verdictOnHead: { round: 1, go: true, head: HEAD, body: `R1 — GO\nhead ${HEAD}` },
+    }],
+  });
+  input.journal.dispatched = { '101:review:abc12345': record };
+
+  const result = judgeLanes(input);
+  assert.equal(result.journal.dispatched['101:review:abc12345'].judged, 'ok');
+});
+
 test('fix with the same PR head is no-proof', () => {
   const record = entry({ kind: 'fix', head: HEAD });
   const input = facts({ record, prs: [{ branch: 'feat/101', headSha: HEAD }] });
@@ -126,6 +141,22 @@ test('fix with the same PR head is no-proof', () => {
     [result.retries[0].key, result.retries[0].head, result.retries[0].avoidHost],
     ['101:fix:2', HEAD, 'host-a'],
   );
+});
+
+test('fix proof remains visible after the changed head is merged', () => {
+  const changedHead = 'def6789000000000000000000000000000000000';
+  const record = entry({ kind: 'fix', head: HEAD });
+  const input = facts({
+    record,
+    prs: [{
+      branch: 'feat/101', headSha: changedHead, mergedAt: '2026-08-30T12:01:30.000Z',
+    }],
+  });
+  input.journal.dispatched = { '101:fix:abc12345': record };
+
+  const result = judgeLanes(input);
+  assert.equal(result.journal.dispatched['101:fix:abc12345'].judged, 'ok');
+  assert.match(result.judgments[0].reason, new RegExp(changedHead));
 });
 
 test('qa-run is judged ok when its ticket is closed', () => {

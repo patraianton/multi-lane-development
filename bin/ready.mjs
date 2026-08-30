@@ -52,7 +52,7 @@ export function readyForAcceptance(sprint) {
   const findings = qaTickets.filter(ticket => !isQaRun(ticket));
 
   if (!units.every(unit => Boolean(unit?.merged))) return false;
-  if (!findings.every(ticket => Boolean(ticket?.merged) || isClosed(ticket))) return false;
+  if (!qaTickets.every(ticket => Boolean(ticket?.merged) || isClosed(ticket))) return false;
   if (!qaRuns.length) return false;
 
   // Missing creation times make both "latest" and "none created later"

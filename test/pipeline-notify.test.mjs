@@ -90,7 +90,7 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
 
 test('links.artifact first set on a merged card sends the doorbell', async () => {
   const board = await startBoard({
-    port: 15003,
+    port: 15014,
     config: { source: 'probe', telegram: TELEGRAM },
   });
   try {

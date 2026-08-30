@@ -43,6 +43,15 @@ test('ready for acceptance requires each of its four conditions independently', 
   latestWalkOpen.qaTickets[1].closedAt = null;
   assert.equal(readyForAcceptance(latestWalkOpen), false, 'the latest QA run must be closed');
 
+  const olderWalkOpen = readySprint();
+  olderWalkOpen.qaTickets.unshift({
+    ticket: 4190,
+    labels: ['qa-run'],
+    createdAt: '2026-08-30T09:00:00.000Z',
+    open: true,
+  });
+  assert.equal(readyForAcceptance(olderWalkOpen), false, 'every QA ticket must be merged or closed');
+
   const findingAfterWalk = readySprint();
   findingAfterWalk.qaTickets.push({
     ticket: 4193,

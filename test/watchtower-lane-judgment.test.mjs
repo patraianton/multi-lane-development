@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { getJson, postJson, startBoard } from './helpers.mjs';
+import { executable, getJson, postJson, startBoard } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const FACTS_AT = '2099-01-01T00:00:00Z';
@@ -44,6 +45,17 @@ async function until(check, timeoutMs = 8000) {
   }
 }
 
+async function journalUntil(file, check, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let journal = null;
+    try { journal = JSON.parse(await readFile(file, 'utf8')); } catch { /* not written yet */ }
+    if (journal && check(journal)) return journal;
+    if (Date.now() > deadline) throw new Error(`journal condition not reached: ${JSON.stringify(journal)}`);
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+}
+
 async function addLaunch(file, parent, round) {
   let journal = { dispatched: {} };
   try { journal = JSON.parse(await readFile(file, 'utf8')); } catch { /* first launch */ }
@@ -69,17 +81,53 @@ function count(text, needle) {
 }
 
 test('three freed develop lanes without proof fail once per round and notify Stuck once', async () => {
-  const board = await startBoard({
-    port: 14977,
-    config: { source: 'probe', telegram: TELEGRAM },
-    files: { 'sprint-facts.json': FACTS },
-    env: dir => ({
-      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
-      WATCHTOWER_SPRINT_SWEEP_MS: '250',
-    }),
-  });
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-lane-judgment-'));
+  let board;
 
   try {
+    const ticket = {
+      number: 1516,
+      title: 'PAY-U1: missing proof',
+      url: 'https://github.com/acme/web/issues/1516',
+      body: 'Part of #1515.\n\nDeliver the unit and open its PR.',
+    };
+    const fakeGh = await executable(toolsDir, 'gh', `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'issue' && a[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});\n`);
+    const fakeSsh = await executable(toolsDir, 'ssh', '#!/usr/bin/env node\n');
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
+    const fleet = {
+      prompt: 'Read {taskFile} and do it whole',
+      hosts: {
+        alpha: { kitchen: '/tmp/acme-alpha', launch: 'alpha-lane {n} "{prompt}"' },
+        beta: { kitchen: '/tmp/acme-beta', launch: 'beta-lane {n} "{prompt}"' },
+      },
+      lanes: {
+        'lane-1': { host: 'alpha', n: 1 },
+        'lane-6': { host: 'beta', n: 6 },
+      },
+    };
+    const facts = {
+      ...FACTS,
+      lanes: [
+        { host: 'alpha', lane: 'lane-1', busy: false, branch: 'main' },
+        { host: 'beta', lane: 'lane-6', busy: false, branch: 'main' },
+      ],
+    };
+    board = await startBoard({
+      port: 14977,
+      config: {
+        source: 'probe', autoDispatch: true, telegram: TELEGRAM, repo: 'acme/web',
+        hosts: { alpha: { target: 'fake-alpha' }, beta: { target: 'fake-beta' } },
+      },
+      files: { 'sprint-facts.json': facts, 'fleet-launch.json': fleet },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '500',
+        WATCHTOWER_GH: fakeGh,
+        WATCHTOWER_SSH: fakeSsh,
+        WATCHTOWER_SCP: fakeScp,
+      }),
+    });
     const created = await postJson(board.base, '/pipeline/card/create', { title: 'Payments sprint', spec: 'the spec' });
     const parent = created.body.card.id;
     await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'grilled' });
@@ -92,20 +140,32 @@ test('three freed develop lanes without proof fail once per round and notify Stu
     });
     const journalFile = path.join(board.dir, 'auto-dispatch.json');
 
-    for (let round = 1; round <= 3; round++) {
-      await addLaunch(journalFile, parent, round);
-      await until(async () => {
-        try {
-          const journal = JSON.parse(await readFile(journalFile, 'utf8'));
-          return journal.dispatched[`1516:develop:${round}`]?.judged === 'no-proof' ? journal : null;
-        } catch { return null; }
-      });
-      await until(async () => {
-        const data = (await getJson(board.base, '/pipeline/data')).body;
-        const current = data.cards.find(card => card.id === unit.id);
-        return current?.consecutiveFails === round ? current : null;
-      });
-    }
+    await journalUntil(journalFile, journal => journal.dispatched['1516:develop:1']?.result === 'launched');
+    const second = await journalUntil(journalFile, journal =>
+      journal.dispatched['1516:develop:1']?.judged === 'no-proof'
+      && journal.dispatched['1516:develop:2']?.result === 'launched');
+    assert.deepEqual(
+      [second.dispatched['1516:develop:1'].host, second.dispatched['1516:develop:2'].host],
+      ['alpha', 'beta'],
+      'the durable no-proof judgment launches R2 on another host',
+    );
+    const afterOne = await until(async () => {
+      const data = (await getJson(board.base, '/pipeline/data')).body;
+      const current = data.cards.find(card => card.id === unit.id);
+      return current?.consecutiveFails >= 1 ? current : null;
+    });
+    assert.equal(afterOne.consecutiveFails, 1);
+
+    const journal = await journalUntil(journalFile, value =>
+      value.dispatched['1516:develop:3']?.judged === 'no-proof');
+    assert.deepEqual(Object.keys(journal.dispatched), [
+      '1516:develop:1', '1516:develop:2', '1516:develop:3',
+    ]);
+    assert.deepEqual(
+      Object.values(journal.dispatched).map(entry => [entry.round, entry.host, entry.judged]),
+      [[1, 'alpha', 'no-proof'], [2, 'beta', 'no-proof'], [3, 'alpha', 'no-proof']],
+      'each missing proof becomes the next launched round and alternates hosts first',
+    );
 
     const final = (await getJson(board.base, '/pipeline/data')).body.cards.find(card => card.id === unit.id);
     assert.equal(final.stage, 'stuck');
@@ -115,7 +175,8 @@ test('three freed develop lanes without proof fail once per round and notify Stu
     await new Promise(resolve => setTimeout(resolve, 600));
     assert.equal(count(board.output(), '--- notifyStuck ---'), 1);
   } finally {
-    await board.stop();
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
   }
 });
 
