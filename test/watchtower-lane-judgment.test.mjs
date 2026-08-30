@@ -156,24 +156,27 @@ test('three freed develop lanes without proof fail once per round and notify Stu
     });
     assert.equal(afterOne.consecutiveFails, 1);
 
-    const journal = await journalUntil(journalFile, value =>
-      value.dispatched['1516:develop:3']?.judged === 'no-proof');
-    assert.deepEqual(Object.keys(journal.dispatched), [
-      '1516:develop:1', '1516:develop:2', '1516:develop:3',
-    ]);
-    assert.deepEqual(
-      Object.values(journal.dispatched).map(entry => [entry.round, entry.host, entry.judged]),
-      [[1, 'alpha', 'no-proof'], [2, 'beta', 'no-proof'], [3, 'alpha', 'no-proof']],
-      'each missing proof becomes the next launched round and alternates hosts first',
-    );
-
-    const final = (await getJson(board.base, '/pipeline/data')).body.cards.find(card => card.id === unit.id);
+    await journalUntil(journalFile, value => value.dispatched['1516:develop:3']?.judged === 'no-proof');
+    const final = await until(async () => {
+      const data = (await getJson(board.base, '/pipeline/data')).body;
+      const current = data.cards.find(card => card.id === unit.id);
+      return current?.stage === 'stuck' ? current : null;
+    });
     assert.equal(final.stage, 'stuck');
     assert.equal(final.consecutiveFails, 3);
     assert.match(final.stageHistory.at(-1).reason, /no open or merged PR on feat\/1516 after alpha\/lane-1 freed/);
     await until(async () => board.output().includes('--- notifyStuck ---'));
     await new Promise(resolve => setTimeout(resolve, 600));
     assert.equal(count(board.output(), '--- notifyStuck ---'), 1);
+    const settled = JSON.parse(await readFile(journalFile, 'utf8'));
+    assert.deepEqual(Object.keys(settled.dispatched), [
+      '1516:develop:1', '1516:develop:2', '1516:develop:3',
+    ], 'a stuck card does not receive R4 on the sweep after its third failure');
+    assert.deepEqual(
+      Object.values(settled.dispatched).map(entry => [entry.round, entry.host, entry.judged]),
+      [[1, 'alpha', 'no-proof'], [2, 'beta', 'no-proof'], [3, 'alpha', 'no-proof']],
+      'each missing proof becomes the next launched round and alternates hosts first',
+    );
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
