@@ -181,9 +181,15 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       return {
         unit: qa ? 'QA' : unitLabel(i.title),
         qa,
+        qaRun,
         ticket: i.number,
         title: i.title ?? '',
         url: i.url ?? '',
+        createdAt: i.createdAt ?? null,
+        comments: (Array.isArray(i.comments) ? i.comments : []).map(comment => ({
+          body: String(comment?.body ?? ''),
+          createdAt: comment?.createdAt ?? null,
+        })),
         branch: normBranch(i.branch) || `feat/${i.number}`,
         labels,
         open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
@@ -234,7 +240,17 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         const open = prs.find(p => sameBranch(p.branch, u.branch));
         if (open) {
           // headSha: the commit a dependent unit starts from (auto-dispatch).
-          u.pr = { number: open.number, url: open.url ?? '', ci: open.ci ?? null, draft: Boolean(open.draft), headSha: open.headSha ?? null, verdict: open.verdict ?? null };
+          u.pr = {
+            number: open.number,
+            url: open.url ?? '',
+            ci: open.ci ?? null,
+            draft: Boolean(open.draft),
+            headSha: open.headSha ?? null,
+            verdict: open.verdict ?? null,
+            verdictOnHead: open.verdictOnHead ?? null,
+            verdictRounds: Number(open.verdictRounds) || 0,
+            mergeable: open.mergeable ?? null,
+          };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.
           const jobs = ciJobs.get(open.number) ?? [];

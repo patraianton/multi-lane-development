@@ -220,11 +220,18 @@ function normCard(raw) {
   const stageHistory = [];
   for (const h of Array.isArray(src.stageHistory) ? src.stageHistory : []) {
     if (!h || !STAGE_KEYS.has(stageKey(h.stage, src))) continue;
-    stageHistory.push({
+    const segment = {
       stage: stageKey(h.stage, src),
       enteredAt: isoOr(h.enteredAt, createdAt),
       leftAt: isoOr(h.leftAt, null),
-    });
+    };
+    const reason = str(h.reason, LIMIT.comment).trim();
+    const failureHead = str(h.failureHead, LIMIT.slotish).trim();
+    const failureCause = str(h.failureCause, LIMIT.slotish).trim();
+    if (reason) segment.reason = reason;
+    if (failureHead) segment.failureHead = failureHead;
+    if (failureCause) segment.failureCause = failureCause;
+    stageHistory.push(segment);
   }
   // A card with no readable history still has to have a clock: it entered its
   // current stage at least when it was created.
@@ -268,6 +275,7 @@ function normCard(raw) {
     summary: str(src.summary, LIMIT.summaryOnDisk).trim(),
     stage,
     createdAt,
+    readyAt: isoOr(src.readyAt, null),
     stageHistory,
     counters,
     consecutiveFails: int(src.consecutiveFails),
@@ -414,10 +422,14 @@ function newId() {
 
 // Moving a card: close the segment it is leaving, open the one it enters. The
 // history is the only source of the clocks, so nothing else may be recorded.
-function enterStage(card, stage, nowIso) {
+function enterStage(card, stage, nowIso, { reason = '', failureHead = '', failureCause = '' } = {}) {
   const open = card.stageHistory[card.stageHistory.length - 1];
   if (open && !open.leftAt) open.leftAt = nowIso;
-  card.stageHistory.push({ stage, enteredAt: nowIso, leftAt: null });
+  const segment = { stage, enteredAt: nowIso, leftAt: null };
+  if (reason) segment.reason = str(reason, LIMIT.comment).trim();
+  if (failureHead) segment.failureHead = str(failureHead, LIMIT.slotish).trim();
+  if (failureCause) segment.failureCause = str(failureCause, LIMIT.slotish).trim();
+  card.stageHistory.push(segment);
   card.stage = stage;
 }
 
@@ -562,7 +574,7 @@ function takeNotifyEvents(before, card) {
   // A sprint or a standalone card finishing is the founders' cue; a unit card
   // finishing is one of many and stays quiet.
   if (card.stage === 'done' && before.stage !== 'done' && !card.parent) stamp('done');
-  if (card.stage === 'grilled'
+  if (['grilled', 'merged'].includes(card.stage)
       && card.links.artifact
       && card.links.artifact !== before.artifact
       && !card.notified?.artifact) {
@@ -599,10 +611,9 @@ function stuckDigest(card) {
     ? bits.join(', ') + (card.consecutiveFails ? ` (${card.consecutiveFails} in a row)` : '')
     : (card.consecutiveFails ? `${card.consecutiveFails} in a row` : 'no counters');
   const last = card.comments[card.comments.length - 1];
-  const comment = last
-    ? `${last.author}: ${last.text}`
-    : '(none)';
-  return `counters: ${counters}\nlast comment: ${comment}`;
+  const comment = last ? `${last.author}: ${last.text}` : '(none)';
+  const reason = [...(card.stageHistory ?? [])].reverse().find(h => h.reason)?.reason ?? '(none)';
+  return `counters: ${counters}\nreason: ${reason}\nlast comment: ${comment}`;
 }
 
 async function emitNotifications(card, events) {
@@ -658,6 +669,7 @@ async function createCard(body) {
     summary: checkedSummary(body.summary),
     stage: 'spec',
     createdAt: now,
+    readyAt: null,
     stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
     counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
     consecutiveFails: 0,
@@ -738,24 +750,73 @@ async function moveCard(body) {
   });
 }
 
-async function failCard(body) {
+function applyFailure(card, {
+  reason,
+  counterKey = null,
+  forceStuck = false,
+  failureHead = '',
+  failureCause = '',
+  allowAnyStage = false,
+}, now = new Date().toISOString()) {
+  if (card.stage === 'stuck') throw new BadRequest('the card is already stuck — return it to development first');
+  if (!forceStuck && card.stage === 'done') throw new BadRequest('a done card cannot fail');
+  if (!forceStuck && !allowAnyStage && !CAN_FAIL.has(card.stage)) {
+    throw new BadRequest(`a card in "${card.stage}" cannot fail — nothing has been run yet;`
+      + ` a failure is only reported from ${[...CAN_FAIL].join(', ')}`);
+  }
+  if (counterKey) card.counters[counterKey] += 1;
+  if (!forceStuck) card.consecutiveFails += 1;
+  const to = forceStuck || card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development';
+  enterStage(card, to, now, { reason, failureHead, failureCause });
+}
+
+// Board-owned failures (for example, a freed lane with no proof) have no HTTP
+// failure kind. They still use the exact same streak/stage/history mutation and
+// must emit the Stuck alarm because there is no request wrapper to do it.
+export async function failCard(id, reason) {
+  const why = str(reason, LIMIT.comment).trim();
+  if (!why) throw new BadRequest('a failure reason is required');
+  const { card, events } = unwrapMutation(await editCard(id, current => {
+    applyFailure(current, { reason: why, allowAnyStage: true });
+  }));
+  await emitNotifications(card, events);
+  return card;
+}
+
+// A judged lane with its proof breaks the failure streak but does not erase
+// the cumulative per-kind counters or the history that explains earlier runs.
+// A causal cutoff keeps a newer failure (for example red CI on the fixer's new
+// head, recorded before the same sweep judges the head-change proof).
+export async function succeedCard(id, { throughAt } = {}) {
+  const cutoff = Date.parse(throughAt ?? '');
+  return commit(st => {
+    const card = need(st.cards, id);
+    if (card.stage === 'stuck') return card;
+    if (Number.isFinite(cutoff)) {
+      const latestFailure = [...(card.stageHistory ?? [])].reverse().find(entry => entry.reason);
+      const failedAt = Date.parse(latestFailure?.enteredAt ?? '');
+      if (Number.isFinite(failedAt) && failedAt > cutoff) return card;
+    }
+    card.consecutiveFails = 0;
+    return card;
+  });
+}
+
+// Keep the long-standing HTTP contract: POST /pipeline/card/fail receives
+// { id, kind }, updates the per-kind counter, answers, and only then notifies.
+async function failCardAction(body) {
   const kind = String(body.kind ?? '');
   if (!FAIL_KINDS[kind]) {
     throw new BadRequest(`unknown failure kind "${kind}" — use local, ci or review`);
   }
   return editCard(body.id, card => {
-    if (card.stage === 'done') throw new BadRequest('a done card cannot fail');
-    if (card.stage === 'stuck') throw new BadRequest('the card is already stuck — return it to development first');
-    if (!CAN_FAIL.has(card.stage)) {
-      throw new BadRequest(`a card in "${card.stage}" cannot fail — nothing has been run yet;`
-        + ` a failure is only reported from ${[...CAN_FAIL].join(', ')}`);
-    }
-    card.counters[FAIL_KINDS[kind]] += 1;
-    card.consecutiveFails += 1;
-    // Back to Development to be fixed — unless this is the third failure in a
-    // row, and then the loop itself is the problem and a human has to see it.
-    const to = card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development';
-    enterStage(card, to, new Date().toISOString());
+    const fallback = kind === 'local' ? 'local check failed'
+      : kind === 'ci' ? 'CI failed'
+        : 'review returned NO-GO';
+    applyFailure(card, {
+      reason: str(body.reason, LIMIT.comment).trim() || fallback,
+      counterKey: FAIL_KINDS[kind],
+    });
   });
 }
 
@@ -1055,6 +1116,22 @@ export async function listPipelineCards() {
   return st.cards;
 }
 
+// Readiness is computed by the board from sprint facts, but the one-shot clock
+// belongs to the persistent card. Null deliberately clears it when a newer QA
+// ticket invalidates the earlier walk.
+export async function setCardReadyAt(id, readyAt) {
+  let next = null;
+  if (readyAt != null) {
+    next = isoOr(readyAt, null);
+    if (!next) throw new BadRequest('readyAt must be an ISO timestamp or null');
+  }
+  return commit(st => {
+    const card = need(st.cards, id);
+    card.readyAt = next;
+    return card;
+  });
+}
+
 function cardExtras(c, all = []) {
   const extra = {};
   if (shadowMap.has(c.id)) extra.shadow = shadowMap.get(c.id);
@@ -1104,6 +1181,53 @@ function unitTargetStage(u) {
   return null;
 }
 
+function firstLine(text) {
+  return String(text ?? '').split(/\r?\n/, 1)[0].trim();
+}
+
+function sameHead(a, b) {
+  const left = String(a ?? '').trim().toLowerCase();
+  const right = String(b ?? '').trim().toLowerCase();
+  if (!left || !right || Math.min(left.length, right.length) < 7) return false;
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+function failureRecordedOnHead(card, head, cause) {
+  return Boolean(head) && (card?.stageHistory ?? []).some(h =>
+    h.failureHead === head && h.failureCause === cause);
+}
+
+function latestQuestion(card, unit) {
+  const changedAt = Date.parse(card?.stageHistory?.[card.stageHistory.length - 1]?.enteredAt);
+  if (!Number.isFinite(changedAt)) return null;
+  let latest = null;
+  for (const comment of unit?.comments ?? []) {
+    const reason = firstLine(comment?.body);
+    const at = Date.parse(comment?.createdAt);
+    if (!/^QUESTION\b/i.test(reason) || !Number.isFinite(at) || at <= changedAt) continue;
+    if (!latest || at > latest.at) latest = { reason, at };
+  }
+  return latest;
+}
+
+function failedCheckNames(ci) {
+  const raw = ci?.failedNames ?? ci?.failedChecks ?? ci?.failed ?? ci?.names ?? [];
+  if (!Array.isArray(raw)) return [];
+  return raw.map(item => typeof item === 'string' ? item : (item?.name ?? item?.context ?? item?.title ?? ''))
+    .map(String).map(name => name.trim()).filter(Boolean);
+}
+
+function redCheckReason(pr, head) {
+  const names = failedCheckNames(pr?.ci);
+  const detail = names.length ? names.join(', ') : (String(pr?.ci?.text ?? '').trim() || 'failed check');
+  return `red checks on ${head}: ${detail}`;
+}
+
+function noGoReason(verdict, head) {
+  const line = firstLine(verdict?.body);
+  return `NO-GO on ${head || 'the current head'}${line ? `: ${line}` : ''}`;
+}
+
 // What the facts would change, without changing anything — so a sweep that
 // finds nothing new writes nothing to disk.
 function unitPlan(cards, sprints) {
@@ -1125,7 +1249,8 @@ function unitPlan(cards, sprints) {
       // A ticket that gained the qa label after its card was spawned becomes a
       // QA card: the label is the fact, the card follows it.
       const unit = str(u.unit ?? '', LIMIT.slotish);
-      const target = (!s.stale?.length && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
+      const fresh = !s.stale?.length;
+      const target = (fresh && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       let move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
       // One step back that is a fact, not a failure (decision 18): a card that
       // reached done on its ticket's auto-close — seen before the merge behind
@@ -1134,21 +1259,57 @@ function unitPlan(cards, sprints) {
       if (card && !move && card.stage === 'done' && target === 'merged' && u.merged && !u.accepted && sprint.stage !== 'done') move = target;
       // A verdict newer than the review badge closes the badge: the reader has
       // spoken, whichever way (decision 20).
-      const verdictAt = u.pr?.verdict?.at ?? null;
+      const head = str(u.pr?.headSha, LIMIT.slotish).trim();
+      const legacyVerdict = u.pr?.verdict ?? null;
+      const onHeadVerdict = u.pr?.verdictOnHead ?? null;
+      const verdict = onHeadVerdict
+        ?? (!head || sameHead(legacyVerdict?.head, head) ? legacyVerdict : null);
+      const verdictMatchesHead = Boolean(onHeadVerdict) || !verdict?.head || !head || sameHead(verdict.head, head);
+      const verdictAt = verdictMatchesHead ? (verdict?.at ?? null) : null;
       const reviewDone = Boolean(card?.review?.running && verdictAt && card.review.since
         && Date.parse(verdictAt) > Date.parse(card.review.since));
-      // A NO-GO on a card in CI/PR is a review failure: back to development
-      // for the fix round (the third in a row → stuck), counted on the card.
-      // Only a verdict newer than the card's entry into CI/PR counts once.
-      const noGo = card?.stage === 'ci_pr' && u.pr?.verdict?.go === false ? u.pr.verdict : null;
-      const enteredCi = card ? [...(card.stageHistory ?? [])].reverse().find(h => h.stage === 'ci_pr')?.enteredAt : null;
-      if (noGo && (!noGo.at || !enteredCi || Date.parse(noGo.at) > Date.parse(enteredCi))) {
-        plan.push({ kind: 'review-fail', id: card.id, lane, pr, branch, slot, unit, verdict: noGo, reviewDone, verdictAt });
+      const question = card && fresh && card.stage !== 'stuck' ? latestQuestion(card, u) : null;
+      if (question) {
+        plan.push({ kind: 'question', id: card.id, lane, pr, branch, slot, unit, reason: question.reason, reviewDone, verdictAt });
         continue;
       }
+
+      // A NO-GO and a red check are each one failure of the current PR head.
+      // The head is stored on the failure's history entry, so an unchanged
+      // GitHub fact cannot count again after a restart or a later sweep.
+      const reviewRecorded = failureRecordedOnHead(card, head, 'review');
+      const ciRecorded = failureRecordedOnHead(card, head, 'ci');
+      const noGo = card && fresh
+        && (head ? CAN_FAIL.has(card.stage) : card.stage === 'ci_pr')
+        && verdictMatchesHead && verdict?.go === false
+        ? verdict : null;
+      const enteredCi = card ? [...(card.stageHistory ?? [])].reverse().find(h => h.stage === 'ci_pr')?.enteredAt : null;
+      const legacyNoGoIsNew = !noGo?.at || !enteredCi || Date.parse(noGo.at) > Date.parse(enteredCi);
+      if (noGo && !reviewRecorded && (head || legacyNoGoIsNew)) {
+        plan.push({
+          kind: 'review-fail', id: card.id, lane, pr, branch, slot, unit,
+          reason: noGoReason(noGo, head), failureHead: head, failureCause: 'review', reviewDone, verdictAt,
+        });
+        continue;
+      }
+      const red = card && fresh && CAN_FAIL.has(card.stage) && head && u.pr?.ci?.color === 'red';
+      if (red && !ciRecorded) {
+        plan.push({
+          kind: 'ci-fail', id: card.id, lane, pr, branch, slot, unit,
+          reason: redCheckReason(u.pr, head), failureHead: head, failureCause: 'ci', reviewDone, verdictAt,
+        });
+        continue;
+      }
+      // Do not bounce a same-head failure back into CI/PR and reset its streak.
+      // A current-head GO, merge or acceptance is observable success and is
+      // the point where the consecutive-failure streak can end. A green check
+      // alone may predate a later lane/review no-proof and cannot clear it.
+      if ((reviewRecorded && noGo) || (ciRecorded && u.pr?.ci?.color === 'red')) move = null;
+      const resetFails = Boolean(card?.consecutiveFails && fresh
+        && (u.merged || u.accepted || (verdictMatchesHead && verdict?.go === true)));
       if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
-      else if (move || reviewDone || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)) {
-        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, unit, move, reviewDone, verdictAt });
+      else if (move || reviewDone || resetFails || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)) {
+        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, unit, move, resetFails, reviewDone, verdictAt });
       }
     }
     // The sprint's own stage follows its units: development once any unit has
@@ -1176,9 +1337,14 @@ export async function syncSprintUnits(sprints) {
   if (!(sprints instanceof Map) || !sprints.size) return { spawned: 0, moved: 0 };
   const st = await load();
   if (!unitPlan(st.cards, sprints).length) return { spawned: 0, moved: 0 };
-  return commit(state => {
+  const result = await commit(state => {
     const now = new Date().toISOString();
     let spawned = 0, moved = 0;
+    const notifications = [];
+    const rememberNotifications = (before, card) => {
+      const events = takeNotifyEvents(before, card);
+      if (events.length) notifications.push({ card, events });
+    };
     for (const step of unitPlan(state.cards, sprints)) {
       if (step.kind === 'spawn') {
         const sprint = state.cards.find(c => c.id === step.sprintId);
@@ -1189,6 +1355,7 @@ export async function syncSprintUnits(sprints) {
           summary: '',
           stage: 'ticketed',
           createdAt: now,
+          readyAt: null,
           stageHistory: [{ stage: 'ticketed', enteredAt: now, leftAt: null }],
           counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
           consecutiveFails: 0,
@@ -1216,12 +1383,19 @@ export async function syncSprintUnits(sprints) {
         }
         continue;
       }
-      if (step.kind === 'review-fail') {
-        card.counters.reviewFails += 1;
-        card.consecutiveFails += 1;
-        enterStage(card, card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development', now);
+      if (step.kind === 'question' || step.kind === 'review-fail' || step.kind === 'ci-fail') {
+        const before = snapshotNotify(card);
+        applyFailure(card, {
+          reason: step.reason,
+          counterKey: step.kind === 'review-fail' ? 'reviewFails'
+            : step.kind === 'ci-fail' ? 'ciFails' : null,
+          forceStuck: step.kind === 'question',
+          failureHead: step.failureHead,
+          failureCause: step.failureCause,
+        }, now);
         card.lane = step.lane; card.links.pr = step.pr; card.links.branch = step.branch; card.slot = step.slot;
         if (step.reviewDone) closeReview(card, step.verdictAt || now);
+        rememberNotifications(before, card);
         moved++;
         continue;
       }
@@ -1234,10 +1408,13 @@ export async function syncSprintUnits(sprints) {
         card.unit = step.unit;
         if (step.unit === 'QA' && !/^QA /.test(card.title)) card.title = str(`QA ${card.title}`, LIMIT.title);
       }
-      if (step.move) { enterStage(card, step.move, now); card.consecutiveFails = 0; moved++; }
+      if (step.move) { enterStage(card, step.move, now); moved++; }
+      if (step.resetFails) card.consecutiveFails = 0;
     }
-    return { spawned, moved };
+    return { spawned, moved, notifications };
   });
+  for (const item of result.notifications) await emitNotifications(item.card, item.events);
+  return { spawned: result.spawned, moved: result.moved };
 }
 
 export function setShadowFacts({ facts, staleSources, at }) {
@@ -1300,7 +1477,7 @@ function failCell(card) {
   if (c.localFails) bits.push(`local ${c.localFails}`);
   if (c.ciFails) bits.push(`ci ${c.ciFails}`);
   if (c.reviewFails) bits.push(`review ${c.reviewFails}`);
-  if (!bits.length) return '-';
+  if (!bits.length) return card.consecutiveFails ? `${card.consecutiveFails} in a row` : '-';
   const all = bits.join(' ');
   return card.consecutiveFails ? `${all} (${card.consecutiveFails} in a row)` : all;
 }
@@ -1312,6 +1489,7 @@ function agentRow(card, now, meta) {
     id: card.id,
     title: card.title,
     stage: card.stage,
+    readyAt: card.readyAt,
     clock: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     fails: failCell(card),
     verdict: card.status.verdict || '-',
@@ -1475,6 +1653,7 @@ async function buildAgentCard(card, withSpec = false) {
     title: card.title,
     stage: card.stage,
     created: card.createdAt,
+    readyAt: card.readyAt,
     clockTotal: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     clockByStage: STAGES.filter(s => cl.byStage[s.key])
       .map(s => `${s.key} ${fmtDur(cl.byStage[s.key])}`).join(', ') || '-',
@@ -1530,6 +1709,7 @@ async function buildAgentCard(card, withSpec = false) {
       entered: h.enteredAt,
       left: h.leftAt ?? '-',
       took: fmtDur(spanMs(h, now)),
+      reason: h.reason ?? '-',
     })),
   };
   if (withSpec) view.spec = card.spec;
@@ -1542,6 +1722,7 @@ function renderToonCard(c) {
     `title: ${c.title}`,
     `stage: ${c.stage}`,
     `created: ${c.created}`,
+    `ready-at: ${c.readyAt ?? '-'}`,
     `clock: ${c.clockTotal}`,
     `clock-by-stage: ${c.clockByStage}`,
     `fails: ${c.fails}`,
@@ -1571,7 +1752,7 @@ function renderToonCard(c) {
     toonTable('qa', c.qa, ['ticket', 'title', 'pr', 'state'],
       c.sprint ? 'no QA tickets — an issue labelled qa that references the umbrella' : 'not a sprint card'),
     toonTable('comments', c.comments, ['author', 'at', 'text'], 'nobody has commented'),
-    toonTable('history', c.history, ['stage', 'entered', 'left', 'took'], 'no history'),
+    toonTable('history', c.history, ['stage', 'entered', 'left', 'took', 'reason'], 'no history'),
     `help: ${c.specHint}`,
   );
   return out.join('\n') + '\n';
@@ -1582,7 +1763,7 @@ function renderToonCard(c) {
 const ACTIONS = {
   create: createCard,
   move: moveCard,
-  fail: failCard,
+  fail: failCardAction,
   unstuck: unstuckCard,
   comment: commentCard,
   summary: summaryCard,

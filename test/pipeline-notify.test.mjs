@@ -88,6 +88,38 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
   }
 });
 
+test('links.artifact first set on a merged card sends the doorbell', async () => {
+  const board = await startBoard({
+    port: 15003,
+    config: { source: 'probe', telegram: TELEGRAM },
+  });
+  try {
+    const created = await postJson(board.base, '/pipeline/card/create', { title: 'Ready for acceptance' });
+    const id = created.body.card.id;
+    await postJson(board.base, '/pipeline/card/move', { id, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' });
+    await postJson(board.base, '/pipeline/card/update', {
+      id, links: { ticket: 'https://github.com/acme/web/issues/12' },
+    });
+    for (const to of ['development', 'local_check', 'ci_pr', 'merged']) {
+      const moved = await postJson(board.base, '/pipeline/card/move', { id, to });
+      assert.equal(moved.status, 200);
+    }
+
+    const url = 'https://artifacts.example/acceptance-1';
+    const updated = await postJson(board.base, '/pipeline/card/update', {
+      id, links: { artifact: url },
+    });
+    assert.equal(updated.status, 200);
+    await waitFor(() => board.output().includes('--- notifyArtifactReady ---'));
+    assert.equal(countMatches(board.output(), '--- notifyArtifactReady ---'), 1);
+    assert.ok(board.output().includes(url));
+    assert.ok(updated.body.card.notified?.artifact);
+  } finally {
+    await board.stop();
+  }
+});
+
 test('no telegram config means the update still works and nothing is sent', async () => {
   const board = await startBoard({ port: 14997, config: { source: 'probe' } });
   try {

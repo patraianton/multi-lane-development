@@ -60,6 +60,33 @@ async function until(base, ready, ms = 8000) {
 const untilUnits = (base, parent, count) => until(base, d => d.cards.filter(c => c.parent === parent).length >= count);
 const settle = ms => new Promise(r => setTimeout(r, ms));
 
+function failureFacts({ ci = null, comments = [] } = {}) {
+  const branch = 'feat/failure-u1';
+  return {
+    lanes: [],
+    prs: ci ? [{
+      number: 5154,
+      url: 'https://github.com/acme/web/pull/5154',
+      branch,
+      headSha: 'abc1234567890000000000000000000000000000',
+      ci,
+    }] : [],
+    mergedPrs: [],
+    unitIssues: {
+      5151: [{
+        number: 5152,
+        title: 'FAIL-U1: prove failures',
+        url: 'https://github.com/acme/web/issues/5152',
+        state: 'OPEN',
+        branch,
+        comments,
+      }],
+    },
+    umbrellaStates: { 5151: 'OPEN' },
+    staleSources: [],
+  };
+}
+
 test('a sprint card spawns unit cards from its tickets and the facts move them', async () => {
   const board = await startBoard({
     port: 14990,
@@ -278,6 +305,116 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(del.status, 200);
     const gone = await getJson(board.base, '/pipeline/data');
     assert.equal(gone.body.cards.length, 0);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('a red check on the current head counts once and records its reason', async () => {
+  const green = failureFacts({ ci: { color: 'green', text: 'CI green (2)' } });
+  const board = await startBoard({
+    port: 15001,
+    config: { source: 'probe' },
+    files: { 'sprint-facts.json': green },
+    env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),
+  });
+  try {
+    const created = await postJson(board.base, '/pipeline/card/create', { title: 'Failure sprint', spec: 'one unit' });
+    const parent = created.body.card.id;
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/update', { id: parent, links: { ticket: 'https://github.com/acme/web/issues/5151' } });
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'ticketed' });
+    const spawned = await until(board.base, data => data.cards.some(card => card.parent === parent && card.stage === 'ci_pr'));
+    const id = spawned.cards.find(card => card.parent === parent).id;
+
+    // Static green facts cannot erase a newer lane/review no-proof failure.
+    const noProof = await postJson(board.base, '/pipeline/card/fail', {
+      id, kind: 'review', reason: 'review lane freed without proof',
+    });
+    assert.equal(noProof.body.card.consecutiveFails, 1);
+    const preserved = await until(board.base, data => {
+      const card = data.cards.find(item => item.id === id);
+      return card?.stage === 'ci_pr' && card.consecutiveFails === 1;
+    });
+    assert.equal(preserved.cards.find(item => item.id === id).consecutiveFails, 1);
+
+    const red = failureFacts({
+      ci: { color: 'red', text: 'CI red (2)', failedNames: ['lint', 'unit'] },
+    });
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(red));
+    const failed = await until(board.base, data => data.cards.find(card => card.id === id)?.consecutiveFails === 2);
+    const card = failed.cards.find(item => item.id === id);
+    assert.equal(card.stage, 'development');
+    assert.equal(card.counters.ciFails, 1);
+    assert.equal(card.consecutiveFails, 2, 'the red head adds exactly one to the existing streak');
+    assert.match(card.stageHistory.at(-1).reason, /red checks on abc123456789.*lint, unit/);
+    assert.equal(card.stageHistory.at(-1).failureHead, red.prs[0].headSha);
+
+    await settle(700);
+    const again = await getJson(board.base, '/pipeline/data');
+    const unchanged = again.body.cards.find(item => item.id === id);
+    assert.equal(unchanged.consecutiveFails, 2, 'the unchanged red head is not counted by another sweep');
+    assert.equal(unchanged.counters.ciFails, 1);
+    assert.equal(unchanged.stage, 'development', 'the same failing head does not bounce forward and reset the streak');
+    assert.equal(unchanged.stageHistory.filter(entry => entry.failureHead === red.prs[0].headSha && entry.failureCause === 'ci').length, 1);
+
+    // A countable verdict may name GitHub's abbreviated SHA. It is still on
+    // this head, and is a distinct failure cause from that head's red check.
+    const noGo = {
+      ...red,
+      prs: red.prs.map(pr => ({
+        ...pr,
+        verdictOnHead: {
+          round: 1,
+          go: false,
+          head: 'ABC12345',
+          at: new Date().toISOString(),
+          body: 'R1 — NO-GO\nhead ABC12345',
+        },
+      })),
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(noGo));
+    const stuck = await until(board.base, data => data.cards.find(item => item.id === id)?.stage === 'stuck');
+    const afterNoGo = stuck.cards.find(item => item.id === id);
+    assert.equal(afterNoGo.consecutiveFails, 3);
+    assert.equal(afterNoGo.stageHistory.at(-1).failureCause, 'review');
+    assert.equal(afterNoGo.stageHistory.at(-1).failureHead, red.prs[0].headSha);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('a newer QUESTION comment sticks the unit with its first line and is ignored after unstuck', async () => {
+  const facts = failureFacts();
+  const board = await startBoard({
+    port: 15002,
+    config: { source: 'probe' },
+    files: { 'sprint-facts.json': facts },
+    env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),
+  });
+  try {
+    const created = await postJson(board.base, '/pipeline/card/create', { title: 'Question sprint', spec: 'one unit' });
+    const parent = created.body.card.id;
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/update', { id: parent, links: { ticket: 'https://github.com/acme/web/issues/5151' } });
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'ticketed' });
+    const spawned = await untilUnits(board.base, parent, 1);
+    const id = spawned.cards.find(card => card.parent === parent).id;
+
+    await settle(30);
+    const reason = 'qUeStIoN #5152 contract mismatch';
+    facts.unitIssues[5151][0].comments = [{ body: `${reason}\nThe generated type disagrees.`, createdAt: new Date().toISOString() }];
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(facts));
+    const stuck = await until(board.base, data => data.cards.find(card => card.id === id)?.stage === 'stuck');
+    const card = stuck.cards.find(item => item.id === id);
+    assert.equal(card.consecutiveFails, 0, 'QUESTION does not need or consume the failure counter');
+    assert.equal(card.stageHistory.at(-1).reason, reason);
+
+    const unstuck = await postJson(board.base, '/pipeline/card/unstuck', { id });
+    assert.equal(unstuck.body.card.stage, 'development');
+    await settle(700);
+    const after = await getJson(board.base, '/pipeline/data');
+    assert.equal(after.body.cards.find(item => item.id === id).stage, 'development', 'the handled QUESTION predates the unstuck stage change');
   } finally {
     await board.stop();
   }

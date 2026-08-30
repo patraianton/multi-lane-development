@@ -34,7 +34,15 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   const unitIssues = new Map([[1515, [
     { number: 1519, title: 'SALON-U5: migration 133', url: 'u/1519', state: 'OPEN', branch: 'feat/salon-u05-migration-133', deps: [1518, 1517, 1499] },
     { number: 1517, title: 'SALON-U2: paid-placements reader', url: 'u/1517', state: 'OPEN', branch: 'feat/salon-u02-paid-reader', deps: [] },
-    { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'OPEN', branch: 'feat/salon-u01-readiness' },
+    {
+      number: 1516,
+      title: 'SALON-U1: readiness',
+      url: 'u/1516',
+      state: 'OPEN',
+      branch: 'feat/salon-u01-readiness',
+      createdAt: '2026-08-28T18:00:00Z',
+      comments: [{ body: 'QUESTION #1516 contract mismatch', createdAt: '2026-08-28T19:00:00Z' }],
+    },
     { number: 1521, title: 'SALON-U0: free-promo checkout', url: 'u/1521', state: 'OPEN', branch: '' },
     { number: 1522, title: 'SALON-U4: composition', url: 'u/1522', state: 'OPEN', branch: 'feat/salon-u04-composition' },
     // Closed an hour after its merge: accepted by a person, not by the PR.
@@ -54,7 +62,16 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
     { host: 'hostinger', lane: 'lane-6', busy: true, since: 'Fri 19:00', branch: 'fix/other-stream' },
   ];
   const prs = [
-    { number: 1540, url: 'pr/1540', branch: 'feat/salon-u01-readiness', ci: { color: 'green', text: 'CI green (5)' } },
+    {
+      number: 1540,
+      url: 'pr/1540',
+      branch: 'feat/salon-u01-readiness',
+      headSha: 'abc123456789',
+      ci: { color: 'green', text: 'CI green (5)' },
+      verdictOnHead: { round: 1, go: true, head: 'abc123456789' },
+      verdictRounds: 1,
+      mergeable: 'MERGEABLE',
+    },
     { number: 1541, url: 'pr/1541', branch: 'refs/heads/feat/salon-u02-paid-reader', ci: { color: 'run', text: 'CI running (1)' }, draft: true },
   ];
   const mergedPrs = [{ number: 1530, url: 'pr/1530', branch: 'feat/salon-u03-reserve-reader', mergedAt: '2026-08-28T20:00:00Z' }];
@@ -84,6 +101,13 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U2.pr.number, 1541);
   assert.equal(by.U2.state, 'pr open');
   assert.equal(by.U1.state, 'pr green');
+  assert.equal(by.U1.createdAt, '2026-08-28T18:00:00Z');
+  assert.deepEqual(by.U1.comments, [
+    { body: 'QUESTION #1516 contract mismatch', createdAt: '2026-08-28T19:00:00Z' },
+  ]);
+  assert.equal(by.U1.pr.verdictOnHead.go, true);
+  assert.equal(by.U1.pr.verdictRounds, 1);
+  assert.equal(by.U1.pr.mergeable, 'MERGEABLE');
   // The CI slot: the job in progress names the runner and its server.
   assert.deepEqual(by.U1.pr.runner, { name: 'radar-runner-2', slot: 'radar-runner-2', server: '', host: 'hetzner', status: 'in_progress', since: '2026-08-28T20:50:00Z', job: 'browser-smoke' });
   assert.equal(by.U2.pr.runner, undefined, 'no job facts for that PR');
