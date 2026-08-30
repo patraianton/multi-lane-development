@@ -38,8 +38,8 @@ export async function executable(dir, name, text) {
 
 // Start `node bin/watchtower.mjs` on the given port with a fresh state
 // directory. `config` becomes state/autopase-board.json — pass a function to
-// receive the directory path (for settings that must point into it, like
-// streamWatch). Extra `files` land in the same directory.
+// receive the directory path when needed. Extra `files` land in the same
+// directory.
 export async function startBoard({ port, config = {}, files = {}, env = {} }) {
   const dir = await mkdtemp(path.join(tmpdir(), 'watchtower-test-'));
   for (const [name, content] of Object.entries(files)) {

@@ -120,7 +120,7 @@ test('publish --card sets links.artifact on the board and rings the doorbell', a
       config: {
         source: 'probe',
         telegram: {
-          dryRun: true, chatId: '-1', boardUrl: 'https://board.example', apiToken: 't',
+          dryRun: true, chatId: '-1', ownerChatId: '1',
           founders: [
             { name: 'Anton', tgUserId: 1, tag: '@anton', owner: true },
             { name: 'Partner', tgUserId: 2, tag: '@partner', owner: false },

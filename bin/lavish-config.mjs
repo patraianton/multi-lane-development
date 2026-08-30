@@ -57,8 +57,9 @@ export function parseCloudflare(raw) {
 }
 
 // Read the whole config file and normalize the pipeline-relevant parts.
-// `boardApiToken` and `boardUrl` ride along because the publish CLI also talks
-// to the board (to attach the artifact link to a card).
+// `boardApiToken` and the local board URL ride along because the publish CLI
+// can also attach an artifact link to a card. A remote URL is a CLI override,
+// not part of the send-only Telegram block.
 export async function readBoardConfig(file = configFile()) {
   const raw = await readJsonSoft(file, {});
   return {
@@ -66,7 +67,7 @@ export async function readBoardConfig(file = configFile()) {
     lavish: parseLavish(raw.lavish),
     cloudflare: parseCloudflare(raw.cloudflare),
     boardApiToken: String(raw.apiToken ?? '').trim(),
-    boardUrl: trimSlash(raw.telegram?.boardUrl) || 'http://127.0.0.1:4878',
+    boardUrl: 'http://127.0.0.1:4878',
   };
 }
 

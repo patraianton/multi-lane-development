@@ -11,6 +11,12 @@ import { executable, getJson, postJson, startBoard } from './helpers.mjs';
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 const OTHER = 'def12345abcdef0123456789abcdef0123456789';
 const UMBRELLA = 'https://github.com/acme/web/issues/1600';
+const OWNER_TELEGRAM = {
+  dryRun: true,
+  chatId: '-1',
+  ownerChatId: '1',
+  founders: [{ name: 'Owner', tgUserId: 1, tag: '@owner', owner: true }],
+};
 
 function facts(verdictHead = 'abc12345') {
   const verdict = {
@@ -108,7 +114,7 @@ test('green CI and GO on the current head invokes one squash merge and journals 
     ].join('\n'));
     board = await startBoard({
       port: 15001,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -165,7 +171,7 @@ test('a GO naming another head does not call gh or create a merge journal key', 
     ].join('\n'));
     board = await startBoard({
       port: 15002,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts(OTHER.slice(0, 8)) },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -215,7 +221,7 @@ test('hold-merge produces only the owner table line, even while other merge fact
     };
     board = await startBoard({
       port: 15004,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': heldFacts, 'auto-dispatch.json': previousFailure },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -256,7 +262,7 @@ test('a failed merge records stderr and stops after three attempts', async () =>
     failingFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
       port: 15005,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': failingFacts },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -336,7 +342,7 @@ test('a merged fact wins over an overlapping stale open-PR fact', async () => {
     }];
     board = await startBoard({
       port: 15007,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': overlappingFacts },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -367,7 +373,7 @@ test('merge automation does not begin before the sprint is ticketed', async () =
     ].join('\n'));
     board = await startBoard({
       port: 15008,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -411,7 +417,7 @@ test('a hold on a pre-ticket sibling blocks their shared active PR', async () =>
     sharedFacts.umbrellaStates[1700] = 'OPEN';
     board = await startBoard({
       port: 15009,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': sharedFacts },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),

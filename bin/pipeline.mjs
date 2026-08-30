@@ -122,7 +122,7 @@ const LIMIT = {
 
 const LINK_KEYS = ['ticket', 'branch', 'pr', 'artifact'];
 
-const NOTIFY_KINDS = ['artifact', 'stuck', 'done', 'assignSubscription'];
+const NOTIFY_KINDS = ['artifact', 'stuck', 'done'];
 
 // -------------------------------------------------------------------- store
 
@@ -559,8 +559,8 @@ function snapshotNotify(card) {
 
 // Decide which Telegram messages this edit earned, and stamp the card in the
 // same write so a restart cannot send the same event again. A new entry into
-// stuck / done may notify again (fresh timestamp). Artifact and
-// assign-subscription fire once until that field is first set.
+// stuck / done may notify again (fresh timestamp). Artifact fires once until
+// that field is first set.
 function takeNotifyEvents(before, card) {
   const events = [];
   if (!BOARD.notifyEnabled) return events;
@@ -579,14 +579,6 @@ function takeNotifyEvents(before, card) {
       && card.links.artifact !== before.artifact
       && !card.notified?.artifact) {
     stamp('artifact');
-  }
-  if (card.stage === 'grilled'
-      && !card.subscription
-      && card.lane
-      && !before.lane
-      && BOARD.subscriptions.length
-      && !card.notified?.assignSubscription) {
-    stamp('assignSubscription');
   }
   return events;
 }
@@ -624,11 +616,8 @@ async function emitNotifications(card, events) {
       if (kind === 'artifact' && s.artifactReady) await s.artifactReady(card);
       else if (kind === 'stuck' && s.stuck) await s.stuck(card, stuckDigest(card));
       else if (kind === 'done' && s.done) await s.done(card);
-      else if (kind === 'assignSubscription' && s.assignSubscription) {
-        await s.assignSubscription(card, BOARD.subscriptions);
-      }
     } catch (e) {
-      console.error(`${new Date().toISOString()} telegram notify ${kind} failed: ${String(e?.message || e)}`);
+      console.error(`telegram notify ${kind} failed: ${String(e?.message || e)}`);
     }
   }
 }
@@ -956,7 +945,7 @@ async function writeStatus(id, body) {
   });
 }
 
-// Owner (or the Telegram bot on their behalf) picks who pays for the run.
+// The owner-facing client records who pays for the run.
 // Only from Grilled, only while none is set; the card then walks into
 // Ticketed in the same write, where the CTO writes the GitHub tickets before
 // development starts.
@@ -1094,18 +1083,15 @@ async function pageData() {
 
 // ---------------------------------------------------------------- shadow
 //
-// Step 1 of "the board decides the stage itself": for every stream card (a card
+// Step 1 of "the board decides the stage itself": for every window card (a card
 // with a window) the board computes what stage it WOULD set from observable
 // facts — open PRs, merged PRs, open unit tickets of the umbrella, lanes — and
 // writes it NOWHERE. The verdict is shown on the card and in the JSON, so the
 // rule can be checked against reality before any automatic transition exists.
 // Facts arrive from watchtower.mjs after every sweep of the windows board.
 //
-// Two hard rules, decided by the design review:
-//   - unknown is never read as empty: a dead or stale source voids every verdict;
-//   - a stream whose sprint scope is not machine-readable (no units:"issues"
-//     promise in stream-watch, no branch prefixes, no umbrella) can never reach
-//     done — the card says what is missing instead.
+// Unknown is never read as empty: a dead or stale source voids every verdict.
+// A card also needs an umbrella so its sprint scope can be read from issues.
 const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'merged', 'done']);
 let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
@@ -1464,10 +1450,6 @@ function shadowVerdict(card, f, staleSources, at) {
   } else if (f.working) {
     v.would = 'development';
     v.reasons.push('the agent is working and no PR is open');
-  } else if (!f.unitsPromised) {
-    v.reasons.push('sprint scope not visible: stream-watch has no units:"issues" promise');
-  } else if (!f.hasPrefixes) {
-    v.reasons.push('sprint scope not visible: stream-watch has no branch prefixes');
   } else if (!f.umbrella) {
     v.reasons.push('sprint scope not visible: no umbrella issue');
   } else if (f.openUnitIssues.length) {
@@ -1636,7 +1618,7 @@ function renderToonPipeline(v) {
     + ' is /pipeline/edge-cases (plain text)');
   help.push('idle-lanes: a lane assigned to a sprint is free while a unit of that sprint is'
     + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
-    + ' after a short grace the board alarms the owner and the CTO window');
+    + ' after a short grace the board alarms the owner on Telegram');
   help.push('auto-dispatch: the board itself sends a startable unit to a free assigned lane'
     + ' (task file = ticket + committed role rules + base, spec bundle shipped, launcher from the fleet)'
     + ' — review rows run before develop rows, and merge rows show the board\'s merge decision;'

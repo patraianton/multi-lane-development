@@ -881,7 +881,7 @@ function render(d) {
   else if (d.pageVersion && d.pageVersion !== pageVersion) { location.reload(); return; }
   lastData = d;
   $('project').textContent = d.project ?? '';
-  const warn = [d.probeStale, d.hooksNotice, d.slotsAlarm].filter(Boolean).join(' · ');
+  const warn = d.probeStale || '';
   $('board-warn').textContent = warn;
   $('board-warn').hidden = !warn;
   if ($('settings').classList.contains('open')) renderSettings(d);
@@ -1982,7 +1982,8 @@ function wirePipeline(data) {
     el.onclick = (ev) => {
       ev.stopPropagation();
       const name = el.dataset.window;
-      const win = ((lastData && lastData.cards) || []).find(c => !c.manual && c.name === name);
+      const win = ((lastData && lastData.cards) || [])
+        .find(c => !c.manual && (c.name === name || c.window === name));
       if (win && win.tab) post('/focus', { tab: win.tab });
       else showError('window "' + name + '" is not on the windows board right now');
     };

@@ -370,7 +370,7 @@ export function accessDecision(req, url, viewer) {
   if (p === '/pipeline/data' || p.startsWith('/api/')) {
     return (founder || agent) ? 'allow' : 'deny';
   }
-  if (p.startsWith('/pipeline/') || p === '/hooks/enqueue') {
+  if (p.startsWith('/pipeline/')) {
     return (founder || agent) ? 'allow' : 'deny';
   }
   if (p.startsWith('/card/') || p === '/project/select' || p === '/focus') {

@@ -1,8 +1,8 @@
 // Idle lanes (decision 15): a lane assigned to a sprint sits free while a unit
 // of that sprint waits with nothing in its way. That is never a state to sit
 // in — the board says so itself: a line on the page and in /api/pipeline at
-// once, and after a short grace an alarm (Telegram to the owner, a hook into
-// the CTO window). Lanes are for writing code; the CI/PR queue never holds one.
+// once, and after a short grace an alarm to the owner. Lanes are for writing
+// code; the CI/PR queue never holds one.
 //
 // Pure: watchtower.mjs feeds it the sprint facts and the ledger; tests feed
 // fixtures.
@@ -117,12 +117,4 @@ function fmtMin(ms) {
 export function idleLine(f) {
   const queued = (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
   return `${f.free.join(', ')} free for ${fmtMin(f.ageMs)} while ${queued} ${f.startable.length === 1 ? 'waits' : 'wait'} with nothing in the way`;
-}
-
-// The alarm text for the CTO window: what to do, not what happened.
-export function idleAlarmText(f) {
-  const queued = (f.startable ?? []).map(u => `${u.unit ? u.unit + ' ' : ''}#${u.ticket}`).join(', ');
-  return `ACHTUNG (board): sprint "${f.card.title}" — lanes ${f.free.join(', ')} have been free for ${fmtMin(f.ageMs)} `
-    + `while ${queued} ${f.startable.length === 1 ? 'is' : 'are'} queued and startable. `
-    + 'Lanes are for code and nothing else holds them (MANDATE.md §3): dispatch now, then report which unit is on which lane.';
 }
