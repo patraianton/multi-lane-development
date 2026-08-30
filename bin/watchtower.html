@@ -174,7 +174,7 @@
   .sprint-band .sprint-panel-wrap.collapsed .sprint-brief { display: flex; }
   .sprint-band .sprint-panel-wrap.collapsed .sprint-panel,
   .sprint-band .sprint-panel-wrap.collapsed .sprint-card-detail { display: none; }
-  .sprint-band .sprint-brief .caret, .sprint-band .fold-btn .caret, .offboard-zone .caret {
+  .sprint-band .sprint-brief .caret, .sprint-band .fold-btn .caret, .offboard-zone .caret, .dispatch-zone .caret {
     display: inline-block; width: 0; height: 0; border-left: 5px solid currentColor;
     border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform 120ms ease;
   }
@@ -410,8 +410,12 @@
   /* Auto-dispatch (decision 16): what the board sends to free lanes, or would. */
   .dispatch-zone { display: none; margin-bottom: 13px; padding: 7px 10px 8px; border: 1px solid var(--line-soft); border-radius: 9px; background: rgba(8, 13, 19, .35); }
   .dispatch-zone.on { display: block; }
-  .dispatch-zone > h2 { margin: 0 0 6px; font-size: 10px; line-height: 1.35; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim); }
+  .dispatch-zone > h2 { margin: 0 0 6px; font-size: 10px; line-height: 1.35; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim); cursor: pointer; }
   .dispatch-zone > h2 b { color: var(--ink-mid); }
+  .dispatch-zone > h2 .caret { margin-right: 6px; transform: rotate(90deg); }
+  .dispatch-zone.collapsed > h2 { margin-bottom: 0; }
+  .dispatch-zone.collapsed > h2 .caret { transform: none; }
+  .dispatch-zone.collapsed .dz-row { display: none; }
   .dispatch-zone .dz-row { font: 11px var(--mono); line-height: 1.5; color: var(--ink-mid); overflow-wrap: anywhere; }
   .dispatch-zone .dz-state { color: var(--ink-dim); }
   .dispatch-zone .dz-state.sent { color: var(--done); }
@@ -988,17 +992,18 @@ let pipeSeen = '';
 let pipeTimer = null;
 let lastPipe = null;
 const openCards = new Set();
-// What the owner unfolded in this browser: sprints by id, the off-board zone.
-// Absent = folded (the default, owner 29.08).
-let folds = { sprints: {}, offboard: true };
+// What the owner unfolded in this browser: sprints by id, the off-board zone,
+// the auto-dispatch zone. Absent = folded (the default, owner 29.08).
+let folds = { sprints: {}, offboard: true, dispatch: true };
 try {
   const saved = JSON.parse(localStorage.getItem('watchtower-folds') || 'null');
-  if (saved && typeof saved === 'object') folds = { sprints: saved.sprints || {}, offboard: saved.offboard !== false };
+  if (saved && typeof saved === 'object') folds = { sprints: saved.sprints || {}, offboard: saved.offboard !== false, dispatch: saved.dispatch !== false };
 } catch (e) {}
 function saveFolds() { try { localStorage.setItem('watchtower-folds', JSON.stringify(folds)); } catch (e) {} }
 function isSprintFolded(id) { return folds.sprints[id] !== false; }
 function toggleSprintFold(id) { folds.sprints[id] = isSprintFolded(id) ? false : true; saveFolds(); if (lastPipe) renderPipeline(lastPipe); }
 function toggleOffBoardFold() { folds.offboard = !folds.offboard; saveFolds(); if (lastPipe) renderPipeline(lastPipe); }
+function toggleDispatchFold() { folds.dispatch = !folds.dispatch; saveFolds(); if (lastPipe) renderPipeline(lastPipe); }
 // Each sprint owns its table order. Refreshes rebuild the band, so sorting
 // lives outside the DOM and survives the three-second redraw cycle.
 const sprintBandSort = new Map();
@@ -1904,8 +1909,9 @@ function renderPipeline(d) {
   const adRows = Array.isArray(ad.rows) ? ad.rows : [];
   const dzZone = $('dispatch-zone');
   dzZone.classList.toggle('on', adRows.length > 0);
+  dzZone.classList.toggle('collapsed', folds.dispatch);
   dzZone.innerHTML = adRows.length
-    ? '<h2>Auto-dispatch — ' + (ad.on ? '<b>on</b>' : 'off, dry-run') + ' · ' + adRows.length + ' line' + (adRows.length === 1 ? '' : 's') + '</h2>'
+    ? '<h2 data-dz-toggle="1" title="' + (folds.dispatch ? 'open the list' : 'fold the list') + '"><span class="caret"></span>Auto-dispatch — ' + (ad.on ? '<b>on</b>' : 'off, dry-run') + ' · ' + adRows.length + ' line' + (adRows.length === 1 ? '' : 's') + '</h2>'
       + adRows.map(r => {
         const st = String(r.state || '');
         const cls = /^launched|^dispatched|^merged/.test(st) ? 'sent' : (/^failed|^merge failed/.test(st) ? 'bad' : '');
@@ -1950,6 +1956,10 @@ function wirePipeline(data) {
   const obHead = document.querySelector('#offboard-zone [data-ob-toggle]');
   if (obHead) {
     obHead.onclick = (ev) => { if (ev.target.closest('a')) return; ev.stopPropagation(); toggleOffBoardFold(); };
+  }
+  const dzHead = document.querySelector('#dispatch-zone [data-dz-toggle]');
+  if (dzHead) {
+    dzHead.onclick = (ev) => { if (ev.target.closest('a')) return; ev.stopPropagation(); toggleDispatchFold(); };
   }
   for (const b of document.querySelectorAll('#sprint-band [data-sprint-sort]')) {
     b.onclick = (ev) => {
