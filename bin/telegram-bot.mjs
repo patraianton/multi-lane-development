@@ -199,10 +199,8 @@ function idleLanesText(cfg, card, finding) {
 }
 
 function readyText(cfg, card) {
-  return message([
-    tagOf(ownerOf(cfg)),
-    `Sprint "${cardTitleOf(card)}" is ready for acceptance.`,
-  ]);
+  const umbrella = String(card?.links?.ticket ?? card?.umbrella?.url ?? '').trim();
+  return `Sprint ${cardTitleOf(card)} is ready for acceptance — ${umbrella}`;
 }
 
 function doneText(cfg, card) {
@@ -348,7 +346,10 @@ const SELFTEST_CARD = {
   title: 'Ship the pipeline Telegram bot',
   stage: 'grilled',
   consecutiveFails: 3,
-  links: { artifact: 'https://example.com/artifact/grill-1' },
+  links: {
+    artifact: 'https://example.com/artifact/grill-1',
+    ticket: 'https://github.com/acme/web/issues/42',
+  },
 };
 
 async function runSelftest() {

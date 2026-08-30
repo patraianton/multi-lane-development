@@ -66,7 +66,10 @@ test('senders need no board credentials and route group and owner messages', asy
     const card = {
       id: 'c-routing',
       title: 'Routing proof',
-      links: { artifact: 'https://artifacts.example/routing-proof' },
+      links: {
+        artifact: 'https://artifacts.example/routing-proof',
+        ticket: 'https://github.com/acme/web/issues/42',
+      },
     };
     await notifyArtifactReady(card);
     await notifyDone(card);
@@ -97,6 +100,8 @@ test('senders need no board credentials and route group and owner messages', asy
       assert.ok(!send.text.includes('#pipeline/'), 'group message has no board deep link');
     }
     assert.ok(!sends[3].text.includes('The CTO window has been told to dispatch'));
+    assert.equal(sends[4].text,
+      'Sprint Routing proof is ready for acceptance — https://github.com/acme/web/issues/42');
   } finally {
     configureTelegram(null);
     globalThis.fetch = originalFetch;
