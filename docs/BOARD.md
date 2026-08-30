@@ -17,6 +17,12 @@ gets: `docs/RULES.md`. The lanes: `docs/FLEET.md`. The HTTP API: `docs/API.md`.
 
 Nobody but the board starts a lane, a review or a merge. There is no orchestrator window.
 
+A lane belongs to whoever launched the task on it. Before stopping a lane, read its `TASK-<n>.md` (or the
+branch checked out in the folder): a task you did not launch is not yours to stop — write on the ticket instead.
+Hand-run work takes a reserved lane (`<lane>.reserved`, FLEET.md) and a line in the umbrella; a hand queue never
+competes with the board for a free lane. Edge case 2026-08-30: a sprint window's stop script killed the board's
+U2b #1685 on hostinger/lane-4 by lane number (`state/edge-cases.md`).
+
 ## 2. The road
 
 `spec → grilled → ticketed → development → local_check → ci_pr → merged → done`, plus `stuck` = needs the owner.
