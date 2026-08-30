@@ -35,7 +35,23 @@ test('startable: queued with every dependency merged, closed, or at least on an 
   assert.equal(startable({ state: 'queued', depsMerged: true, deps: [{ met: true }] }), true);
   assert.equal(startable({ state: 'on lane', deps: [] }), false);
   assert.equal(startable({ qa: true, open: true, deps: [] }), true);
+  assert.equal(startable({ qa: true, open: true, deps: [{ met: false, state: 'pr green' }] }), true, 'a QA finding is an ordinary develop ticket');
   assert.equal(startable({ qa: true, open: true, pr: { number: 1 }, deps: [] }), false);
+});
+
+test('qa-run is startable only while open and after every dependency is merged or closed', () => {
+  const ready = {
+    labels: ['QA-RUN'], qa: true, open: true, state: 'open', deps: [{ met: true, state: 'merged' }],
+  };
+  assert.equal(startable(ready), true, 'the label comparison is case-normalized');
+  assert.equal(startable({ ...ready, deps: [{ met: false, state: 'pr green' }] }), false, 'an open PR is not enough');
+  assert.equal(startable({ ...ready, open: false }), false);
+  assert.equal(startable({ ...ready, merged: { number: 1 } }), false);
+  assert.equal(startable({ ...ready, pr: { number: 2 } }), false);
+  assert.equal(startable({ ...ready, lane: { lane: 'lane-6' } }), false);
+  assert.equal(startableOnBoard({ ...ready, ticket: 1605 }, 'cs', [
+    { parent: 'cs', ticket: 1605, stage: 'ticketed', links: {}, lane: 'mac/lane-6' },
+  ]), false, 'a lane recorded on the unit card also means the run has started');
 });
 
 test('a finding per active sprint with a free lane and a startable unit; U7 behind a lane is not counted', () => {
@@ -44,6 +60,25 @@ test('a finding per active sprint with a free lane and a startable unit; U7 behi
   assert.equal(f[0].key, 'idle:cs');
   assert.deepEqual(f[0].free, ['mac/lane-6', 'mac/lane-7']);
   assert.deepEqual(f[0].startable.map(u => u.ticket), [1583, 1599]);
+});
+
+test('ticketed and merged sprints expose ticketed unit cards for dispatch', () => {
+  const board = [
+    { id: 'early', title: 'ticketed sprint', stage: 'ticketed' },
+    { id: 'early-unit', parent: 'early', ticket: 2001, stage: 'ticketed', links: {} },
+    { id: 'late', title: 'merged sprint', stage: 'merged' },
+    { id: 'late-qa', parent: 'late', ticket: 2002, stage: 'ticketed', links: {} },
+  ];
+  const sprints = new Map([
+    ['early', sprint({ free: ['mac/lane-6'], units: [{ unit: 'U1', ticket: 2001, state: 'queued', deps: [] }], qaTickets: [] })],
+    ['late', sprint({ free: ['mac/lane-7'], units: [], qaTickets: [{ unit: 'QA', ticket: 2002, qa: true, open: true, deps: [] }] })],
+  ]);
+
+  const findings = idleLaneFindings(board, sprints);
+  assert.deepEqual(findings.map(f => [f.card.stage, f.startable.map(u => u.ticket)]), [
+    ['ticketed', [2001]],
+    ['merged', [2002]],
+  ]);
 });
 
 test('no free lane, no startable unit, or a stale source → no finding', () => {
@@ -81,7 +116,7 @@ test('the board remembers: a unit whose card left ticketed or carries a PR is ne
   const withCards = [
     ...cards,
     { id: 'u3b', title: 'U3b #1583', stage: 'ci_pr', parent: 'cs', ticket: 1583, links: { pr: 'https://github.com/acme/web/pull/1605' } },
-    { id: 'q1599', title: 'QA #1599', stage: 'qa', parent: 'cs', ticket: 1599, links: { pr: '' }, lane: '' },
+    { id: 'q1599', title: 'QA #1599', stage: 'ticketed', parent: 'cs', ticket: 1599, links: { pr: '' }, lane: '' },
   ];
   // Facts lag: U3b looks queued (open PR gone, merge not yet seen) — the card says it has started.
   const f = idleLaneFindings(withCards, new Map([['cs', sprint()]]), { at: 'T' });
@@ -89,4 +124,5 @@ test('the board remembers: a unit whose card left ticketed or carries a PR is ne
   assert.equal(startableOnBoard({ state: 'queued', deps: [], ticket: 1583 }, 'cs', withCards), false);
   assert.equal(startableOnBoard({ state: 'queued', deps: [], ticket: 9999 }, 'cs', withCards), true, 'no card yet: facts decide');
   assert.equal(startableOnBoard({ qa: true, open: true, deps: [], ticket: 1599 }, 'cs', [{ id: 'q', parent: 'cs', ticket: 1599, stage: 'qa', links: {}, lane: 'mac/lane-6' }]), false, 'a QA card with a lane has started');
+  assert.equal(startableOnBoard({ qa: true, open: true, deps: [], ticket: 1599 }, 'cs', [{ id: 'q', parent: 'cs', ticket: 1599, stage: 'merged', links: {}, lane: '' }]), false, 'a QA card outside ticketed has already started');
 });
