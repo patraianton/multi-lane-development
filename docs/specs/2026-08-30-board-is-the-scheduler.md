@@ -1,272 +1,277 @@
-# Доска — планировщик. Спека
+# The board is the scheduler — spec
 
-Дата: 30.08.2026. Владелец: Антон. Статус: на проверке у владельца.
-Основание: разбор 29.08 (`_conveyor/autopase.lv/reports/2026-08-29-reglament-review-finance-cards-R1.md`)
-и лист фактов 30.08 (`…/reports/2026-08-30-board-as-orchestrator-facts.md`).
+Date: 2026-08-30. Owner: Anton. Status: under owner review.
+Grounds: the 2026-08-29 review (`_conveyor/autopase.lv/reports/2026-08-29-reglament-review-finance-cards-R1.md`)
+and the 2026-08-30 fact sheet (`…/reports/2026-08-30-board-as-orchestrator-facts.md`).
 
-## 0. Что меняется одним абзацем
+## 0. What changes, in one paragraph
 
-Задачи на полосы ставит доска, а не агент. Доска уже умеет это (авто-раздача, решение 16, работает
-с 29.08); мы убираем второго диспетчера — окно потока — и достраиваем доске то, чего ей не хватает:
-раздачу во всех стадиях, круг починки, проверку PR, слияние, чтение отчёта полосы и тревоги.
-Агент остаётся один — **оркестратор** — и вызывается доской под конкретный случай: нарезать спеку
-или разобрать то, что доска решить не может. Правила — один файл, каждой роли своя часть, версия
-закреплена за спринтом.
+Work is put on lanes by the board, not by an agent. The board already can (auto-dispatch, decision 16,
+live since 2026-08-29); we remove the second dispatcher — the stream window — and build the rest the
+board lacks: dispatch in every stage, the fix round, PR review, the merge, reading the lane's report,
+and alarms. One agent remains — the **orchestrator** — and the board calls it for a specific case: cut
+a spec into tickets, or resolve what the board cannot decide. The rules are one file, one section per
+role, its version pinned to the sprint.
 
-## 1. Кто есть
+## 1. Who exists
 
-| Кто | Что делает | Как запускается | Кого больше нет |
+| Who | Does | Started by | Retired |
 |---|---|---|---|
-| **Доска** (Watchtower, 127.0.0.1:4878) | ставит задачи, двигает карточки по фактам, запускает проверку PR, вливает, бьёт тревогу | один процесс, задача планировщика Windows | — |
-| **Полоса** (8 штук: lanes-01 ×3, hostinger ×2, mac ×3) | одно задание от доски: роль *разработчик* / *чинильщик* / *проверяющий* / *решатель конфликтов* | `hzlane N "Прочитай <файл> и выполни целиком"` (Mac — `maclane N`), свежий запуск на каждое задание | — |
-| **Оркестратор** | режет спеку на тикеты (гриль + нарезка); разбирает случаи из закрытого списка §9 | доска открывает свежую вкладку herdr с заданием `TASK-ORCH-<случай>.md`; агент делает и закрывается | окно CTO, окно потока (стрим-оркестратор) |
-| **Владелец** | спека, ответы на вопросы гриля, подписка на спринт, порядок спринтов, приёмка, прод | доска и Telegram | — |
+| **Board** (Watchtower, 127.0.0.1:4878) | dispatches work, moves cards by facts, starts PR review, merges, raises alarms | one process, a Windows Scheduled Task | — |
+| **Lane** (8: lanes-01 ×3, hostinger ×2, mac ×3) | one task from the board, in the role *developer* / *fixer* / *reviewer* / *conflict resolver* | `hzlane N "Read <file> and do it whole"` (Mac: `maclane N`), a fresh run per task | — |
+| **Orchestrator** | cuts a spec into tickets (grill + cut); resolves the cases in the closed list of §9 | the board opens a fresh herdr tab with `TASK-ORCH-<case>.md`; the agent does the task and closes | the CTO window, the stream window |
+| **Owner** | the spec, grill answers, the sprint's subscription, sprint order, acceptance, production | the board and Telegram | — |
 
-Полосы **никогда** не запускает никто, кроме доски. Окна потоков и CTO-окно упраздняются;
-их обязанности разобраны в §11.
+Nobody but the board **ever** starts a lane. Stream windows and the CTO window are retired; their
+duties are reassigned in §11.
 
-## 2. Дорога карточки
+## 2. The card's road
 
-Стадии не меняются: `spec → grilled → ticketed → development → local_check → ci_pr → merged → done`,
-плюс `stuck`, которая теперь значит **«нужно решение»** (§9). Карточка спринта — свод; карточки
-единиц (по одному тикету) доска рождает сама и двигает только по фактам, только вперёд.
+Stages do not change: `spec → grilled → ticketed → development → local_check → ci_pr → merged → done`,
+plus `stuck`, which now means **"needs a decision"** (§9). The sprint card is the roll-up; unit cards
+(one per ticket) are spawned by the board and move by facts only, forward only.
 
-| Переход | Факт, по которому доска двигает |
+| Transition | Fact the board moves on |
 |---|---|
-| spec → grilled | оркестратор закончил гриль, ответы владельца вшиты (как сейчас) |
-| grilled → ticketed | подписка назначена владельцем (как сейчас); **новое**: на входе в `ticketed` доска сама даёт оркестратору задание «нарежь» (§9) |
-| ticketed → development | зонтик и тикеты единиц есть, и доска сама отправила первую единицу на полосу (**новое**: раньше это делал человек) |
-| development → local_check | на полосе идёт локальная проверка (как сейчас) |
-| local_check → ci_pr | PR открыт (как сейчас) |
-| ci_pr → merged | доска влила PR (**новое**: раньше окно потока) |
-| merged → done | тикет закрыт приёмкой позже 2 минут после слияния (как сейчас, человек) |
-| любая → stuck | случай из §9 |
-| stuck → прежняя | оркестратор вернул карточку через `POST /pipeline/card/unstuck` (**новое**: раньше только человек) |
+| spec → grilled | the orchestrator finished the grill, the owner's answers are sewn in (as today) |
+| grilled → ticketed | the owner assigned the subscription (as today); **new:** on entering `ticketed` the board gives the orchestrator the task "cut" (§9) |
+| ticketed → development | the umbrella and the unit tickets exist, and the board dispatched the first unit itself (**new:** a person did this before) |
+| development → local_check | the local check runs on the lane (as today) |
+| local_check → ci_pr | the PR is open (as today) |
+| ci_pr → merged | the board merged the PR (**new:** the stream window did this before) |
+| merged → done | the ticket was closed by acceptance later than 2 minutes after the merge (as today, a person) |
+| any → stuck | a case from §9 |
+| stuck → previous | the orchestrator returned the card via `POST /pipeline/card/unstuck` (**new:** only a person could before) |
 
-## 3. Очередь и приоритет
+## 3. The queue and its priority
 
-За полосу конкурируют три сорта заданий. Порядок раздачи — **по слову владельца 30.08**:
+Three kinds of task compete for a lane. Dispatch order — **the owner's word, 2026-08-30**:
 
-1. **Починка** по открытому PR: свежий `NO-GO` от проверяющего, либо красная проверка после одного
-   автоповтора. Роль *чинильщик*.
-2. **Новая единица**: тикет открыт, без полосы и без PR, все зависимости влиты или на открытом PR
-   (одном), у тикета есть ветка. Роль *разработчик*.
-3. **QA-находка** после слияния (тикет с меткой `qa`, ссылкой на зонтик). Роль *разработчик*.
+1. **Fix** on an open PR: a fresh `NO-GO` from the reviewer, or a red check after one automatic retry.
+   Role *fixer*.
+2. **New unit**: the ticket is open, has no lane and no PR, every dependency is merged or on one open PR,
+   the ticket has a branch. Role *developer*.
+3. **QA finding** after the merge (a ticket labelled `qa`, linked to the umbrella). Role *developer*.
 
-Проверка PR (роль *проверяющий*) — вне очереди: открытый PR без проверяющего берёт первую свободную
-полосу раньше всего, потому что он короткий и разблокирует слияние.
+PR review (role *reviewer*) is outside the queue: an open PR without a reviewer takes the first free lane
+before anything else, because it is short and it unblocks the merge.
 
-Между спринтами: верхняя карточка на доске — первая. Порядок двигает владелец руками.
-Внутри спринта: порядок единиц из зонтика.
+Between sprints: the top card on the board goes first; the owner orders cards by hand.
+Within a sprint: the unit order from the umbrella.
 
-## 4. Цикл планировщика (раз в 30 секунд)
-
-```
-1. данные о полосах, PR или тикетах старше 10 минут → ничего не делать
-2. для каждого открытого PR без проверяющего и без вердикта на текущей голове:
-      свободная полоса → задание «проверяющий», запустить
-3. очередь = починки + новые единицы + QA-находки (порядок §3), спринты сверху вниз
-4. для каждой свободной полосы: взять первое из очереди,
-      собрать задание (§5), скопировать, запустить, записать в журнал
-5. для каждого PR: зелёная проверка на точной голове И GO на той же голове → влить,
-      карточка → merged
-6. полоса освободилась: прочитать последнюю строку REPORT-<тикет>.md (§8)
-7. случай из §9 → карточка в stuck, задание оркестратору
-8. тревоги (§8)
-```
-
-Строки 1, 3 (частично), 4, 5 (вердикт читает) уже есть в `bin/auto-dispatch.mjs`, `bin/idle-lanes.mjs`,
-`bin/pipeline.mjs`. Новое: 2, 3 (починки, QA, стадии `ticketed` и `merged`), 5 (само слияние), 6, 7, 8.
-
-## 5. Задание полосы
-
-Один файл `TASK-<тикет>[-FIX-R<n>|-REVIEW-R<n>|-MERGE].md` в кухне полосы. Строение (как сейчас, с двумя
-изменениями — роль и версия правил):
+## 4. The scheduler loop (every 30 seconds)
 
 ```
-# TASK-<тикет> — <название>
+1. lane, PR or ticket data older than 10 minutes → do nothing
+2. for every open PR with no reviewer and no verdict on its current head:
+      a free lane → the "reviewer" task, start it
+3. queue = fixes + new units + QA findings (order §3), sprints top to bottom
+4. for every free lane: take the first item of the queue,
+      build the task file (§5), copy it, start the lane, write the journal
+5. for every PR: green check on the exact head AND GO on the same head → merge,
+      card → merged
+6. a lane became free: read the last line of REPORT-<ticket>.md (§8)
+7. a case from §9 → card to stuck, task for the orchestrator
+8. alarms (§8)
+```
+
+Lines 1, 3 (partly), 4 and 5 (reading the verdict) exist in `bin/auto-dispatch.mjs`, `bin/idle-lanes.mjs`
+and `bin/pipeline.mjs`. New: 2, 3 (fixes, QA, the `ticketed` and `merged` stages), 5 (the merge itself),
+6, 7, 8.
+
+## 5. The lane's task file
+
+One file `TASK-<ticket>[-FIX-R<n>|-REVIEW-R<n>|-MERGE].md` in the lane's kitchen. Its shape (as today, with
+two changes — the role and the rules version):
+
+```
+# TASK-<ticket> — <title>
 Sprint …, umbrella #…, ticket #…
-Lane: … Branch: … Base: <ref или sha>   Repository: …
+Lane: … Branch: … Base: <ref or sha>   Repository: …
 Role: lane | fixer | reviewer | resolver
-Rules: docs/RULES.md @ <sha>            ← версия правил спринта (§10)
-Spec bundle: <путь> | none shipped
+Rules: docs/RULES.md @ <sha>            ← the sprint's rules version (§10)
+Spec bundle: <path> | none shipped
 ---
-<раздел common из RULES.md @ sha>
-<раздел роли из RULES.md @ sha>
+<the common section of RULES.md @ sha>
+<the role's section of RULES.md @ sha>
 ---
-# TICKET #<тикет> — verbatim
-<текст тикета с GitHub дословно>
-[для чинильщика:]
+# TICKET #<ticket> — verbatim
+<the ticket body from GitHub, verbatim>
+[for the fixer:]
 ---
 # VERDICT R<n> — verbatim
-<текст вердикта проверяющего с PR дословно>
+<the reviewer's verdict from the PR, verbatim>
 ```
 
-Правила:
-- Файл собирает только доска. Рукописный `BRIEF-COMMON-*.md` из папки спека **больше не подставляется**
-  (вчера он подменил правила целиком и разрешил `Closes #`).
-- «Тикет побеждает» — только про *что строить*. Запреты и порядок сдачи из `RULES.md` побеждают тикет всегда.
-- Если у тикета нет строки `Branch:`, доска сама именует ветку `feat/<спринт>-<тикет>` и дописывает
-  строку в тикет через `gh issue edit`.
-- Ветка уже есть на GitHub: если по ней есть влитый PR — единица снимается с очереди как готовая;
-  если PR нет — один раз в stuck (§9), а не повтор каждые 10 минут.
-- Полоса ничего не хранит между заданиями: ветка живёт на GitHub, починка и повтор идут на любой
-  свободной полосе. Проверяющий — не на той полосе, где писался код (чужие глаза).
-- Задание на полосу без сборки (`lane-3`): только тикеты с меткой `no-build`.
+Rules:
+- Only the board builds the file. A hand-written `BRIEF-COMMON-*.md` from the spec folder **is no longer
+  substituted** (yesterday it replaced the rules wholesale and allowed `Closes #`).
+- "The ticket wins" is about *what to build* only. The bans and the delivery order from `RULES.md` win
+  over the ticket always.
+- If the ticket has no `Branch:` line, the board names the branch `feat/<sprint>-<ticket>` itself and adds
+  the line to the ticket with `gh issue edit`.
+- The branch already exists on GitHub: if a merged PR carries it, the unit leaves the queue as done; if
+  no PR does — once to stuck (§9), not a retry every 10 minutes.
+- A lane keeps nothing between tasks: the branch lives on GitHub, a fix or a retry runs on any free lane.
+  The reviewer runs on a lane other than the one that wrote the code (a second pair of eyes).
+- A task for the no-build lane (`lane-3`): tickets labelled `no-build` only.
 
-## 6. Проверка PR и слияние — доской
+## 6. PR review and merge — by the board
 
-- **Проверяющий** — задание на полосе (Codex), один на PR, роль `reviewer` из `RULES.md`. Запускается
-  по факту «PR открыт» (сразу, вместе с CI), и заново — по факту «новая голова после NO-GO».
-  Отменяет правило от 23.08 «один Opus-проверяющий на PR» — по слову владельца 30.08.
-- Вердикт — первая строка комментария в PR, простым текстом: `R<n> — GO` / `R<n> — NO-GO`, вторая строка
-  `head <sha>`. Вердикт без `head` или с чужой головой не засчитывается.
-- **Слияние** делает доска: `gh pr merge --squash` только когда проверка зелёная на точной голове **и**
-  GO с той же головы. Окно/агент к слиянию не прикасается; защита ветки на GitHub требует статус
-  «вердикт на этой голове».
-- `NO-GO` → карточка назад в `development`, задание чинильщику (§3 п.1). Третий `NO-GO` подряд → stuck.
-- Конфликт с `main` при слиянии → задание *решателю* (`-MERGE`): влить `origin/main`, чужие файлы не
-  трогать; не смог — stuck.
+- **The reviewer** is a lane task (Codex), one per PR, role `reviewer` from `RULES.md`. It starts on the
+  fact "PR open" (at once, alongside CI) and again on the fact "new head after NO-GO". This retires the
+  2026-08-23 rule "one Opus reviewer per PR" — the owner's word, 2026-08-30.
+- The verdict is the first line of a PR comment, plain text: `R<n> — GO` / `R<n> — NO-GO`; the second line
+  `head <sha>`. A verdict without `head`, or with another head, does not count.
+- **The merge** is the board's: `gh pr merge --squash` only when the check is green on the exact head
+  **and** GO is from the same head. No window or agent touches the merge; branch protection on GitHub
+  requires the status "verdict on this head".
+- `NO-GO` → the card goes back to `development`, a task for the fixer (§3 item 1). The third `NO-GO` in a
+  row → stuck.
+- A conflict with `main` at merge time → a task for the *resolver* (`-MERGE`): merge `origin/main`, touch
+  no one else's files; cannot → stuck.
 
-## 7. QA (решение 21 от 30.08)
+## 7. QA (decision 21, 2026-08-30)
 
-QA — обычный тикет, который доска рождает по шаблону по факту «все единицы спринта влиты», и раздаёт
-как единицу (роль *разработчик*, Mac-полоса, метка `qa-run`). Находки QA — тикеты с меткой `qa` на
-зонтик; после их слияния доска рождает второй QA-тикет («финальный проход»). Спринт `merged → done`
-только после закрытия второго QA-тикета и приёмки владельца.
+QA is an ordinary ticket the board spawns from a template on the fact "every unit of the sprint is merged"
+and dispatches like a unit (role *developer*, a Mac lane, label `qa-run`). QA findings are tickets labelled
+`qa` on the umbrella; once they merge, the board spawns the second QA ticket (the final walk). The sprint
+goes `merged → done` only after the second QA ticket is closed and the owner accepts.
 
-## 8. Обратная связь и тревоги
+## 8. Feedback and alarms
 
-Чего сейчас нет вовсе — доска узнаёт о результате только по PR.
+What does not exist at all today — the board learns the result only from the PR.
 
-- Полоса освободилась → доска читает по ssh последнюю строку `REPORT-<тикет>.md`.
-  `DONE #<тикет> <PR> <sha>` и PR есть → норма. Нет отчёта или нет PR → **неудача**: один автоповтор
-  на другой полосе, вторая неудача → stuck (§9). Журнал: ключ «тикет + круг», не «тикет».
-- Полоса освободилась быстрее 3 минут без PR дважды подряд на одном сервере → сервер помечен
-  «нездоров» (лимит подписки, бан, сломанный дом), выводится из раздачи, одно сообщение владельцу.
-- Полоса «занята» дольше 3 часов без пуша, или лог полосы молчит 20 минут → считается зависшей:
-  доска пишет в stuck, задание оркестратору «проверь полосу».
-- **Тревоги — ровно три**, все в Telegram владельцу (адрес — в настройках доски, обязателен):
-  1. в очереди есть задание, а свободной полосы нет дольше 5 минут;
-  2. полоса умерла без PR (после автоповтора);
-  3. карточка в stuck без движения 30 минут.
-  Повтор одной тревоги — не чаще раза в час. Крючки в окна (`hooks`) остаются только для запуска
-  оркестратора (§9); тревоги через них не ходят — им нужен адресат вне компьютера.
+- A lane became free → the board reads the last line of `REPORT-<ticket>.md` over ssh.
+  `DONE #<ticket> <PR> <sha>` and the PR exists → fine. No report or no PR → **a failure**: one automatic
+  retry on another lane, a second failure → stuck (§9). The journal key is "ticket + round", not "ticket".
+- A lane freed in under 3 minutes without a PR twice in a row on one host → the host is marked
+  **unhealthy** (subscription limit, ban, broken home), leaves the rotation, one message to the owner.
+- A lane "busy" for more than 3 hours without a push, or a lane log silent for 20 minutes → counted as
+  hung: the board sends the card to stuck and the orchestrator the task "check the lane".
+- **Exactly three alarms**, all to the owner on Telegram (the address is a required board setting):
+  1. the queue has a task and no free lane for more than 5 minutes;
+  2. a lane died without a PR (after the retry);
+  3. a card in stuck with no movement for 30 minutes.
+  One alarm repeats no more than once an hour. Window hooks stay only for starting the orchestrator (§9);
+  alarms do not travel through them — they need an addressee away from the computer.
 
-## 9. Что доска не решает сама → оркестратор
+## 9. What the board does not decide → the orchestrator
 
-Закрытый список. Всё, чего здесь нет, — правило в коде, а не решение.
+A closed list. Anything not here is a rule in code, not a decision.
 
-1. Полоса написала в отчёте `ВОПРОС` (факты тикета не сходятся с кодом).
-2. Полоса умерла без PR второй раз.
-3. Красная проверка второй раз подряд после починки.
-4. Две зависимости единицы на открытых PR — нет одной базы.
-5. Решатель не смог разобрать конфликт.
-6. Третий `NO-GO` подряд.
-7. Полоса зависла (§8).
+1. The lane wrote `QUESTION` in its report (the ticket's facts do not match the code).
+2. A lane died without a PR for the second time.
+3. A red check for the second time in a row after a fix.
+4. Two dependencies of a unit on open PRs — no single base.
+5. The resolver could not resolve a conflict.
+6. The third `NO-GO` in a row.
+7. A hung lane (§8).
 
-Как вызывается: доска кладёт карточку в stuck, пишет `TASK-ORCH-<карточка>-<случай>.md` (шапка + раздел
-`orchestrator` из `RULES.md` @ sha + всё, что знает: тикет, отчёт полосы, вердикт, хвост лога) и через
-пробник открывает свежую вкладку herdr с заданием «Прочитай … и выполни целиком». Оркестратор действует
-только через API доски и `gh` (переписать тикет, разрезать, снять зависимость, закрыть единицу,
-вернуть карточку `unstuck`). Закончил — вкладка закрывается. 30 минут без движения — тревога (§8).
-Оркестратор не запускает полосы, не вливает, не пишет владельцу — только через доску.
+How it is called: the board puts the card in stuck, writes `TASK-ORCH-<card>-<case>.md` (the header + the
+`orchestrator` section of `RULES.md` @ sha + everything it knows: the ticket, the lane's report, the
+verdict, the log tail) and, through the probe, opens a fresh herdr tab with the task "Read … and do it
+whole". The orchestrator acts only through the board's API and `gh` (rewrite the ticket, split it, drop a
+dependency, close the unit, return the card with `unstuck`). Done — the tab closes. 30 minutes without
+movement — an alarm (§8). The orchestrator does not start lanes, does not merge, does not write to the
+owner — only through the board.
 
-Нарезка спеки — тот же механизм: карточка в `spec` с текстом → задание `TASK-ORCH-<карточка>-cut.md`.
-Гриль остаётся как есть (пять линз, вопросы владельцу через артефакт), но делает его оркестратор в
-этой вкладке, а не постоянное окно.
+Cutting a spec is the same mechanism: a card in `spec` with text → the task `TASK-ORCH-<card>-cut.md`.
+The grill stays as it is (five lenses, questions to the owner through the artifact), but the orchestrator
+does it in that tab, not a standing window.
 
-## 10. Правила — один файл
+## 10. The rules — one file
 
-`docs/RULES.md` в репо доски, 100–130 строк, шесть разделов с машинной пометкой `<!-- role: … -->`:
+`docs/RULES.md` in the board's repo, 100–130 lines, six sections with a machine marker `<!-- role: … -->`:
 
-| Раздел | Кому | Строк | Что внутри |
+| Section | For | Lines | Content |
 |---|---|---|---|
-| `common` | всем | 12–18 | где работать; четыре запрета (прод, база, деплой/переменные, слияние); «никогда не спрашивать человека — безопасный вариант и строка в отчёт»; формат отчёта и строки `DONE` |
-| `lane` | разработчик | 25–30 | старт от базы из шапки; пуш только после зелёной полной проверки; самопроверка из четырёх пунктов; PR черновиком, первая строка `Ticket: #N`; не сливать |
-| `reviewer` | проверяющий | 20–25 | что читать (голова из шапки), что нет; вердикт `R<n> — GO/NO-GO` + `head <sha>`; находки с файл:строка; находка вне объёма → тикет с меткой `qa` |
-| `fixer` | чинильщик | 12–15 | та же ветка; каждый пункт вердикта = тест, красный на старом коде; ничего сверх списка |
-| `resolver` | решатель | 10–12 | влить `origin/main`; чужие файлы не трогать; конфликт в чужом коде → стоп и «нужен человек» |
-| `orchestrator` | оркестратор | 25–30 | нарезка: ≤600 строк, одна защищённая зона, зависимости, приёмка командами с отрицательным случаем; разбор случаев §9: что можно (API доски, `gh`), что нельзя (полосы, слияние, прод) |
+| `common` | everyone | 12–18 | where to work; four bans (production, the database, deploy/env, the merge); "never ask a human — take the safe reading and put a line in the report"; the report format and the `DONE` line |
+| `lane` | developer | 25–30 | start from the base in the header; push only after a green full check; the four-step self-check; PR as draft, first line `Ticket: #N`; never merge |
+| `reviewer` | reviewer | 20–25 | what to read (the head from the header), what not to; the verdict `R<n> — GO/NO-GO` + `head <sha>`; findings with file:line; a finding out of scope → a ticket labelled `qa` |
+| `fixer` | fixer | 12–15 | the same branch; every verdict item = a test, red on the old code; nothing beyond the list |
+| `resolver` | resolver | 10–12 | merge `origin/main`; touch no one else's files; a conflict in someone else's code → stop and "needs a person" |
+| `orchestrator` | orchestrator | 25–30 | the cut: ≤600 lines, one protected zone, dependencies, acceptance as commands with a negative case; the §9 cases: what it may use (the board's API, `gh`) and may not (lanes, the merge, production) |
 
-Форма: только нумерованные команды и запреты, без «зачем». Агент любой роли видит `common` + свой раздел.
+Form: numbered commands and bans only, no "why". An agent of any role sees `common` plus its own section.
 
-**Версия.** При переходе спринта в `development` доска записывает на карточку `rulesSha` — коммит,
-в котором лежит `RULES.md`. Каждое задание спринта читает текст `git show <rulesSha>:docs/RULES.md`,
-не из рабочей копии. Незакоммиченные правила = правил нет: доска отказывается отправлять. Правки
-`RULES.md` действуют только на новые спринты; сменить версию идущему — явное действие владельца
-(`POST /pipeline/card/update { rulesSha }`), оно попадает в историю карточки.
+**Version.** When a sprint enters `development`, the board writes `rulesSha` on the card — the commit that
+holds `RULES.md`. Every task of that sprint reads the text with `git show <rulesSha>:docs/RULES.md`, never
+from the working copy. Uncommitted rules = no rules: the board refuses to dispatch. Edits to `RULES.md`
+apply to new sprints only; changing the version of a running sprint is an explicit owner action
+(`POST /pipeline/card/update { rulesSha }`) and lands in the card's history.
 
-**Просьбы в тексте → проверки в коде:**
-- `Closes #` / `Fixes #` в теле PR → проверка `pr-ci` красная, доска показывает PR как ошибку.
-- Вердикт засчитывается только на голове, которая вливается.
-- Тикет без `Branch:` → ветка назначается доской (§5).
-- Тикет со ссылкой на зонтик после `merged` без метки `qa` → «мимо доски», карточка не рождается.
-- Переходы стадий и снятие ворот (`/pipeline/card/move`, `/artifact-answered`) — только с ключом владельца
-  или от самой доски.
+**Requests in text → checks in code:**
+- `Closes #` / `Fixes #` in a PR body → the `pr-ci` check goes red, the board shows the PR as an error.
+- A verdict counts only on the head that is being merged.
+- A ticket without `Branch:` → the board names the branch (§5).
+- A ticket linked to the umbrella after `merged` without the `qa` label → "off the board", no card is spawned.
+- Stage moves and gate overrides (`/pipeline/card/move`, `/artifact-answered`) — only with the owner's key
+  or from the board itself.
 
-## 11. Что удаляем и меняем в текстах и процессах
+## 11. What we delete and change in texts and processes
 
-- Из `MANDATE.md`, `PROGRAM-ORCHESTRATION.md`, `CTO-REGLAMENT.md`, `EXECUTION.md`, `RUNBOOK.md`: раздача
-  полос, запуск проверяющих, слияние, побудки окон — всё это делает доска. Текст для «окна потока»
-  не нужен: окна потока нет.
-- Четыре противоречия закрываются одним ответом каждое: ultracode — **нет** (полосы и оркестратор —
-  обычные сессии); проверка PR — **при открытии**, вместе с CI; вливает — **доска**; потолок —
-  **третий провал подряд → stuck**.
-- Из 17 документов `docs/` остаются четыре: `RULES.md` (нормы), `BOARD.md` (как устроена доска: стадии,
-  цикл, задания, тревоги — из этой спеки), `FLEET.md` (полосы), `API.md`. `DECISIONS.md`, `LESSONS.md`,
-  `TICKETING.md`, `GRILL.md` и остальные — в `docs/history/` как источники, не как нормы; их нормативная
-  часть переезжает в `RULES.md` (`orchestrator`).
-- В autopase-ops: `CTO-REGLAMENT.md`, `PROGRAM-ORCHESTRATION.md`, `FAST-MODE-PLAYBOOK.md` → одна
-  страница-указатель на `RULES.md` и `BOARD.md`; старые тексты — в `history/`.
-- `ACTIVE-SESSIONS.md` и `STREAM-WATCH.json` (реестры окон) — не ведутся: окон нет, полосы видит доска.
-- Ручной `bin/dev-launch.mjs` и `bin/ci-slot.mjs` — удалить или свести к одному пути с авто-раздачей
-  (у них другой формат задания и ветки).
+- From `MANDATE.md`, `PROGRAM-ORCHESTRATION.md`, `CTO-REGLAMENT.md`, `EXECUTION.md`, `RUNBOOK.md`: lane
+  dispatch, starting reviewers, the merge, waking windows — the board does all of it. No text for a
+  "stream window" is needed: there is no stream window.
+- The four contradictions close with one answer each: ultracode — **no** (lanes and the orchestrator are
+  plain sessions); PR review — **on open**, alongside CI; who merges — **the board**; the ceiling — **the
+  third failure in a row → stuck**.
+- Of the 17 documents in `docs/`, four remain: `RULES.md` (norms), `BOARD.md` (how the board works: stages,
+  the loop, tasks, alarms — from this spec), `FLEET.md` (lanes), `API.md`. `DECISIONS.md`, `LESSONS.md`,
+  `TICKETING.md`, `GRILL.md` and the rest go to `docs/history/` as sources, not norms; their normative part
+  moves into `RULES.md` (`orchestrator`).
+- In autopase-ops: `CTO-REGLAMENT.md`, `PROGRAM-ORCHESTRATION.md`, `FAST-MODE-PLAYBOOK.md` → one pointer
+  page to `RULES.md` and `BOARD.md`; the old texts go to `history/`.
+- `ACTIVE-SESSIONS.md` and `STREAM-WATCH.json` (window registries) are no longer kept: there are no windows,
+  the board sees the lanes.
+- The manual `bin/dev-launch.mjs` and `bin/ci-slot.mjs`: delete, or fold into the one auto-dispatch path
+  (they use a different task format and branch naming).
 
-## 12. Эксплуатация
+## 12. Operations
 
-- Один процесс доски из задачи планировщика Windows (при входе + повтор), лишние на 4881/4882 погасить.
-- Выключатель раздачи — поле `autoDispatch: true` в `state/autopase-board.json`, не переменная окружения.
-- Пробник `bin/probe.mjs` — задача планировщика, он же открывает вкладки оркестратору.
-- Telegram-адрес владельца — обязательное поле настроек; без него доска не стартует раздачу.
-- Один реестр полос (слить `hosts/lanes` в `state/autopase-board.json` и `state/fleet-launch.json`).
-- Полоса на уже слитой ветке — свободна (сейчас mac lane-7/8 «заняты» слитыми ветками).
-- Время в каждой строке `state/board.log`; вывод живого процесса — в этот же файл.
+- One board process from a Windows Scheduled Task (at logon + repetition); the extra ones on 4881/4882 go down.
+- The dispatch switch is the field `autoDispatch: true` in `state/autopase-board.json`, not an environment variable.
+- The probe `bin/probe.mjs` is a Scheduled Task; it also opens the orchestrator's tabs.
+- The owner's Telegram address is a required setting; without it the board does not start dispatch.
+- One lane registry (merge `hosts/lanes` in `state/autopase-board.json` and `state/fleet-launch.json`).
+- A lane sitting on an already merged branch is free (today mac lane-7/8 are "busy" with merged branches).
+- A timestamp on every line of `state/board.log`; the live process writes to that same file.
 
-## 13. Не входит
+## 13. Out of scope
 
-- Выбор подписки (дома Codex) доской: дом по-прежнему зашит в `hzlane` каждого сервера, поле
-  `subscription` карточки — информационное. Отдельная задача.
-- Автоматизация самого гриля и ответов владельца.
-- Новые колонки, новая доска, переезд доски на сервер.
-- Второй спринт `WT-CTO-CANARY-01` и мусор «мимо доски» — уборка руками перед включением.
+- Subscription (Codex home) selection by the board: the home stays hard-wired in each host's `hzlane`; the
+  card's `subscription` field is informational. A separate task.
+- Automating the grill itself and the owner's answers.
+- New columns, a new board, moving the board to a server.
+- The second sprint `WT-CTO-CANARY-01` and the off-board litter — a manual clean-up before switching on.
 
-## 14. Признаки успеха (проверяемые через неделю)
+## 14. Signs of success (checked after a week)
 
-1. За неделю ни одной ветки/PR, созданных окном мимо доски: журнал `state/auto-dispatch.json`
-   покрывает 100 % PR спринта.
-2. Свободная полоса при непустой очереди — не дольше 5 минут (сейчас часы; вчера владелец заметил
-   простой 5 раз сам).
-3. Зелёный PR с GO вливается не позже 10 минут (вчера 2 ч 33 мин).
-4. Ноль PR со строкой `Closes #` (вчера 18 из 18).
-5. Каждое задание в кухне полосы несёт `Rules: docs/RULES.md @ <sha>`, и sha есть в git.
-6. Каждая карточка в stuck получила задание оркестратору не позже 1 минуты и движение не позже 30.
-7. У правил за неделю не больше одного коммита в идущий спринт (вчера 43 за день).
+1. In a week, no branch or PR created by a window off the board: `state/auto-dispatch.json` covers 100 %
+   of the sprint's PRs.
+2. A free lane with a non-empty queue for no longer than 5 minutes (hours today; yesterday the owner
+   noticed idle lanes 5 times himself).
+3. A green PR with GO merges within 10 minutes (2 h 33 min yesterday).
+4. Zero PRs with a `Closes #` line (18 of 18 yesterday).
+5. Every task file in a lane's kitchen carries `Rules: docs/RULES.md @ <sha>`, and the sha is in git.
+6. Every card in stuck got an orchestrator task within 1 minute and movement within 30.
+7. The rules get no more than one commit into a running sprint per week (43 in one day yesterday).
 
-## 15. Порядок работ — параллельно
+## 15. Order of work — in parallel
 
-**Полоса А (код доски, тикеты в репо доски, ~25–30 ч):**
-1. Раздача во всех стадиях (`ticketed`, `merged`), ключ журнала «тикет + круг», автоимя ветки, снятие
-   вечного удержания, полоса на слитой ветке свободна, метка `no-build` — 6–8 ч.
-2. Роль и версия правил в задании: `loadBrief(роль, sha)` из `git show`, поле `rulesSha`, отказ без
-   коммита; убрать `BRIEF-COMMON*` — 3–4 ч.
-3. Починка после NO-GO и проверяющий по факту «PR открыт» — 8–10 ч.
-4. Слияние доской + сверка головы + защита ветки — 3–4 ч.
-5. Чтение отчёта полосы, «нездоровый сервер», зависшая полоса — 3–4 ч.
-6. Stuck → задание оркестратору через пробник; Telegram; выключатель и автозапуск; один реестр — 4–5 ч.
+**Lane A (board code, tickets in the board's repo, ~25–30 h):**
+1. Dispatch in every stage (`ticketed`, `merged`), the journal key "ticket + round", branch auto-naming,
+   the end of the eternal hold, a lane on a merged branch is free, the `no-build` label — 6–8 h.
+2. The role and the rules version in the task file: `loadBrief(role, sha)` from `git show`, the `rulesSha`
+   field, refusal without a commit; drop `BRIEF-COMMON*` — 3–4 h.
+3. The fix round after NO-GO and the reviewer on the fact "PR open" — 8–10 h.
+4. The merge by the board + head check + branch protection — 3–4 h.
+5. Reading the lane's report, the "unhealthy host", the hung lane — 3–4 h.
+6. Stuck → orchestrator task through the probe; Telegram; the switch and autostart; one registry — 4–5 h.
 
-**Полоса Б (тексты, руками, один день):** `RULES.md` шести разделов, четыре ответа на противоречия,
-`BOARD.md` из этой спеки, чистка `docs/` и autopase-ops по §11.
+**Lane B (texts, by hand, one day):** `RULES.md` with six sections, the four answers to the contradictions,
+`BOARD.md` from this spec, the clean-up of `docs/` and autopase-ops per §11.
 
-**Включение:** когда готовы обе полосы — один коммит `RULES.md`, `autoDispatch: true`, окна потоков
-закрыты. До этого окна полосы **не запускают** (иначе снова два диспетчера).
+**Switch-on:** when both lanes are done — one commit of `RULES.md`, `autoDispatch: true`, stream windows
+closed. Until then windows **do not start lanes** (or there are two dispatchers again).
