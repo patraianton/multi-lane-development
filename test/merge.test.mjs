@@ -52,6 +52,8 @@ test('canMerge on a no-review unit needs no verdict, and the other gates still h
     unit: { labels: ['no-review'] },
   })), { ok: true, why: '' }, 'only the current-head verdict ever gated; history stays history');
   const gates = [
+    ['a NO-GO on the head is a stop order the label never drops',
+      { pr: { verdictOnHead: { round: 1, go: false, head: 'abc12345' } }, unit: { labels: ['no-review'] } }, 'NO-GO'],
     ['hold-merge beats no-review', { pr: noVerdict, unit: { labels: ['no-review', 'hold-merge'] } }, 'hold-merge'],
     ['draft', { pr: { ...noVerdict, draft: true }, unit: { labels: ['no-review'] } }, 'draft'],
     ['red check', { pr: { ...noVerdict, ci: { color: 'red', headSha: HEAD } }, unit: { labels: ['no-review'] } }, 'check green'],

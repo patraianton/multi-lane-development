@@ -75,13 +75,15 @@ see the working copy; edit the rules, commit, and the next task carries the new 
   the head line, or with another head, it is not a verdict.
 - The board merges with `gh pr merge --squash` when the check is green on the exact head, GO is on that head,
   the PR is not draft, GitHub says mergeable, the ticket has no `hold-merge` label, and GitHub does not refuse the
-  merge because the branch has fallen behind `main`. On a `no-review` ticket the GO requirement is dropped — the
-  green check on the exact head, not draft, mergeable and no `hold-merge` are enough; on a PR shared by several
-  tickets every one of them must carry `no-review`, and `hold-merge` on any of them still wins. It refuses because `main` requires branches to be up to date
+  merge because the branch has fallen behind `main`. It refuses because `main` requires branches to be up to date
   (branch protection, `strict`, administrators included); the board then sends `gh pr update-branch` itself — no
   lane — and `pr-ci` and the reviewer run again on the new head. At most one branch is updated per sweep. Before
   merging it rewrites `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not
   accepted. The squash subject and body go to `gh` as a file, never on the command line.
+- On a `no-review` ticket the GO requirement is dropped — the green check on the exact head, not draft, mergeable
+  and no `hold-merge` are enough. A `NO-GO` on that head still blocks the merge and gets its fix round: dropped is
+  the requirement, never a standing stop order. On a PR shared by several tickets every one of them must carry
+  `no-review`, and `hold-merge` on any of them still wins.
 - `NO-GO`, a red check or a conflict → a fix task on the same branch; then the reviewer runs again on the new head.
 - A merge GitHub refuses is written to the journal as `merge-failed` with GitHub's own message and a `merge:` line
   in the log; after three attempts the owner gets one line. The board never abandons a merge in silence. An

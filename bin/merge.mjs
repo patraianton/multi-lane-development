@@ -71,10 +71,15 @@ export function canMerge({ pr, unit } = {}) {
   if (!exactHead(ciHeadOf(pr), pr?.headSha)) return { ok: false, why: 'check head' };
 
   // A no-review ticket (styles, texts or documentation only — RULES.md,
-  // cutter 7) merges on the green check alone; hold-merge below still wins.
-  if (!labelsOf(unit).includes('no-review')) {
-    const verdict = pr?.verdictOnHead;
-    if (!verdict || !prefixMatches(verdict.head, pr?.headSha)) return { ok: false, why: 'verdict head' };
+  // cutter 7) merges on the green check alone: the GO requirement is dropped,
+  // never a standing stop order — a NO-GO on this exact head is a fix round,
+  // not a merge. hold-merge below still wins.
+  const verdict = pr?.verdictOnHead;
+  const verdictOnHead = Boolean(verdict) && prefixMatches(verdict.head, pr?.headSha);
+  if (labelsOf(unit).includes('no-review')) {
+    if (verdictOnHead && verdict.go === false) return { ok: false, why: 'NO-GO' };
+  } else {
+    if (!verdictOnHead) return { ok: false, why: 'verdict head' };
     if (verdict.go !== true) return { ok: false, why: 'NO-GO' };
   }
   if (pr?.draft) return { ok: false, why: 'draft' };
