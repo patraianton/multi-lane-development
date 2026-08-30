@@ -13,3 +13,8 @@ node_modules/
 # Local project material next to the public repo (owner context digests, grounding reports, copies of ops docs)
 context/
 reports/
+
+# Local secrets — never in the public repo
+.env
+.env.*
+!.env.example
