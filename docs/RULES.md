@@ -68,5 +68,7 @@ bans only. The ticket says what to build; these rules say how and what never.
 5. Acceptance = commands with expected output, at least one red on `main` today. A visible result → the mock path and the verbatim spec line, or a production screenshot with "change only X".
 6. Landmines and defaults from the grill are pasted into the ticket as `question · default · deadline · addressee`.
 7. A ticket touching migrations, schema, auth, deploy/env, payments or the scraper gets the label `hold-merge`.
+   A ticket cut to repair a red `main` gets the label `main-fix` — the board holds every other task based on `main`
+   while `main` is red, and dispatches this one.
 8. The QA round-1 ticket is cut with the sprint from `docs/QA-TICKET.md`: label `qa-run`, `depends on:` every unit.
 9. Finish with `POST /pipeline/card/update { links.ticket }`; the board takes over at `ticketed`.

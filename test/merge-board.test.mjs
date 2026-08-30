@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { executable, getJson, postJson, startBoard } from './helpers.mjs';
@@ -34,7 +34,9 @@ function facts(verdictHead = 'abc12345') {
       branch: 'feat/1624',
       headSha: HEAD,
       title: 'Board merge fixture #3',
-      body: 'Summary & details\n\nCloses #1624',
+      // Long on purpose: a real PR body ran to 61 KB on 30.08 and an argument
+      // that size is an OS error, not a merge.
+      body: 'Summary & details\n\nCloses #1624\n' + 'x'.repeat(5000),
       draft: false,
       mergeable: 'MERGEABLE',
       labels: [],
@@ -148,10 +150,15 @@ test('green CI and GO on the current head invokes one squash merge and journals 
     assert.deepEqual(ghCalls.map(args => args.slice(0, 2)), [['pr', 'edit'], ['pr', 'merge']]);
     const edit = ghCalls[0];
     const merge = ghCalls[1];
-    assert.equal(edit[edit.indexOf('--body') + 1], 'Summary & details\n\nTicket: #1624');
     assert.ok(merge.includes('--squash'));
     assert.equal(merge[merge.indexOf('--match-head-commit') + 1], HEAD);
-    assert.equal(merge[merge.indexOf('--body') + 1], 'Summary & details\n\nTicket: #1624');
+    const expectedBody = 'Summary & details\n\nTicket: #1624\n' + 'x'.repeat(5000);
+    for (const args of [edit, merge]) {
+      assert.ok(args.includes('--body-file'), 'the squash body travels as a file');
+      assert.ok(!args.includes('--body'), 'the PR body never reaches a command line again');
+      assert.equal(await readFile(args[args.indexOf('--body-file') + 1], 'utf8'), expectedBody);
+      assert.ok(Math.max(...args.map(a => a.length)) < 1000, 'no single argument can carry the body');
+    }
     assert.match(board.output(), /merge: PR #1632 squash-merged at abc12345/);
   } finally {
     if (board) await board.stop();
@@ -282,8 +289,13 @@ test('a failed merge records stderr and stops after three attempts', async () =>
     assert.ok(api.autoDispatch.some(row => row.kind === 'merge' && row.unit === 'PR #1632'));
     await new Promise(resolve => setTimeout(resolve, 500));
     const ghCalls = await calls(callsFile);
-    assert.equal(ghCalls.length, 3);
+    assert.equal(ghCalls.length, 3, 'a message the board cannot clear is never followed by update-branch');
     assert.ok(ghCalls.every(args => args[0] === 'pr' && args[1] === 'merge'));
+    const alarm = /ALARM the board gave up merging PR #1632 after 3 attempts: merge rejected by fixture/;
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.match(board.output(), alarm, 'the cap speaks — 45 minutes of silence cannot recur');
+    assert.equal((board.output().match(new RegExp(alarm.source, 'g')) ?? []).length, 1,
+      'one line per PR head, however many sweeps follow');
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
@@ -443,5 +455,222 @@ test('a hold on a pre-ticket sibling blocks their shared active PR', async () =>
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a merge refused as out of date updates the branch, at most once a sweep', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-behind-main-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[1] === 'merge') {",
+      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
+      '  process.exit(1);',
+      '}',
+    ].join('\n'));
+    const behindFacts = facts();
+    behindFacts.prs[0].body = 'Ticket: #1624';
+    board = await startBoard({
+      port: 15019,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': behindFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    const journal = await journalUntil(journalFile,
+      value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merge-failed');
+    assert.equal(journal.dispatched['1624:merge:abc12345'].error,
+      'Pull request is not mergeable: Branch is not up to date with the base branch');
+
+    // The transient row lives for one sweep, so every poll collects what it saw.
+    const states = new Set();
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      const body = (await getJson(board.base, '/api/pipeline?format=json')).body;
+      for (const row of body.autoDispatch ?? []) if (row.kind === 'merge') states.add(row.state);
+      if (states.has('behind main — branch updated')) break;
+      if (Date.now() > deadline) throw new Error(`no behind-main row in ${[...states].join(' | ')}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+
+    assert.match(board.output(), /merge: PR #1632 failed at abc12345 — Pull request is not mergeable/);
+    assert.match(board.output(), /merge: PR #1632 is behind main — branch updated/);
+
+    await journalUntil(journalFile, value => value?.dispatched?.['1624:merge:abc12345']?.attempts === 3);
+    await new Promise(resolve => setTimeout(resolve, 900));
+    const ghCalls = await calls(callsFile);
+    const updates = ghCalls.filter(args => args[1] === 'update-branch');
+    assert.deepEqual(updates, Array(3).fill(['pr', 'update-branch', '1632', '--repo', 'acme/web']),
+      'one update a sweep, and the attempts cap ends them — never one update per sweep forever');
+    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 3, 'the attempts cap still holds');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('an update-branch the board could not make says so, and is tried again', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-update-failed-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[1] === 'merge') {",
+      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
+      '  process.exit(1);',
+      '}',
+      "if (a[1] === 'update-branch') {",
+      "  process.stderr.write('HTTP 403: Resource not accessible by integration\\n');",
+      '  process.exit(1);',
+      '}',
+    ].join('\n'));
+    const behindFacts = facts();
+    behindFacts.prs[0].body = 'Ticket: #1624';
+    board = await startBoard({
+      port: 15020,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': behindFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+
+    // The transient row lives for one sweep, so every poll collects what it saw.
+    const states = new Set();
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      const body = (await getJson(board.base, '/api/pipeline?format=json')).body;
+      for (const row of body.autoDispatch ?? []) if (row.kind === 'merge') states.add(row.state);
+      if (states.has('behind main — update-branch failed')) break;
+      if (Date.now() > deadline) throw new Error(`no failed-update row in ${[...states].join(' | ')}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(!states.has('behind main — branch updated'),
+      'the table never says the branch was updated when the update failed');
+    assert.match(board.output(), /merge: PR #1632 is behind main — update-branch failed: HTTP 403/);
+
+    await journalUntil(path.join(board.dir, 'auto-dispatch.json'),
+      value => value?.dispatched?.['1624:merge:abc12345']?.attempts === 3);
+    // The last update follows its merge attempt, so let that sweep finish.
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const ghCalls = await calls(callsFile);
+    assert.equal(ghCalls.filter(args => args[1] === 'update-branch').length, 3,
+      'a failed update costs nothing and is tried again next sweep, until the attempts cap ends it');
+    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 3, 'the attempts cap still holds');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+// The next two are the 30.08 silence itself: an exception between
+// writeResult('merging') and the outcome write left the entry at `merging` for
+// 45 minutes with nothing in the log at all.
+test('an argument the OS refuses is a failed merge, not an exception through the sweep', async () => {
+  let board;
+  try {
+    const nullByteFacts = facts();
+    nullByteFacts.prs[0].body = 'Ticket: #1624';
+    // execFile refuses this argument synchronously, exactly as it refused the
+    // 61 KB body on 30.08.
+    nullByteFacts.prs[0].title = `Board merge fixture ${String.fromCharCode(0)} #3`;
+    board = await startBoard({
+      port: 15021,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': nullByteFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        // A real binary: the argument reaches the OS instead of the portable
+        // fake's environment channel.
+        WATCHTOWER_GH: process.execPath,
+      }),
+    });
+    await createTicketed(board);
+    const journal = await journalUntil(path.join(board.dir, 'auto-dispatch.json'),
+      value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merge-failed');
+    assert.match(journal.dispatched['1624:merge:abc12345'].error, /null byte/i);
+    assert.match(board.output(), /merge: PR #1632 failed at abc12345 — .*null byte/i);
+    assert.doesNotMatch(board.output(), /merge: sweep failed/,
+      'execCmd answers with an exit code; nothing escapes the merge step');
+  } finally {
+    if (board) await board.stop();
+  }
+});
+
+test('a merge step that cannot write its journal says so and the sweep goes on', async () => {
+  let board;
+  try {
+    board = await startBoard({
+      port: 15022,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': facts() },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: process.execPath,
+      }),
+    });
+    // A journal that cannot be written at all: the merge step throws where the
+    // 30.08 exception did, before any outcome could be recorded.
+    await mkdir(path.join(board.dir, 'auto-dispatch.json'), { recursive: true });
+    await createTicketed(board);
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if ((board.output().match(/merge: sweep failed/g) ?? []).length >= 2) break;
+      if (Date.now() > deadline) throw new Error(`the failed sweep was not logged twice:\n${board.output()}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.doesNotMatch(board.output(), /source sprint-units:/,
+      'the merge step is caught at its call site — the rest of the tick is not lost with it');
+  } finally {
+    if (board) await board.stop();
+  }
+});
+
+test('a sweep that throws leaves one line in the log', async () => {
+  let board;
+  try {
+    const brokenFacts = facts();
+    brokenFacts.unitIssues[1600] = 5; // not a list of tickets: the sweep throws
+    board = await startBoard({
+      port: 15023,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': brokenFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+      }),
+    });
+    await createTicketed(board);
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if (/source sprint-units: /.test(board.output())) break;
+      if (Date.now() > deadline) throw new Error(`the swallowed sweep exception was not logged:\n${board.output()}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal((board.output().match(/source sprint-units: /g) ?? []).length, 1,
+      'one line per distinct message — a flapping source cannot flood the log');
+  } finally {
+    if (board) await board.stop();
   }
 });

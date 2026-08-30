@@ -308,6 +308,13 @@ export async function notifyIdleLanes(card, finding) {
   });
 }
 
+// The first board-level alarm that belongs to no card: main turned red, a
+// merge the board gave up on. Deliberately no needCard.
+export async function notifyOwner(text) {
+  const cfg = await loadConfig({ requireToken: !useDryRun() });
+  return sendMessage(cfg, { name: 'notifyOwner', audience: 'owner', text: String(text ?? '') });
+}
+
 export async function notifyReady(card) {
   const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
