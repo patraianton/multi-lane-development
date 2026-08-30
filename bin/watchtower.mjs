@@ -635,6 +635,11 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
   const ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+  // A successful launch is durable before the card write. If the process or
+  // disk failed between them, the next sweep restores the board-owned badge.
+  // This is crash recovery, not a new dispatch, so it remains safe while the
+  // missing-owner gate blocks every new scheduler action below.
+  await reconcileReviewBadges(cards, sprints, ledger);
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
   const reviews = planReviews({ cards, sprints, ledger, fleet, at });
   const develop = planDispatchFull(cards, sprints, {
@@ -664,9 +669,6 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
     });
     return;
   }
-  // A successful launch is durable before the card write. If the process or
-  // disk failed between them, the next sweep restores the board-owned badge.
-  await reconcileReviewBadges(cards, sprints, ledger);
   const rules = await readRules({
     root: ROOT,
     exec: (bin, args, timeout) => runText(bin === 'git' ? GIT : bin, args, timeout),
