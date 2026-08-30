@@ -59,8 +59,10 @@ subscription:  <assigned on the card, once per sprint>
    (`POST /pipeline/card/move`; a failure — `/pipeline/card/fail`); no confirmation is awaited.
 9. **State survives a cold start.** `PROGRAM-STATE.md` in the spec dir is rewritten after
    every step 9 and every dispatch; a cold session re-arms its watchers from it.
-10. **QA is not the stream's.** QA runs once per sprint, after the last unit is on production,
-    organised by the CTO (RUNBOOK stage 7). The stream never announces "shipped".
+10. **QA is not the stream's.** QA runs per sprint, organised by the CTO (RUNBOOK stage 7):
+    round 1 after the last unit is on production, round 2 (final) after the round-1 fixes are
+    merged and live — the sprint is not accepted until the final round is clean. The stream
+    never announces "shipped".
 11. **Forbidden:** the production database, production switches (env, flags, rebuilds),
     anything outbound (messages, live `workflow_dispatch`), money, builds on the
     orchestrator's own machine, schema migrations unless a ticket owns one, and touching
