@@ -10,7 +10,7 @@ import {
   planDispatch, planDispatchFull, planReviews, planFixes, sortDispatchQueue,
   baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
   taskText, specDirFor, launchPlan, runLaunch, commentLine, dispatchKey, taskFileName,
-  RETRY_MS, LAUNCHING_HOLD_MS,
+  launchFailureHoldLine, RETRY_MS, LAUNCHING_HOLD_MS,
 } from '../bin/auto-dispatch.mjs';
 import { judgeLanes } from '../bin/lane-judge.mjs';
 
@@ -156,6 +156,15 @@ test('a no-proof fix retries under the next round key and keeps the verdict sect
     [retry.round, retry.retryOf, retry.sections[0].title, dispatchKey(retry)],
     [2, initialKey, 'VERDICT R1 — verbatim', '2008:fix:2'],
   );
+  const heldRetry = recordDispatch(launched, retry, { result: 'held', error: 'launcher busy' }, '2026-08-29T12:01:00.000Z');
+  const [heldAgain] = planFixes({
+    cards, sprints: source, ledger: heldRetry, fleet: FLEET, at: '2026-08-29T12:01:30.000Z',
+  });
+  assert.deepEqual(
+    [heldAgain.round, heldAgain.retryOf, dispatchKey(heldAgain)],
+    [2, initialKey, '2008:fix:2'],
+    'a held no-proof retry is re-evaluated under the same journal key',
+  );
   const retried = recordDispatch(launched, retry, { result: 'launched' }, '2026-08-29T12:01:00.000Z');
   assert.deepEqual(Object.keys(retried.dispatched), ['2008:fix:f1f1f1f1', '2008:fix:2']);
 
@@ -176,17 +185,41 @@ test('a no-proof fix retries under the next round key and keeps the verdict sect
     'a no-proof fix retry survives transient disappearance of its original trigger',
   );
 
-  const failed = recordDispatch(launched, retry, { result: 'failed' }, '2026-08-29T12:01:00.000Z');
+  const failed = recordDispatch(launched, retry, {
+    result: 'failed', launchFailure: true, error: 'launch failed (exit 255): ssh timed out',
+  }, '2026-08-29T12:01:00.000Z');
+  const retryCapacitySource = new Map([['cs', sprint({
+    ...one,
+    free: [],
+    laneTable: [
+      { host: 'lanes-01', lane: 'lane-1', hostOk: true, busy: false, fleet: true },
+      { host: 'mac', lane: 'lane-6', hostOk: true, busy: false, fleet: true },
+    ],
+  })]]);
   const [retryAfterFailure] = planFixes({
-    cards, sprints: source, ledger: failed, fleet: FLEET, at: '2026-08-29T12:12:00.000Z',
+    cards, sprints: retryCapacitySource, ledger: failed, fleet: FLEET, at: '2026-08-29T12:01:30.000Z',
   });
   assert.deepEqual(
-    [retryAfterFailure.round, retryAfterFailure.retryOf, dispatchKey(retryAfterFailure)],
-    [2, initialKey, '2008:fix:2'],
-    'a failed launch of retry R2 is retried as R2 after the retry delay',
+    [retryAfterFailure.round, retryAfterFailure.retryOf, retryAfterFailure.lane, dispatchKey(retryAfterFailure)],
+    [3, '2008:fix:2', 'lanes-01/lane-1', '2008:fix:3'],
+    'a failed launch of retry R2 is immediately owed as R3 on another host, including no-proof lane-table capacity',
   );
-  const retained = recordDispatch(launched, retry, { result: 'failed' }, '2026-09-30T12:00:00.000Z');
+  const retained = recordDispatch(launched, retry, {
+    result: 'failed', launchFailure: true, error: 'launch failed (exit 255): ssh timed out',
+  }, '2026-09-30T12:00:00.000Z');
   assert.ok(retained.dispatched[initialKey], 'the initial fix head guard is not time-pruned while that head may remain open');
+  const other = {
+    ...initial,
+    unit: { ...initial.unit, ticket: 2999, unit: 'OTHER', branch: 'feat/2999' },
+    kind: 'develop', round: 1, head: null,
+  };
+  const afterAging = recordDispatch(retried, other, { result: 'launched' }, '2026-09-30T12:00:00.000Z');
+  assert.equal(afterAging.dispatched['2008:fix:2'].result, 'launched', 'a successful numeric fix retry is durable with its head guard');
+  assert.equal(
+    planFixes({ cards, sprints: source, ledger: afterAging, fleet: FLEET, at: '2026-09-30T12:01:00.000Z' }).length,
+    0,
+    'aging the journal cannot resurrect a successful fix retry',
+  );
 });
 
 test('a no-proof fix on an old head does not turn the new head into a retry', () => {
@@ -358,7 +391,7 @@ test('no launcher for a lane, a reserved lane, a stale source → nothing is sen
   assert.equal(planDispatch(cards, new Map([['cs', sprint()]]), { fleet: null }).length, 0, 'no fleet config, no launch');
 });
 
-test('the journal uses develop round keys and review head keys; launched is final and failed waits ten minutes', () => {
+test('the journal uses develop round keys and review head keys; launched is final', () => {
   const at = '2026-08-29T12:00:00.000Z';
   const s = sprint();
   const pairs = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, at });
@@ -371,6 +404,8 @@ test('the journal uses develop round keys and review head keys; launched is fina
     [ledger.dispatched['1583:develop:1'].kind, ledger.dispatched['1583:develop:1'].round, ledger.dispatched['1583:develop:1'].head],
     ['develop', 1, null],
   );
+  const delayedFailure = recordDispatch(ledger, pairs[0], { result: 'failed', error: 'late duplicate' }, '2026-08-29T12:00:01.000Z');
+  assert.equal(delayedFailure.dispatched['1583:develop:1'].result, 'launched', 'a launched key is final');
   const reviewPair = { ...pairs[0], kind: 'review', round: 2, head: 'abcdef123456', role: 'reviewer' };
   const reviewed = recordDispatch({ dispatched: {} }, reviewPair, { result: 'launched' }, at);
   assert.deepEqual(Object.keys(reviewed.dispatched), ['1583:review:abcdef12']);
@@ -384,16 +419,177 @@ test('the journal uses develop round keys and review head keys; launched is fina
   // An hour later lane-6 is free again by the probe; U3b still never goes twice.
   again = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, ledger, at: '2026-08-29T13:00:00.000Z' });
   assert.deepEqual(again.map(p => [p.unit.unit, p.lane]), [['QA', 'mac/lane-6']]);
-  // A failed launch is retried only after RETRY_MS.
-  ledger = recordDispatch(ledger, pairs[1], { result: 'failed', error: 'ssh did not answer' }, at);
-  const soon = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET, ledger, at: '2026-08-29T12:05:00.000Z' });
-  assert.equal(soon.pairs.length, 0);
-  assert.ok(soon.holds.some(h => h.ticket === 1599 && /failed at .* ssh did not answer — retry after 10 min/.test(h.reason)));
-  const later = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, ledger, at: new Date(Date.parse(at) + RETRY_MS + 1000).toISOString() });
-  assert.deepEqual(later.map(p => [p.unit.unit, p.lane]), [['QA', 'mac/lane-6']]);
   // Old entries are dropped.
   const pruned = recordDispatch(ledger, pairs[1], { result: 'launched' }, '2026-09-30T12:00:00.000Z');
   assert.deepEqual(Object.keys(pruned.dispatched), ['1599:develop:1']);
+});
+
+test('a failed launch retries on another host next sweep with a new round key and retryOf', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'],
+    units: [sprint().units.find(unit => unit.ticket === 1583)],
+    qaTickets: [],
+  });
+  const source = new Map([['cs', one]]);
+  const [first] = planDispatch(cards, source, { fleet: FLEET, at });
+  assert.equal(first.lane, 'lanes-01/lane-1');
+  const failed = recordDispatch({ dispatched: {} }, first, {
+    result: 'failed', launchFailure: true, error: 'launch failed (exit 255): ssh timed out',
+  }, at);
+
+  const [retry] = planDispatch(cards, source, {
+    fleet: FLEET, ledger: failed, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.deepEqual(
+    [retry.lane, retry.round, retry.retryOf, dispatchKey(retry)],
+    ['mac/lane-6', 2, '1583:develop:1', '1583:develop:2'],
+  );
+  const held = recordDispatch(failed, retry, { result: 'held', error: 'launcher busy' }, '2026-08-29T12:00:30.000Z');
+  const [heldAgain] = planDispatch(cards, source, {
+    fleet: FLEET, ledger: held, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.deepEqual(
+    [heldAgain.round, heldAgain.retryOf, dispatchKey(heldAgain)],
+    [2, '1583:develop:1', '1583:develop:2'],
+    'a held launch retry is re-evaluated under the same journal key',
+  );
+  const launching = recordDispatch(failed, retry, { result: 'launching' }, '2026-08-29T12:00:30.000Z');
+  assert.equal(
+    planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: '2026-08-29T12:01:00.000Z' }).length,
+    0,
+    'a live retry intent still blocks the same key',
+  );
+  const staleAt = new Date(Date.parse('2026-08-29T12:00:30.000Z') + LAUNCHING_HOLD_MS + 1).toISOString();
+  const [staleRetry] = planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: staleAt });
+  assert.deepEqual(
+    [staleRetry.round, staleRetry.retryOf, dispatchKey(staleRetry)],
+    [2, '1583:develop:1', '1583:develop:2'],
+    'a stale retry intent recovers under the same journal key',
+  );
+  const launched = recordDispatch(failed, retry, { result: 'launched' }, '2026-08-29T12:00:30.000Z');
+  assert.deepEqual(Object.keys(launched.dispatched), ['1583:develop:1', '1583:develop:2']);
+  assert.equal(launched.dispatched['1583:develop:2'].retryOf, '1583:develop:1');
+  assert.equal(
+    planDispatch(cards, source, { fleet: FLEET, ledger: launched, at: '2026-08-29T12:01:00.000Z' }).length,
+    0,
+    'the successful retry is final for the unit even though the lane facts still look free',
+  );
+  const judged = { dispatched: {
+    ...launched.dispatched,
+    '1583:develop:2': { ...launched.dispatched['1583:develop:2'], judged: 'no-proof' },
+  } };
+  const [afterNoProof] = planDispatch(cards, source, {
+    fleet: FLEET, ledger: judged, at: '2026-08-29T12:01:30.000Z',
+  });
+  assert.deepEqual(
+    [afterNoProof.round, afterNoProof.host, dispatchKey(afterNoProof)],
+    [3, 'mac', '1583:develop:3'],
+    'a later successful launch resets the failure streak but not host A\'s ten-minute cooldown',
+  );
+});
+
+test('a failed host is excluded until RETRY_MS and becomes eligible at the boundary', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'lanes-01/lane-2'],
+    units: [sprint().units.find(unit => unit.ticket === 1583)],
+    qaTickets: [],
+  });
+  const source = new Map([['cs', one]]);
+  const [first] = planDispatch(cards, source, { fleet: FLEET, at });
+  const failed = recordDispatch({ dispatched: {} }, first, {
+    result: 'failed', launchFailure: true, error: 'launch failed (exit 255): ssh timed out',
+  }, at);
+  const before = new Date(Date.parse(at) + RETRY_MS - 1).toISOString();
+  assert.equal(
+    planDispatch(cards, source, { fleet: FLEET, ledger: failed, at: before }).length,
+    0,
+    'the cooldown covers every lane on the failed host',
+  );
+
+  const boundary = new Date(Date.parse(at) + RETRY_MS).toISOString();
+  const [retry] = planDispatch(cards, source, { fleet: FLEET, ledger: failed, at: boundary });
+  assert.deepEqual(
+    [retry.lane, retry.round, retry.retryOf, dispatchKey(retry)],
+    ['lanes-01/lane-1', 2, '1583:develop:1', '1583:develop:2'],
+  );
+
+  const reviewHead = 'd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3';
+  const reviewUnit = {
+    ...one.units[0],
+    state: 'pr open',
+    pr: { number: 1700, headSha: reviewHead, draft: false, verdictOnHead: null, verdictRounds: 0 },
+  };
+  const reviewSource = new Map([['cs', sprint({
+    free: ['lanes-01/lane-1', 'lanes-01/lane-2', 'mac/lane-6'],
+    units: [reviewUnit], qaTickets: [],
+  })]]);
+  const [review] = planReviews({
+    cards, sprints: reviewSource, fleet: FLEET, ledger: failed, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.equal(review.host, 'mac', 'the failed-host cooldown follows the unit across task kinds');
+});
+
+test('three consecutive launch failures hold every host for RETRY_MS and name the hosts tried', () => {
+  const at = Date.parse('2026-08-29T12:00:00.000Z');
+  const fleet = {
+    ...FLEET,
+    hosts: {
+      ...FLEET.hosts,
+      hostinger: { kitchen: '/root/kitchens/autopase.lv', launch: 'hzlane {n} "{prompt}"' },
+    },
+    lanes: {
+      ...FLEET.lanes,
+      'lane-4': { host: 'hostinger', n: 4 },
+    },
+  };
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'hostinger/lane-4', 'mac/lane-6'],
+    units: [{
+      ...sprint().units.find(unit => unit.ticket === 1583),
+      unit: 'U1', ticket: 1680, branch: 'feat/1680', deps: [],
+    }],
+    qaTickets: [],
+  });
+  const source = new Map([['cs', one]]);
+  const firstSource = new Map([['cs', { ...one, free: ['hostinger/lane-4'] }]]);
+  let ledger = { dispatched: {} };
+  const tried = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const attemptAt = new Date(at + attempt * 1000).toISOString();
+    const [pair] = planDispatch(cards, attempt === 0 ? firstSource : source, { fleet, ledger, at: attemptAt });
+    tried.push(pair.host);
+    ledger = recordDispatch(ledger, pair, {
+      result: 'failed', launchFailure: true, error: 'launch failed (exit 255): ssh timed out',
+    }, attemptAt);
+  }
+  assert.deepEqual(tried, ['hostinger', 'lanes-01', 'mac']);
+
+  const heldAt = new Date(at + 3000).toISOString();
+  const held = planDispatchFull(cards, source, { fleet, ledger, at: heldAt });
+  assert.equal(held.pairs.length, 0, 'there is no fourth launch inside the all-host hold');
+  const hold = held.holds.find(item => item.ticket === 1680);
+  assert.equal(hold.reason, 'launch failed on hostinger, lanes-01, mac; retry in 10m');
+  assert.equal(
+    launchFailureHoldLine(hold),
+    'auto-dispatch: HELD U1 #1680 — launch failed on hostinger, lanes-01, mac; retry in 10m',
+  );
+  const reviewHead = 'e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4';
+  const reviewSource = new Map([['cs', { ...one, units: [{
+    ...one.units[0], state: 'pr open',
+    pr: { number: 1800, headSha: reviewHead, draft: false, verdictOnHead: null, verdictRounds: 0 },
+  }] }]]);
+  assert.equal(
+    planReviews({ cards, sprints: reviewSource, fleet, ledger, at: heldAt }).length,
+    0,
+    'the all-host circuit follows the unit across task kinds and heads',
+  );
+  const before = new Date(at + 2000 + RETRY_MS - 1).toISOString();
+  assert.equal(planDispatch(cards, source, { fleet, ledger, at: before }).length, 0);
+  const boundary = new Date(at + 2000 + RETRY_MS).toISOString();
+  const [fourth] = planDispatch(cards, source, { fleet, ledger, at: boundary });
+  assert.deepEqual([fourth.round, fourth.retryOf, dispatchKey(fourth)], [4, '1680:develop:3', '1680:develop:4']);
 });
 
 test('a legacy plain-number journal key is develop round 1, and launching recovers after 15 minutes', () => {
@@ -414,6 +610,14 @@ test('a legacy plain-number journal key is develop round 1, and launching recove
   assert.equal(planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: young }).length, 0);
   const stale = new Date(Date.parse(at) + LAUNCHING_HOLD_MS + 1000).toISOString();
   assert.deepEqual(planDispatch(cards, source, { fleet: FLEET, ledger: launching, at: stale }).map(p => p.unit.ticket), [1583]);
+  const malformed = { dispatched: {
+    '1583:develop:1': { ...launching.dispatched['1583:develop:1'], at: 'not-a-timestamp' },
+  } };
+  assert.deepEqual(
+    planDispatch(cards, source, { fleet: FLEET, ledger: malformed, at }).map(p => p.unit.ticket),
+    [1583],
+    'a malformed crash-journal timestamp is stale rather than a permanent hold',
+  );
 
   // A lane judged no-proof is a new develop round even when the unit facts do
   // not look ordinarily startable any more; another host is preferred.
@@ -525,14 +729,36 @@ test('a PR without a verdict gets the next review round on a lane other than its
     ...sprint().units[0],
     pr: { ...sprint().units[0].pr, draft: false, headSha: head, verdictOnHead: null, verdictRounds: 2 },
   };
-  const source = new Map([['cs', sprint({ units: [unit], qaTickets: [], free: ['mac/lane-6', 'mac/lane-7'] })]]);
+  const writerFleet = {
+    ...FLEET,
+    hosts: {
+      ...FLEET.hosts,
+      hostinger: { kitchen: '/root/kitchens/autopase.lv', launch: 'hzlane {n} "{prompt}"' },
+    },
+    lanes: { ...FLEET.lanes, 'lane-4': { host: 'hostinger', n: 4 } },
+  };
+  const source = new Map([['cs', sprint({
+    units: [unit], qaTickets: [], free: ['lanes-01/lane-1', 'hostinger/lane-4', 'mac/lane-6'],
+  })]]);
   const ledger = {
     dispatched: {
-      '1575:develop:1': { ticket: 1575, kind: 'develop', lane: 'mac/lane-6', at: '2026-08-01T12:00:00.000Z', result: 'launched' },
+      '1575:develop:1': {
+        ticket: 1575, kind: 'develop', lane: 'lanes-01/lane-1', host: 'lanes-01',
+        at: '2026-08-01T12:00:00.000Z', result: 'launched',
+      },
+      '1575:fix:2': {
+        ticket: 1575, kind: 'fix', round: 2, head, lane: 'mac/lane-6', host: 'mac',
+        at: '2026-08-29T11:59:00.000Z', result: 'failed', launchFailure: true,
+        error: 'launch failed (exit 255): ssh timed out',
+      },
     },
   };
-  const [pair] = planReviews({ cards, sprints: source, ledger, fleet: FLEET, at: '2026-08-29T12:00:00.000Z' });
-  assert.deepEqual([pair.kind, pair.role, pair.head, pair.round, pair.lane], ['review', 'reviewer', head, 3, 'mac/lane-7']);
+  const [pair] = planReviews({ cards, sprints: source, ledger, fleet: writerFleet, at: '2026-08-29T12:00:00.000Z' });
+  assert.deepEqual(
+    [pair.kind, pair.role, pair.head, pair.round, pair.lane],
+    ['review', 'reviewer', head, 3, 'hostinger/lane-4'],
+    'a failed fix neither becomes the writer nor permits review on the actual author lane',
+  );
   assert.equal(dispatchKey(pair), '1575:review:aefd5925');
 });
 
@@ -546,17 +772,77 @@ test('the pure review planner does not require spawned pipeline child cards', ()
   assert.deepEqual(planReviews({ cards: rootCards, sprints: source, fleet: FLEET }).map(pair => pair.unit.ticket), [1575]);
 });
 
-test('any journal entry for a review head prevents a second launch unless it was judged no-proof', () => {
+test('live review journal entries are final; held retries the same key and failed advances the round', () => {
   const head = 'aefd5925e0000000000000000000000000000000';
   const unit = {
     ...sprint().units[0],
     pr: { ...sprint().units[0].pr, draft: false, headSha: head, verdictOnHead: null, verdictRounds: 0 },
   };
   const source = new Map([['cs', sprint({ units: [unit], qaTickets: [], free: ['mac/lane-6'] })]]);
-  for (const result of ['launching', 'launched', 'failed', 'held']) {
-    const ledger = { dispatched: { '1575:review:aefd5925': { ticket: 1575, kind: 'review', head, result } } };
-    assert.equal(planReviews({ cards, sprints: source, ledger, fleet: FLEET }).length, 0, result);
+  for (const result of ['launching', 'launched']) {
+    const ledger = { dispatched: { '1575:review:aefd5925': {
+      ticket: 1575, kind: 'review', head, result, at: '2026-08-29T12:00:00.000Z',
+    } } };
+    assert.equal(planReviews({
+      cards, sprints: source, ledger, fleet: FLEET, at: '2026-08-29T12:00:30.000Z',
+    }).length, 0, result);
   }
+  const heldLedger = { dispatched: {
+    '1575:review:aefd5925': {
+      ticket: 1575, kind: 'review', round: 1, head, host: 'mac', lane: 'mac/lane-6',
+      result: 'held', error: 'launcher refused: busy', at: '2026-08-29T12:00:00.000Z',
+    },
+  } };
+  const [heldRetry] = planReviews({
+    cards, sprints: source, ledger: heldLedger, fleet: FLEET, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.deepEqual([heldRetry.round, heldRetry.retryOf, dispatchKey(heldRetry)], [1, undefined, '1575:review:aefd5925']);
+
+  const failedLedger = { dispatched: {
+    '1575:review:aefd5925': {
+      ticket: 1575, kind: 'review', round: 1, head, host: 'lanes-01', lane: 'lanes-01/lane-1',
+      result: 'failed', error: 'launch failed (exit 255): ssh timed out', at: '2026-08-29T12:00:00.000Z',
+    },
+  } };
+  const failedSource = new Map([['cs', sprint({
+    units: [unit], qaTickets: [], free: ['lanes-01/lane-1', 'mac/lane-6'],
+  })]]);
+  const [failedRetry] = planReviews({
+    cards, sprints: failedSource, ledger: failedLedger, fleet: FLEET, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.deepEqual(
+    [failedRetry.round, failedRetry.retryOf, failedRetry.lane, dispatchKey(failedRetry)],
+    [2, '1575:review:aefd5925', 'mac/lane-6', '1575:review:2'],
+  );
+  const preflightLedger = { dispatched: {
+    '1575:review:aefd5925': {
+      ...failedLedger.dispatched['1575:review:aefd5925'],
+      error: 'the ticket body could not be read (gh issue view)',
+    },
+  } };
+  const [preflightAgain] = planReviews({
+    cards, sprints: failedSource, ledger: preflightLedger, fleet: FLEET, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.deepEqual(
+    [preflightAgain.round, preflightAgain.retryOf, dispatchKey(preflightAgain)],
+    [1, undefined, '1575:review:aefd5925'],
+    'a legacy preflight failure remains a same-key planning hold, not a host failure',
+  );
+  const collisionLedger = { dispatched: {
+    '1575:review:2': {
+      ticket: 1575, kind: 'review', round: 2, head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      host: 'mac', lane: 'mac/lane-7', result: 'launched', at: '2026-08-29T11:00:00.000Z',
+    },
+    '1575:review:aefd5925': failedLedger.dispatched['1575:review:aefd5925'],
+  } };
+  const [collisionRetry] = planReviews({
+    cards, sprints: failedSource, ledger: collisionLedger, fleet: FLEET, at: '2026-08-29T12:00:30.000Z',
+  });
+  assert.deepEqual(
+    [collisionRetry.round, dispatchKey(collisionRetry)],
+    [3, '1575:review:3'],
+    'a retry never collides with a numeric round key retained from an older head',
+  );
   const previousKey = '1575:review:aefd5925';
   const judged = { dispatched: {
     [previousKey]: {
@@ -729,6 +1015,7 @@ test('running a plan: a busy launcher holds, ssh trouble fails, and a lost comme
   r = script({ 'task-copy': { code: 255, out: 'ssh: connect to host mac port 22: Connection refused' } });
   out = await runLaunch(plan, r.exec);
   assert.equal(out.result, 'failed');
+  assert.equal(out.launchFailure, true);
   assert.match(out.error, /task-copy failed \(exit 255\)/);
   assert.deepEqual(r.calls, ['task-copy']);
 
@@ -737,7 +1024,7 @@ test('running a plan: a busy launcher holds, ssh trouble fails, and a lost comme
   assert.deepEqual([out.result, out.error], ['launched', 'umbrella comment failed: gh: rate limited']);
 
   out = await runLaunch({ error: 'no ssh target', steps: [] }, r.exec);
-  assert.deepEqual([out.result, out.error], ['failed', 'no ssh target']);
+  assert.deepEqual([out.result, out.error], ['held', 'no ssh target']);
 });
 
 test('qa-run waits for merged or closed dependencies, uses origin/main, and needs a browser host', () => {

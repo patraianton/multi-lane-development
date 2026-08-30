@@ -95,6 +95,18 @@ async function until(base, ready, ms = 8000) {
   }
 }
 
+async function dataUntil(base, ready, ms = 8000) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    const data = await getJson(base, '/pipeline/data');
+    last = data.body;
+    if (ready(last)) return last;
+    if (Date.now() > deadline) throw new Error(`board data condition was not met in ${ms}ms`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
 async function readJsonUntil(file, ready, ms = 8000) {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -254,6 +266,129 @@ test('autoDispatch:true writes launching first, then a rules-backed task and kin
       head: launched.dispatched['1516:develop:1'].head,
       host: launched.dispatched['1516:develop:1'].host,
     }, { kind: 'develop', round: 1, head: null, host: 'mac' });
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed launch retries on another host within two sweeps without an idle-lanes alarm', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-launch-retry-tools-'));
+  let board;
+  try {
+    const ticket = {
+      number: 1516,
+      title: 'SALON-U1: first unit',
+      url: 'https://github.com/acme/web/issues/1516',
+      body: 'Part of #1515.\n\nBuild the first unit exactly as ticketed.',
+    };
+    const fakeGh = await executable(toolsDir, 'gh', `#!/usr/bin/env node\nconst a = process.argv.slice(2);\nif (a[0] === 'issue' && a[1] === 'view') process.stdout.write(${JSON.stringify(JSON.stringify(ticket))});\n`);
+    const release = path.join(toolsDir, 'release-host-b');
+    const fakeSsh = await executable(toolsDir, 'ssh', `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const release = ${JSON.stringify(release)};
+const deadline = Date.now() + 8000;
+import('node:fs').then(({ existsSync }) => {
+  if (!args.includes('mock-a')) process.exit(0);
+  const timer = setInterval(() => {
+    if (existsSync(release)) {
+      clearInterval(timer);
+      process.stderr.write('ssh: connect to host A port 22: Connection timed out');
+      process.exit(255);
+    }
+    if (Date.now() >= deadline) { clearInterval(timer); process.exit(124); }
+  }, 20);
+});
+`);
+    const fakeScp = await executable(toolsDir, 'scp', '#!/usr/bin/env node\n');
+    const fleet = {
+      prompt: FLEET.prompt,
+      hosts: {
+        hostA: { kitchen: '/tmp/kitchens/web', launch: 'host-a-lane {n} "{prompt}"' },
+        hostB: { kitchen: '/tmp/kitchens/web', launch: 'host-b-lane {n} "{prompt}"' },
+      },
+      lanes: {
+        'lane-1': { host: 'hostA', n: 1 },
+        'lane-2': { host: 'hostB', n: 2 },
+      },
+    };
+    const facts = {
+      ...TICKETED_FACTS,
+      lanes: [
+        { host: 'hostA', lane: 'lane-1', busy: false, since: null, branch: 'main' },
+        { host: 'hostB', lane: 'lane-2', busy: false, since: null, branch: 'main' },
+      ],
+      unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
+    };
+    board = await startBoard({
+      port: 14989,
+      config: {
+        source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
+        hosts: { hostA: { target: 'mock-a' }, hostB: { target: 'mock-b' } },
+      },
+      files: { 'sprint-facts.json': facts, 'fleet-launch.json': fleet },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '300',
+        WATCHTOWER_IDLE_GRACE_MIN: '1',
+        WATCHTOWER_IDLE_REPEAT_MIN: '1',
+        WATCHTOWER_GH: fakeGh,
+        WATCHTOWER_SSH: fakeSsh,
+        WATCHTOWER_SCP: fakeScp,
+      }),
+    });
+    const cardId = await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    await readJsonUntil(journalFile, value => value?.dispatched?.['1516:develop:1']?.result === 'launching');
+
+    const old = new Date(Date.now() - 2 * 60_000).toISOString();
+    const idleFile = path.join(board.dir, 'idle-lanes.json');
+    await writeFile(idleFile, JSON.stringify({
+      seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
+    }, null, 2));
+    await writeFile(release, 'release');
+
+    await readJsonUntil(journalFile, value => value?.dispatched?.['1516:develop:1']?.result === 'failed');
+    const failedSweep = await dataUntil(board.base, value => value?.autoDispatch?.rows?.some(row =>
+      row.unit === 'U1 #1516' && String(row.state).startsWith('failed ')));
+    const sweepAts = new Set([failedSweep.autoDispatch.at]);
+    let launched = null;
+    const launchDeadline = Date.now() + 8000;
+    while (!launched) {
+      const [view, journalText] = await Promise.all([
+        getJson(board.base, '/pipeline/data'),
+        readFile(journalFile, 'utf8'),
+      ]);
+      if (view.body?.autoDispatch?.at) sweepAts.add(view.body.autoDispatch.at);
+      const value = JSON.parse(journalText);
+      if (value?.dispatched?.['1516:develop:2']?.result === 'launched') launched = value;
+      if (Date.now() > launchDeadline) throw new Error('the retry was not launched within the board fixture timeout');
+      if (!launched) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    const launchedSweep = await dataUntil(board.base, value => value?.autoDispatch?.at !== failedSweep.autoDispatch.at
+      && value?.autoDispatch?.rows?.some(row => row.unit === 'U1 #1516' && String(row.state).startsWith('launched ')));
+    sweepAts.add(launchedSweep.autoDispatch.at);
+    assert.equal(sweepAts.size, 2, 'the failed sweep is followed directly by the retry sweep');
+    await readJsonUntil(idleFile, value => value?.seen && Object.keys(value.seen).length === 0);
+    assert.deepEqual(Object.keys(launched.dispatched), ['1516:develop:1', '1516:develop:2']);
+    assert.deepEqual({
+      first: launched.dispatched['1516:develop:1'].result,
+      firstHost: launched.dispatched['1516:develop:1'].host,
+      second: launched.dispatched['1516:develop:2'].result,
+      secondHost: launched.dispatched['1516:develop:2'].host,
+      retryOf: launched.dispatched['1516:develop:2'].retryOf,
+    }, {
+      first: 'failed', firstHost: 'hostA', second: 'launched', secondHost: 'hostB',
+      retryOf: '1516:develop:1',
+    });
+    assert.match(
+      board.output(),
+      /auto-dispatch: FAILED U1 #1516 -> hostA\/lane-1[\s\S]*auto-dispatch: LAUNCHED U1 #1516 -> hostB\/lane-2/,
+    );
+    assert.doesNotMatch(board.output(), /idle lanes: ALARM[^\n]*U1 #1516/);
+    const api = (await getJson(board.base, '/api/pipeline?format=json')).body;
+    assert.equal(api.cards.find(card => Number(card.ticket) === 1516)?.consecutiveFails, 0);
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });

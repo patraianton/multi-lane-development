@@ -60,6 +60,12 @@ test('a finding per active sprint with a free lane and a startable unit; U7 behi
   assert.equal(f[0].key, 'idle:cs');
   assert.deepEqual(f[0].free, ['mac/lane-6', 'mac/lane-7']);
   assert.deepEqual(f[0].startable.map(u => u.ticket), [1583, 1599]);
+  const duringLaunch = idleLaneFindings(cards, new Map([['cs', sprint()]]), { excludeTickets: [1583] });
+  assert.deepEqual(
+    duringLaunch[0].startable.map(u => u.ticket),
+    [1599],
+    'only the unit being launched is excluded; another waiting unit still counts',
+  );
 });
 
 test('ticketed and merged sprints expose ticketed unit cards for dispatch', () => {
