@@ -44,6 +44,25 @@ test('canMerge reports the first missing merge condition', () => {
   }
 });
 
+test('canMerge on a no-review unit needs no verdict, and the other gates still hold', () => {
+  const noVerdict = { verdictOnHead: null };
+  assert.deepEqual(canMerge(candidate({ pr: noVerdict, unit: { labels: ['No-Review'] } })), { ok: true, why: '' });
+  assert.deepEqual(canMerge(candidate({
+    pr: { ...noVerdict, verdicts: [{ round: 1, go: false, head: 'abc12345' }] },
+    unit: { labels: ['no-review'] },
+  })), { ok: true, why: '' }, 'only the current-head verdict ever gated; history stays history');
+  const gates = [
+    ['hold-merge beats no-review', { pr: noVerdict, unit: { labels: ['no-review', 'hold-merge'] } }, 'hold-merge'],
+    ['draft', { pr: { ...noVerdict, draft: true }, unit: { labels: ['no-review'] } }, 'draft'],
+    ['red check', { pr: { ...noVerdict, ci: { color: 'red', headSha: HEAD } }, unit: { labels: ['no-review'] } }, 'check green'],
+    ['check on an old head', { pr: { ...noVerdict, ci: { color: 'green', headSha: 'def12345abcdef0123456789abcdef0123456789' } }, unit: { labels: ['no-review'] } }, 'check head'],
+    ['unknown mergeability', { pr: { ...noVerdict, mergeable: 'UNKNOWN' }, unit: { labels: ['no-review'] } }, 'mergeable'],
+  ];
+  for (const [name, overrides, why] of gates) {
+    assert.deepEqual(canMerge(candidate(overrides)), { ok: false, why }, name);
+  }
+});
+
 test('canMerge accepts the flat CI fact shape', () => {
   const value = candidate({ pr: { ci: undefined, ciColor: 'green', ciHeadSha: HEAD } });
   assert.deepEqual(canMerge(value), { ok: true, why: '' });

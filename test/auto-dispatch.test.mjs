@@ -698,6 +698,16 @@ test('a verdict on the current PR head suppresses review planning', () => {
   assert.deepEqual(planReviews({ cards, sprints: source, fleet: FLEET }), []);
 });
 
+test('a no-review label suppresses review planning like a verdict on the head', () => {
+  const unit = {
+    ...sprint().units[0],
+    labels: ['No-Review'],
+    pr: { ...sprint().units[0].pr, draft: false, verdictOnHead: null, verdictRounds: 0 },
+  };
+  const source = new Map([['cs', sprint({ units: [unit], qaTickets: [], free: ['mac/lane-6'] })]]);
+  assert.deepEqual(planReviews({ cards, sprints: source, fleet: FLEET }), []);
+});
+
 test('a legacy headless verdict stays history and does not suppress a review', () => {
   const unit = {
     ...sprint().units[0],

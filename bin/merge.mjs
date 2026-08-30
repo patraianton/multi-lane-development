@@ -70,9 +70,13 @@ export function canMerge({ pr, unit } = {}) {
   if (ciColorOf(pr) !== 'green') return { ok: false, why: 'check green' };
   if (!exactHead(ciHeadOf(pr), pr?.headSha)) return { ok: false, why: 'check head' };
 
-  const verdict = pr?.verdictOnHead;
-  if (!verdict || !prefixMatches(verdict.head, pr?.headSha)) return { ok: false, why: 'verdict head' };
-  if (verdict.go !== true) return { ok: false, why: 'NO-GO' };
+  // A no-review ticket (styles, texts or documentation only — RULES.md,
+  // cutter 7) merges on the green check alone; hold-merge below still wins.
+  if (!labelsOf(unit).includes('no-review')) {
+    const verdict = pr?.verdictOnHead;
+    if (!verdict || !prefixMatches(verdict.head, pr?.headSha)) return { ok: false, why: 'verdict head' };
+    if (verdict.go !== true) return { ok: false, why: 'NO-GO' };
+  }
   if (pr?.draft) return { ok: false, why: 'draft' };
   if (pr?.mergeable !== 'MERGEABLE') return { ok: false, why: 'mergeable' };
   if (labelsOf(unit).includes('hold-merge')) return { ok: false, why: 'hold-merge' };

@@ -40,7 +40,7 @@ U2b #1685 on hostinger/lane-4 by lane number (`state/edge-cases.md`).
 | Kind | The board starts it when | Role | Proof the board waits for |
 |---|---|---|---|
 | develop | a ticket is open, has no lane and no PR, its dependencies are merged, closed or on one open PR, and main's latest `pr-ci` run is not red | `lane` (`qa-run` label → `qa`, Mac only, merged dependencies only) | an open PR on the ticket's branch (`qa-run`: the ticket closed) |
-| review | an open, non-draft PR has no verdict on its current head | `reviewer`, another lane than the writer's | a comment `R<n> — GO|NO-GO` + `head <sha>` for that head |
+| review | an open, non-draft PR has no verdict on its current head, unless the ticket carries `no-review` | `reviewer`, another lane than the writer's | a comment `R<n> — GO|NO-GO` + `head <sha>` for that head |
 | fix | the PR head has `NO-GO`, a red check, or GitHub says `CONFLICTING` | `fixer` | a new head on the PR |
 
 Queue order when lanes are few: **review, fix, develop**; sprints top to bottom as the owner orders the cards,
@@ -52,6 +52,8 @@ dependency's open PR. An existing branch is continued from.
 A ticket labelled `hold-merge` is never merged by the board (migrations, schema, auth, deploy/env, payments, the
 scraper — the cutter labels them); the owner merges it by hand. A ticket labelled `no-build` may go to the light
 lane (lane-3). A ticket labelled `main-fix` is dispatched even while `main` is red — it is the ticket that repairs it.
+A ticket labelled `no-review` (styles, texts or documentation only — RULES.md, cutter 7) gets no reviewer and
+merges on the green check alone (§5); `hold-merge` always wins over it.
 
 While `main`'s own `pr-ci` is red the board holds every lane task that would branch from `main` — the table says
 `held: main is red since <time> (<run url>)`. Reviews, fix rounds and merges keep running: they are what makes
@@ -73,7 +75,9 @@ see the working copy; edit the rules, commit, and the next task carries the new 
   the head line, or with another head, it is not a verdict.
 - The board merges with `gh pr merge --squash` when the check is green on the exact head, GO is on that head,
   the PR is not draft, GitHub says mergeable, the ticket has no `hold-merge` label, and GitHub does not refuse the
-  merge because the branch has fallen behind `main`. It refuses because `main` requires branches to be up to date
+  merge because the branch has fallen behind `main`. On a `no-review` ticket the GO requirement is dropped — the
+  green check on the exact head, not draft, mergeable and no `hold-merge` are enough; on a PR shared by several
+  tickets every one of them must carry `no-review`, and `hold-merge` on any of them still wins. It refuses because `main` requires branches to be up to date
   (branch protection, `strict`, administrators included); the board then sends `gh pr update-branch` itself — no
   lane — and `pr-ci` and the reviewer run again on the new head. At most one branch is updated per sweep. Before
   merging it rewrites `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not

@@ -820,6 +820,9 @@ export function planReviews({
       // require pipeline children: its input contract is the sprint PR facts.
       if (unitCard?.stage === 'stuck') continue;
       if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(pr.verdictOnHead?.head, head)) continue;
+      // A no-review unit is skipped exactly like a head that already has its
+      // verdict: the board never plans a reviewer for it (BOARD.md §3).
+      if (labelsOf(unit).includes('no-review')) continue;
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;
       const retry = dispatchRetry(journal, unit.ticket, 'review', head, now, retryMs);
