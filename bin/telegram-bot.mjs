@@ -142,7 +142,6 @@ function validateConfig(raw, { requireToken }) {
   if (!founders.some(founder => founder.owner)) {
     throw new Error('Telegram config needs at least one founder with owner: true.');
   }
-
   return { botToken, chatId, ownerChatId, founders };
 }
 
@@ -198,7 +197,7 @@ function idleLanesText(cfg, card, finding) {
   ]);
 }
 
-function readyText(cfg, card) {
+function readyText(card) {
   const umbrella = String(card?.links?.ticket ?? card?.umbrella?.url ?? '').trim();
   return `Sprint ${cardTitleOf(card)} is ready for acceptance — ${umbrella}`;
 }
@@ -315,7 +314,7 @@ export async function notifyReady(card) {
   return sendMessage(cfg, {
     name: 'notifyReady',
     audience: 'owner',
-    text: readyText(cfg, card),
+    text: readyText(card),
   });
 }
 

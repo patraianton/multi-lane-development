@@ -188,9 +188,15 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       return {
         unit: qa ? 'QA' : unitLabel(i.title),
         qa,
+        qaRun,
         ticket: i.number,
         title: i.title ?? '',
         url: i.url ?? '',
+        createdAt: i.createdAt ?? null,
+        comments: (Array.isArray(i.comments) ? i.comments : []).map(comment => ({
+          body: String(comment?.body ?? ''),
+          createdAt: comment?.createdAt ?? null,
+        })),
         branch: normBranch(i.branch) || `feat/${i.number}`,
         labels,
         open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',

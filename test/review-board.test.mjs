@@ -111,7 +111,7 @@ test('the board launches a reviewer off the writer lane and sets the unit review
       },
     };
     board = await startBoard({
-      port: 15003,
+      port: 15015,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'mock-mac' } },

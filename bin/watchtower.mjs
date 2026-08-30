@@ -30,6 +30,7 @@ import {
 import {
   configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
+  failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
@@ -38,6 +39,8 @@ import {
 } from './auto-dispatch.mjs';
 import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
+import { judgeLanes } from './lane-judge.mjs';
+import { applyReadyAt } from './ready.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -45,8 +48,8 @@ import {
   configureTelegram,
   notifyArtifactReady,
   notifyStuck,
-  notifyIdleLanes,
   notifyReady,
+  notifyIdleLanes,
   notifyDone,
 } from './telegram-bot.mjs';
 import {
@@ -482,6 +485,12 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
       openIssues: f.openIssues ?? [],
       staleSources: f.staleSources ?? [],
+      sourceAt: {
+        lanes: f.sourceAt?.lanes ?? f.lanesAt ?? null,
+        prs: f.sourceAt?.prs ?? f.prsAt ?? null,
+        mergedPrs: f.sourceAt?.mergedPrs ?? f.mergedPrsAt ?? null,
+        tickets: f.sourceAt?.tickets ?? f.ticketsAt ?? f.unitIssuesAt ?? null,
+      },
     };
   } else {
     // The pipeline page never runs the windows sweep, so the slow sources are
@@ -503,18 +512,128 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
       openIssues: unitIssuesSource.ok ? openWorkIssues : null,
       staleSources,
+      sourceAt: {
+        lanes: lanesSource.at,
+        prs: prSource.at,
+        mergedPrs: mergedPrSource.at,
+        tickets: unitIssuesSource.at,
+      },
     };
   }
   const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
   setCardSprints(sprints);
   const sync = await syncSprintUnits(sprints);
   if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
+  await judgeDispatchedLanes(facts);
+  await readyAcceptanceSweep(sprints);
   await offBoardSweep(facts);
   await idleLaneSweep(sprints, facts);
   const mergeRows = await mergeSweep(sprints);
   await autoDispatchSweep(sprints, facts, mergeRows);
   return { sprints: sprints.size, ...sync };
 });
+
+function unitIssueItems(unitIssues) {
+  const byNumber = new Map();
+  for (const issues of unitIssues?.values?.() ?? []) {
+    for (const issue of issues ?? []) byNumber.set(Number(issue?.number), issue);
+  }
+  return [...byNumber.values()];
+}
+
+function olderSourceAt(...values) {
+  const times = values.map(value => {
+    if (typeof value === 'number') return value;
+    const parsed = Date.parse(value ?? '');
+    return Number.isFinite(parsed) ? parsed : NaN;
+  });
+  return times.every(Number.isFinite) ? Math.min(...times) : null;
+}
+
+function sourceTime(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  const parsed = Date.parse(value ?? '');
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+// A free lane is only an observation. Absence becomes proof on a later sweep,
+// after both GitHub snapshots have refreshed beyond that observation.
+async function judgeDispatchedLanes(facts) {
+  if (facts.staleSources?.length) return;
+  const laneAt = sourceTime(facts.sourceAt?.lanes);
+  const prAt = olderSourceAt(facts.sourceAt?.prs, facts.sourceAt?.mergedPrs);
+  const ticketAt = sourceTime(facts.sourceAt?.tickets);
+  // A file fixture (or a partially initialized live source) without clocks
+  // cannot establish that absence was observed after launch.
+  if (![laneAt, prAt, ticketAt].every(Number.isFinite)) return;
+  const journal = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+  if (!Object.keys(journal?.dispatched ?? {}).length) return;
+  const at = new Date().toISOString();
+  const judged = judgeLanes({
+    journal,
+    lanes: { at: laneAt, items: facts.lanes ?? [] },
+    prs: {
+      at: prAt,
+      items: [...(facts.prs ?? []), ...(facts.mergedPrs ?? [])],
+    },
+    tickets: { at: ticketAt, items: unitIssueItems(facts.unitIssues) },
+    now: at,
+  });
+  if (JSON.stringify(judged.journal) === JSON.stringify(journal)) return;
+
+  // The durable judgment prevents a second counter increment if a later sweep
+  // sees the same free lane. The planner reads it below and queues the next
+  // round; the pipeline owns the failure counter and Stuck notification.
+  await writeJsonAtomic(DISPATCH_JSON, judged.journal);
+  if (!judged.judgments.length) return;
+  const cards = await listPipelineCards();
+  for (const judgment of judged.judgments) {
+    const direct = cards.find(card => card.id === judgment.card && card.parent);
+    const unit = direct ?? cards.find(card =>
+      card.parent === judgment.card && Number(card.ticket) === Number(judgment.ticket));
+    if (!unit) {
+      console.log(`lane judgment: no unit card for #${judgment.ticket}; result not applied`);
+      continue;
+    }
+    try {
+      if (judgment.judged === 'ok') {
+        const throughAt = judged.journal.dispatched?.[judgment.key]?.firstSeenFree ?? null;
+        await succeedCard(unit.id, { throughAt });
+      } else {
+        await failCard(unit.id, judgment.reason);
+        if (judgment.kind === 'review') {
+          await setCardReview(unit.id, { running: false }, judgment.judgedAt);
+        }
+      }
+    } catch (e) {
+      console.log(`lane judgment: could not apply ${judgment.judged} for #${judgment.ticket}: ${e.message}`);
+    }
+  }
+}
+
+async function readyAcceptanceSweep(sprints) {
+  const cards = await listPipelineCards();
+  const at = new Date().toISOString();
+  for (const [cardId, sprint] of sprints) {
+    if (sprint?.stale?.length) continue;
+    const card = cards.find(item => item.id === cardId && !item.parent);
+    // Readiness is the edge at the end of the automated road. Historical
+    // Done cards and pre-ticket cards must not ring when the board restarts.
+    if (!card || (card.stage !== 'merged' && !card.readyAt)) continue;
+    const edge = applyReadyAt(card, sprint, at);
+    // Historical/non-merged cards do not acquire readiness on startup, but a
+    // persisted ready edge still has to be invalidated by a later QA ticket.
+    if (card.stage !== 'merged' && !edge.cleared) continue;
+    if (!edge.becameReady && !edge.cleared) continue;
+    const saved = await setCardReadyAt(cardId, edge.card.readyAt);
+    if (!edge.becameReady || !config.telegramOn) continue;
+    try {
+      await notifyReady(saved);
+    } catch (e) {
+      console.log(`ready for acceptance: telegram failed: ${e.message}`);
+    }
+  }
+}
 
 // ------------------------------------------------------ idle lanes
 //
@@ -614,6 +733,36 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   return { ...outcome, taskFile: plan.taskFile, rules: rules.sha, specDir: localSpec };
 }
 
+function sameReviewHead(left, right) {
+  const a = String(left ?? '').trim().toLowerCase();
+  const b = String(right ?? '').trim().toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(a) && /^[0-9a-f]{7,40}$/.test(b)
+    && (a.startsWith(b) || b.startsWith(a));
+}
+
+function latestLiveReviewEntry(ledger, ticket, head) {
+  let best = null;
+  let order = 0;
+  for (const [key, entry] of Object.entries(ledger?.dispatched ?? {})) {
+    order += 1;
+    const parts = String(key).split(':');
+    const entryTicket = entry?.ticket ?? parts[0];
+    const kind = entry?.kind ?? parts[1];
+    if (String(entryTicket) !== String(ticket) || kind !== 'review') continue;
+    if (entry?.result !== 'launched' || entry?.judged != null) continue;
+    if (!sameReviewHead(entry?.head, head)) continue;
+    const at = Date.parse(entry.at ?? '');
+    const round = Number(entry.round) || 1;
+    const candidate = { entry, at: Number.isFinite(at) ? at : -Infinity, round, order };
+    if (!best || candidate.at > best.at
+        || (candidate.at === best.at && candidate.round > best.round)
+        || (candidate.at === best.at && candidate.round === best.round && candidate.order > best.order)) {
+      best = candidate;
+    }
+  }
+  return best?.entry ?? null;
+}
+
 async function reconcileReviewBadges(cards, sprints, ledger) {
   for (const [cardId, sprint] of sprints ?? new Map()) {
     if (Array.isArray(sprint?.stale) && sprint.stale.length) continue;
@@ -621,8 +770,10 @@ async function reconcileReviewBadges(cards, sprints, ledger) {
       const pr = unit?.pr;
       const head = String(pr?.headSha ?? '');
       if (!head || unit?.merged || pr?.draft || pr?.verdictOnHead) continue;
-      const entry = ledger?.dispatched?.[`${unit.ticket}:review:${head.slice(0, 8)}`];
-      if (entry?.result !== 'launched' || String(entry.head ?? '').toLowerCase() !== head.toLowerCase()) continue;
+      // The head-keyed first attempt may already be judged no-proof. Find the
+      // latest still-live attempt instead, including a round-keyed retry.
+      const entry = latestLiveReviewEntry(ledger, unit.ticket, head);
+      if (!entry) continue;
       const unitCard = cards.find(card => card?.parent === cardId
         && Number(card.ticket) === Number(unit.ticket));
       if (unitCard?.stage !== 'ci_pr') continue;
@@ -654,7 +805,12 @@ async function autoDispatchSweep(sprints, facts, mergeRows = []) {
     takenLanes: reviews.map(pair => pair.lane),
     needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
   });
-  const pairs = [...reviews, ...develop.pairs];
+  // Reviews reserve capacity first. planDispatchFull reserves those lanes
+  // while assigning fixes before develops; spell out the final queue order so
+  // the launch loop cannot depend on a producer's incidental ordering.
+  const fixes = develop.pairs.filter(pair => pair.kind === 'fix');
+  const developments = develop.pairs.filter(pair => pair.kind === 'develop');
+  const pairs = [...reviews, ...fixes, ...developments];
   const holds = develop.holds;
   const rowsWithMerges = rows => {
     const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
@@ -1140,17 +1296,21 @@ const lanesSource = makeSource('lanes', 45000, async () => {
 
 function ciColor(rollup) {
   const items = rollup ?? [];
-  if (!items.length) return { color: 'none', text: 'no checks' };
+  if (!items.length) return { color: 'none', text: 'no checks', failedNames: [] };
   let fail = 0, run = 0, ok = 0;
+  const failedNames = [];
   for (const it of items) {
     const v = String(it.conclusion || it.state || it.status || '').toUpperCase();
-    if (['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'].includes(v)) fail++;
+    if (['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'].includes(v)) {
+      fail++;
+      failedNames.push(String(it.name ?? it.context ?? it.workflowName ?? 'check'));
+    }
     else if (['IN_PROGRESS', 'QUEUED', 'PENDING', 'WAITING', 'REQUESTED'].includes(v)) run++;
     else ok++;
   }
-  if (fail) return { color: 'red', text: `CI red (${fail})` };
-  if (run) return { color: 'run', text: `CI running (${run})` };
-  return { color: 'green', text: `CI green (${ok})` };
+  if (fail) return { color: 'red', text: `CI red (${fail})`, failedNames };
+  if (run) return { color: 'run', text: `CI running (${run})`, failedNames };
+  return { color: 'green', text: `CI green (${ok})`, failedNames };
 }
 
 const prSource = makeSource('pull-requests', 60000, async () => {
@@ -1236,16 +1396,22 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   const repo = config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
-    '--json', 'number,title,headRefName,url,createdAt,mergedAt'], 90000);
+    '--json', 'number,title,body,headRefName,headRefOid,url,createdAt,mergedAt,comments'], 90000);
   if (out === null) throw new Error('gh pr list --state merged did not answer');
-  return JSON.parse(out).map(p => ({
-    number: p.number,
-    title: p.title,
-    branch: p.headRefName,
-    url: p.url,
-    createdAt: p.createdAt,
-    mergedAt: p.mergedAt,
-  }));
+  return JSON.parse(out).map(p => {
+    const headSha = p.headRefOid ?? null;
+    return {
+      number: p.number,
+      title: p.title,
+      body: p.body ?? '',
+      branch: p.headRefName,
+      headSha,
+      url: p.url,
+      createdAt: p.createdAt,
+      mergedAt: p.mergedAt,
+      ...prVerdictFacts(p.comments, headSha),
+    };
+  });
 });
 
 // Open unit tickets: a sprint's scope is the set of open issues
@@ -1303,6 +1469,10 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
         number: it.number, title: it.title, url: it.url, createdAt: it.createdAt,
         state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
         branch, labels,
+        comments: (it.comments ?? []).map(comment => ({
+          body: String(comment?.body ?? ''),
+          createdAt: comment?.createdAt ?? null,
+        })),
         deps: parseUnitDeps(it.body), depsMerged,
         qa,
       });
