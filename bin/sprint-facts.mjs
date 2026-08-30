@@ -63,7 +63,7 @@ export function fleetLane(registry, host, l) {
 }
 
 // The same registry idea for CI runners (FLEET.md "CI slots"): a runner keeps
-// its name, takes the slot name (ci-slot-N) and its server label.
+// its name, takes the configured runner label and its server label.
 export function fleetSlot(registry, r) {
   const reg = registry?.[String(r?.name ?? '')];
   return { ...r, slot: reg?.name || r.name, server: reg?.server || null, fleet: Boolean(reg) };

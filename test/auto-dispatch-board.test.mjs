@@ -11,6 +11,12 @@ import { startBoard, postJson, getJson } from './helpers.mjs';
 
 const TICKETED_UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const MERGED_UMBRELLA = 'https://github.com/acme/web/issues/2600';
+const OWNER_TELEGRAM = {
+  dryRun: true,
+  chatId: '-1',
+  ownerChatId: '1',
+  founders: [{ name: 'Owner', tgUserId: 1, tag: '@owner', owner: true }],
+};
 
 const FLEET = {
   prompt: 'Read {taskFile} and do it whole',
@@ -127,7 +133,7 @@ async function executable(dir, name, text) {
   return file;
 }
 
-test('off by default: a ticketed sprint dispatches its first units and the env switch is ignored', async () => {
+test('off by default: a ticketed sprint only plans its first units', async () => {
   const board = await startBoard({
     port: 14985,
     config: { source: 'probe' },
@@ -136,7 +142,6 @@ test('off by default: a ticketed sprint dispatches its first units and the env s
       WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
       WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
       WATCHTOWER_SPRINT_SWEEP_MS: '300',
-      WATCHTOWER_AUTO_DISPATCH: '1',
     }),
   });
   try {
@@ -152,7 +157,6 @@ test('off by default: a ticketed sprint dispatches its first units and the env s
     const text = await (await fetch(board.base + '/api/pipeline')).text();
     assert.match(text, /AUTO-SALON sprint,U1 #1516,mac\/lane-6,main,would dispatch/);
     assert.match(board.output(), /auto-dispatch: would dispatch U1 #1516 -> mac\/lane-6 from main \(autoDispatch: true in the settings to send\)/);
-    assert.doesNotMatch(board.output(), /WATCHTOWER_AUTO_DISPATCH=1 to send/);
     assert.equal((board.output().match(/would dispatch U1 #1516/g) ?? []).length, 1, 'the dry-run hint is logged once, not every sweep');
     await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')), 'dry-run never creates the journal');
   } finally {
@@ -220,6 +224,7 @@ test('autoDispatch:true writes launching first, then a rules-backed task and kin
       port: 14987,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', check: 'npm run config-check',
+        telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'mock-mac' } },
       },
       files: { 'sprint-facts.json': facts, 'fleet-launch.json': fleet },
@@ -278,7 +283,10 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
     };
     board = await startBoard({
       port: 14988,
-      config: { source: 'probe', autoDispatch: true, hosts: { mac: { target: 'unused' } } },
+      config: {
+        source: 'probe', autoDispatch: true, telegram: OWNER_TELEGRAM,
+        hosts: { mac: { target: 'unused' } },
+      },
       files: { 'sprint-facts.json': facts, 'fleet-launch.json': fleet },
       env: dir => ({
         PATH: `${toolsDir}${path.delimiter}${process.env.PATH}`,

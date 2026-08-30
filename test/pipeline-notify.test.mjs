@@ -11,12 +11,19 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { startBoard, postJson } from './helpers.mjs';
+import {
+  configureTelegram,
+  notifyArtifactReady,
+  notifyDone,
+  notifyIdleLanes,
+  notifyReady,
+  notifyStuck,
+} from '../bin/telegram-bot.mjs';
 
 const TELEGRAM = {
   dryRun: true,
   chatId: '-100123',
-  boardUrl: 'https://board.example',
-  apiToken: 'board-token',
+  ownerChatId: '1001',
   founders: [
     { name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true },
     { name: 'Partner', tgUserId: 1002, tag: '@partner', owner: false },
@@ -35,6 +42,95 @@ async function waitFor(check, timeoutMs = 5000) {
 function countMatches(text, needle) {
   return text.split(needle).length - 1;
 }
+
+test('senders need no board credentials and route group and owner messages', async () => {
+  const originalFetch = globalThis.fetch;
+  const sends = [];
+  globalThis.fetch = async (_url, options) => {
+    sends.push(JSON.parse(options.body));
+    return {
+      status: 200,
+      async json() { return { ok: true, result: { message_id: sends.length } }; },
+    };
+  };
+
+  try {
+    const configured = configureTelegram({
+      botToken: 'test-token',
+      chatId: '-100123',
+      founders: TELEGRAM.founders,
+    });
+    assert.equal('boardUrl' in configured, false);
+    assert.equal('apiToken' in configured, false);
+
+    const card = {
+      id: 'c-routing',
+      title: 'Routing proof',
+      links: { artifact: 'https://artifacts.example/routing-proof' },
+    };
+    await notifyArtifactReady(card);
+    await notifyDone(card);
+    await assert.rejects(
+      notifyStuck(card, 'three failures'),
+      /no ownerChatId/,
+      'a missing owner destination does not disable group sending');
+
+    configureTelegram({
+      botToken: 'test-token',
+      chatId: '-100123',
+      ownerChatId: '1001',
+      founders: TELEGRAM.founders,
+    });
+    await notifyStuck(card, 'three failures');
+    await notifyIdleLanes(card, {
+      free: ['lane-2'],
+      ageMs: 5 * 60_000,
+      startable: [{ unit: 'T2', ticket: 42 }],
+    });
+    await notifyReady(card);
+
+    assert.deepEqual(
+      sends.map(send => send.chat_id),
+      ['-100123', '-100123', '1001', '1001', '1001']);
+    for (const send of [sends[0], sends[1]]) {
+      assert.ok(!send.text.includes('Card:'), 'group message has no Card link');
+      assert.ok(!send.text.includes('#pipeline/'), 'group message has no board deep link');
+    }
+    assert.ok(!sends[3].text.includes('The CTO window has been told to dispatch'));
+  } finally {
+    configureTelegram(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('autoDispatch stays off without an owner chat and mirrors timestamped logs', async () => {
+  const board = await startBoard({
+    port: 14995,
+    config: { source: 'probe', autoDispatch: true },
+  });
+  try {
+    const reason = 'auto-dispatch: off — telegram.ownerChatId missing';
+    await waitFor(() => board.output().includes(reason));
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const output = board.output();
+    const log = await readFile(path.join(board.dir, 'board.log'), 'utf8');
+    assert.equal(countMatches(output, reason), 1, 'the reason is printed once');
+    assert.equal(countMatches(log, reason), 1, 'the same reason is appended once');
+    assert.equal(log, output, 'the process-owned log mirrors the captured output');
+    for (const line of output.trimEnd().split(/\r?\n/)) {
+      assert.match(line, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    }
+
+    const removed = await fetch(board.base + '/api/slots');
+    assert.equal(removed.status, 404);
+    assert.deepEqual(await removed.json(), { error: 'no such path' });
+    await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')),
+      'the effective-off board creates no dispatch journal');
+  } finally {
+    await board.stop();
+  }
+});
 
 test('links.artifact first set on a grilled card sends the doorbell once', async () => {
   const board = await startBoard({
@@ -70,7 +166,7 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
     const out = board.output();
     assert.ok(out.includes('@anton @partner'), 'tags both founders');
     assert.ok(out.includes(url), 'carries the artifact URL');
-    assert.ok(out.includes(`https://board.example/#pipeline/${id}`), 'links the card');
+    assert.ok(!out.includes('Card:'), 'group message has no board card link');
 
     // The one-shot stamp is recorded in the same write and persisted to disk.
     assert.ok(updated.body.card.notified?.artifact, 'notified.artifact timestamp recorded');

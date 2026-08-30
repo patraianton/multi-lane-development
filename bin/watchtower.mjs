@@ -10,7 +10,6 @@
 //   ssh <host> hzlane status + pgrep (local check)  — build lanes on Linux hosts
 //   ssh <host> (git + pgrep + lsof)                   — build lanes on a Mac kitchen
 //   gh pr list / gh issue view                        — open PRs, CI colour, umbrella issues
-//   stream-watch file                                 — window -> lanes and branch prefixes
 //   PROGRAM-STATE.md                                  — umbrella issue number
 //   Claude session logs (*.jsonl)                     — the window's last words
 //
@@ -18,11 +17,12 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { readFile, mkdir, stat, readdir, open, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { format } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
-import { normStreamWatch } from './stream-watch.mjs';
 import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
@@ -32,7 +32,7 @@ import {
   sweepArtifactAnswers, setCardSprints, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
-import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
+import { idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
   planDispatchFull, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
 } from './auto-dispatch.mjs';
@@ -40,16 +40,14 @@ import { readRules, cutRules } from './rules.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
-import { configureSlots, slotsForBoard, slotsAlarmMessage } from './ci-slot.mjs';
 import {
   configureTelegram,
   notifyArtifactReady,
-  notifyAssignSubscription,
   notifyStuck,
   notifyIdleLanes,
+  notifyReady,
   notifyDone,
 } from './telegram-bot.mjs';
-import { configureHooks, enqueueHook, listHooks, ackHooks, hooksNotice } from './hooks.mjs';
 import {
   configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
   accessDecision, signInPage, withJsonBody,
@@ -62,6 +60,27 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // WATCHTOWER_STATE_DIR lets a test (or a second board) keep its own files
 // without writing over the live state/. Unset — the repo's state/ as before.
 const STATE_DIR = path.resolve(process.env.WATCHTOWER_STATE_DIR || path.join(ROOT, 'state'));
+const BOARD_LOG_FILE = path.join(STATE_DIR, 'board.log');
+
+// One process-owned sink: every console line gets one timestamp and the exact
+// same bytes go to stdout/stderr and state/board.log. Synchronous appends keep
+// lines ordered even when several background sweeps finish together.
+mkdirSync(STATE_DIR, { recursive: true });
+const nativeConsole = {
+  log: console.log.bind(console),
+  error: console.error.bind(console),
+  warn: console.warn.bind(console),
+};
+function writeLog(method, args) {
+  const at = new Date().toISOString();
+  const rendered = format(...args);
+  const line = rendered.split(/\r?\n/).map(part => `${at} ${part}`).join('\n');
+  appendFileSync(BOARD_LOG_FILE, `${line}\n`);
+  nativeConsole[method](line);
+}
+console.log = (...args) => writeLog('log', args);
+console.error = (...args) => writeLog('error', args);
+console.warn = (...args) => writeLog('warn', args);
 // On-disk state file names are deliberately left as they were: live installs
 // already carry these files, and renaming them would drop their history.
 const SEEN_FILE = path.join(STATE_DIR, 'autopase-seen.json');
@@ -90,8 +109,6 @@ const DEFAULTS = {
   hide: [],
   // owner/name for `gh pr list` and `gh issue list`. Empty — GitHub is skipped.
   repo: '',
-  // Optional JSON file that says which window owns which build lanes.
-  streamWatch: '',
   // Optional folder with <PROGRAM>/PROGRAM-STATE.md files (umbrella issue numbers).
   specsDir: '',
   // Protocol markers, NOT interface text: these are the exact words your windows
@@ -114,15 +131,14 @@ const DEFAULTS = {
   // not listed is shown by its folder name and does not count as capacity.
   //   "lanes": { "codex-dev/lane-3": { "name": "lane-1", "server": "Hetzner / codex-dev" } }
   lanes: {},
-  // The same for CI runners (FLEET.md "CI slots"), keyed by runner name:
-  //   "ciSlots": { "hzci-1": { "name": "ci-slot-1", "server": "Hetzner / ci-runners-01" } }
+  // The same for CI runners (FLEET.md), keyed by runner name.
   ciSlots: {},
   // Shared secret the probe sends as Authorization: Bearer. Empty — every
   // /probe/* path answers 403 until one is set.
   probeToken: '',
-  // Shared secret agents send as Authorization: Bearer on /pipeline/* and
-  // /hooks/enqueue when founder sign-in is on. Empty — those paths then need
-  // a session or localhost instead. Unused while `auth.founders` is empty.
+  // Shared secret agents send as Authorization: Bearer on /pipeline/* when
+  // founder sign-in is on. Empty — those paths then need a session or
+  // localhost instead. Unused while `auth.founders` is empty.
   apiToken: '',
   // Where window data comes from: "local" talks to herdr on this machine
   // (the original board); "probe" uses the last snapshot the probe posted.
@@ -260,6 +276,7 @@ function applyConfig(raw) {
   config.probeToken = String(config.probeToken ?? '').trim();
   config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.autoDispatch = src.autoDispatch === true;
+  config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
@@ -274,8 +291,8 @@ function applyConfig(raw) {
     notifyEnabled: telegramOn,
     senders: telegramOn ? {
       artifactReady: notifyArtifactReady,
-      assignSubscription: notifyAssignSubscription,
       stuck: notifyStuck,
+      ready: notifyReady,
       done: notifyDone,
     } : null,
   });
@@ -385,7 +402,7 @@ setInterval(() => { artifactSource.tick(); }, artifactSweepMs).unref();
 // sources with a JSON file of the same shape.
 const FRESH_MS = 10 * 60 * 1000;
 // Only the sources the sprint facts are built from count: lanes, open and
-// merged PRs, unit tickets. A slow umbrella or stream-watch read must not
+// merged PRs and unit tickets. A slow umbrella read must not
 // freeze every unit card.
 function staleSourceNames() {
   return [lanesSource, prSource, mergedPrSource, unitIssuesSource]
@@ -414,6 +431,7 @@ function lanesWithMemory(hostResults, staleSources) {
 
 const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
 const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
+  await cfgSource.tick();
   let facts;
   if (process.env.WATCHTOWER_SPRINT_FACTS_FILE) {
     const f = await readJsonSoft(process.env.WATCHTOWER_SPRINT_FACTS_FILE, {});
@@ -430,7 +448,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // The pipeline page never runs the windows sweep, so the slow sources are
     // refreshed here too (each on its own interval) — a board showing only
     // the pipeline still sees lanes, PRs and tickets move.
-    await Promise.all([streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource, ciRunnersSource]
+    await Promise.all([lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource, ciRunnersSource]
       .map(src => src.tick()).filter(Boolean));
     // CI jobs read the PR list this sweep just refreshed; a failure here is
     // information missing, never a reason to hold a card.
@@ -462,8 +480,8 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
 //
 // Decision 15: a lane assigned to a sprint sits free while a unit of that
 // sprint is queued with nothing in its way — the board says so at once (page,
-// /api/pipeline) and after a short grace alarms: Telegram to the owner, a hook
-// into the CTO window (delivered by the probe). Repeats while it persists.
+// /api/pipeline) and after a short grace alarms the owner on Telegram. Repeats
+// while it persists.
 const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
@@ -483,17 +501,11 @@ async function idleLaneSweep(sprints, facts) {
   if (!r.active.length) idleNotice = '';
   for (const f of r.alarms) {
     const card = cards.find(c => c.id === f.card.id);
-    const text = idleAlarmText(f);
-    const cto = streamsSource.value?.ctoPane ?? null;
-    if (cto) {
-      try { await enqueueHook(cto, text); }
-      catch (e) { console.log(`idle lanes: hook not queued: ${e.message}`); }
-    }
     if (config.telegramOn && card) {
       try { await notifyIdleLanes(card, f); }
       catch (e) { console.log(`idle lanes: telegram failed: ${e.message}`); }
     }
-    console.log(`idle lanes: ALARM ${f.card.title}: ${idleLine(f)}${cto ? ' (hook -> ' + cto + ')' : ''}`);
+    console.log(`idle lanes: ALARM ${f.card.title}: ${idleLine(f)}`);
   }
 }
 
@@ -566,6 +578,18 @@ async function autoDispatchSweep(sprints, facts) {
     ledger, at, fleet, facts,
     needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
   });
+  if (config.autoDispatch && !config.telegramOwnerChatId) {
+    dispatchNote('auto-dispatch: off — telegram.ownerChatId missing');
+    const ownerHolds = pairs.map(p => ({
+      card: p.card, unit: p.unit.unit, ticket: p.unit.ticket, lane: p.lane,
+      reason: 'telegram.ownerChatId missing',
+    }));
+    setAutoDispatch({
+      at, on: false,
+      rows: dispatchRows({ pairs: [], holds: [...holds, ...ownerHolds], ledger, at }),
+    });
+    return;
+  }
   const rules = await readRules({ root: ROOT, exec: runText });
   if (!rules) {
     const rulesHolds = pairs.map(p => ({
@@ -588,7 +612,7 @@ async function autoDispatchSweep(sprints, facts) {
     setAutoDispatch({ at, on: true, rows: dispatchRows({ pairs, holds, ledger, at, state: 'held: no fleet-launch.json' }) });
     return;
   }
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   let next = ledger;
   for (const p of pairs) {
     const label = `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
@@ -641,7 +665,17 @@ async function offBoardSweep(facts) {
   for (const f of r.fresh) console.log(`off the board: ${f.ref} — ${f.reason}`);
   for (const f of r.resolved) console.log(`back on the board: ${f.ref}`);
 }
-setInterval(() => { sprintSource.tick(); }, sprintSweepMs).unref();
+// Schedule the next sweep after this one finishes. A fixed interval can fire a
+// few milliseconds before makeSource's freshness window expires and turn the
+// advertised 30-second sweep into a 60-second sweep on a headless board.
+function scheduleSprintSweep() {
+  const timer = setTimeout(async () => {
+    const pending = sprintSource.tick();
+    if (pending) await pending;
+    scheduleSprintSweep();
+  }, sprintSweepMs);
+  timer.unref();
+}
 
 // Which project the board is showing, and how the filter is expressed.
 //   none    — nothing chosen yet, the page shows onboarding
@@ -691,28 +725,6 @@ function projectList(panes, wsById) {
     .map(r => ({ project: r.project, windows: r.windows.size, agents: r.agents.size }))
     .sort((a, b) => b.windows - a.windows || a.project.localeCompare(b.project));
 }
-
-// The stream-watch file is the only place that records "this window drives these
-// lanes and writes branches with these prefixes". The file is maintained
-// elsewhere, the board only reads it — through normStreamWatch, which rebuilds
-// every record so a hand-edited file can lose a record (reported under
-// problems) but can never take the whole board collection down.
-const streamsSource = makeSource('stream-watch', 30000, async () => {
-  if (!config.streamWatch) {
-    return { raw: null, byPane: new Map(), byId: new Map(), ctoPane: null, repo: config.repo, problems: [] };
-  }
-  const raw = await readJsonSoft(config.streamWatch, null);
-  if (!raw) throw new Error(`cannot read ${config.streamWatch}`);
-  const norm = normStreamWatch(raw);
-  return {
-    raw,
-    byPane: norm.byPane,
-    byId: norm.byId,
-    ctoPane: norm.ctoPane,
-    repo: norm.repo ?? config.repo,
-    problems: norm.problems,
-  };
-});
 
 // PROGRAM-STATE.md of each program: that is where the umbrella issue number is.
 const programsSource = makeSource('programs', 30000, async () => {
@@ -894,7 +906,7 @@ function ciColor(rollup) {
 }
 
 const prSource = makeSource('pull-requests', 60000, async () => {
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
     '--json', 'number,title,headRefName,headRefOid,isDraft,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
@@ -931,7 +943,7 @@ export function prVerdict(comments) {
 // The CI slot pool: the repo's self-hosted runners — who is online, who is
 // busy, which server each belongs to (its labels). One call a minute.
 const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['api', `repos/${repo}/actions/runners?per_page=100`,
     '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
@@ -944,7 +956,7 @@ const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
 // the workflow runs on the head SHA and their jobs — job status, runner name,
 // start time. At most eight PRs a sweep; the rest wait for the next one.
 const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   const byPr = new Map();
   if (!repo) return byPr;
   const live = (prSource.value ?? []).filter(p => p.headSha && p.ci?.color === 'run').slice(0, 8);
@@ -973,7 +985,7 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
 // Merged PRs: the only observable proof that a window actually delivered
 // something. Read-only, same repo, refreshed on its own timer.
 const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   if (!repo) return [];
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
     '--json', 'number,title,headRefName,url,createdAt,mergedAt'], 90000);
@@ -988,7 +1000,7 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   }));
 });
 
-// Open unit tickets: the sprint scope of a stream is the set of open issues
+// Open unit tickets: a sprint's scope is the set of open issues
 // that reference its umbrella by number ("#1300") in the title or body. The
 // umbrella body itself is NOT read as a scope — it freezes on the day it is
 // written; a live ticket has an observable open/closed state instead. Issues
@@ -1004,7 +1016,7 @@ let umbrellaStates = new Map();
 // comment counts, 29.08): the off-board watch reads this list.
 let openWorkIssues = [];
 const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
   if (!repo) return byUmbrella;
   // Closed units are read too: a sprint card shows a finished unit as done,
@@ -1058,7 +1070,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
 // be spotted there.
 const umbrellaSource = makeSource('umbrella', 120000, async () => {
   const out = new Map();
-  const repo = streamsSource.value?.repo ?? config.repo;
+  const repo = config.repo;
   if (!repo) return out;
   const listOut = await runText(GH, ['issue', 'list', '--repo', repo, '--label', 'umbrella',
     '--state', 'open', '--limit', '40', '--json', 'number,title,url,updatedAt'], 90000);
@@ -1081,7 +1093,7 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
       const hit = words.find(w => body.toUpperCase().includes(w.toUpperCase()));
       if (!hit) continue;
       // A question counts as closed only when an answer comment landed AFTER it.
-      // Progress reports from the stream itself ("started", "merged") are not an
+      // Progress reports from the working window ("started", "merged") are not an
       // answer — the same account writes both, so the author tells us nothing.
       const answered = comments.slice(i + 1).some(c =>
         answers.some(a => String(c.body ?? '').toUpperCase().includes(a.toUpperCase())));
@@ -1484,25 +1496,10 @@ function slug(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9а-я]+/gi, '');
 }
 
-function matchesStream(stream, branch) {
-  if (!stream || !branch) return false;
-  return (stream.branch_prefix ?? []).some(p => branch.startsWith(p));
-}
-
-// The lanes of this window: first by the branch prefix of its writer, then by a
-// direct match with the checkout branch, then by the task name.
-function lanesFor(allLanes, stream, branch) {
-  return allLanes.filter(l => {
-    if (!l.busy) return false;
-    if (matchesStream(stream, l.branch)) return true;
-    if (branch && l.branch === branch) return true;
-    if (l.task && stream) {
-      return (stream.lanes ?? []).some(cfgLane => {
-        try { return new RegExp(cfgLane.task_match, 'i').test(l.task); } catch { return false; }
-      });
-    }
-    return false;
-  });
+// A window owns a busy lane only while both checkouts show the same branch.
+function lanesFor(allLanes, branch) {
+  if (!branch) return [];
+  return allLanes.filter(l => l.busy && l.branch === branch);
 }
 
 // ------------------------------------------------- probe snapshot (source=probe)
@@ -1700,20 +1697,17 @@ async function collect() {
       handHidden: hand.hidden,
       windowsTotal: (snap.workspaces ?? []).length,
       focusedTab: snap.focused_tab_id ?? null,
-      ctoPane: null,
       repo: config.repo || null,
       prsOpen: 0,
       umbrellas: [],
       sources,
       probeStale: stale,
-      hooksNotice: await hooksNotice(),
-      slotsAlarm: await slotsAlarmMessage(),
     };
   }
 
   // Background sources: just nudge them, do not wait for an answer.
   const first = [];
-  for (const s of [streamsSource, programsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]) {
+  for (const s of [programsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]) {
     const p = s.tick();
     if (s.at === 0 && p) first.push(p);
   }
@@ -1802,7 +1796,6 @@ async function collect() {
   // the window data.
   if (config.source !== 'probe') refreshPanes(panes.map(p => p.pane_id));
 
-  const streams = streamsSource.value;
   const programs = programsSource.value ?? new Map();
   const prs = prSource.value ?? [];
   const mergedPrs = mergedPrSource.value ?? [];
@@ -1822,11 +1815,7 @@ async function collect() {
     const tabCount = ws?.tab_count ?? 1;
     const screen = paneCache.get(p.pane_id) ?? null;
     const { branch, detached } = await checkoutBranch(cwd);
-    const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
-
-    const lanes = lanesFor(allLanes, stream, branch);
-    // Lanes the stream file assigns to this window that are free right now.
-    const laneSlots = [...new Set((stream?.lanes ?? []).map(l => `${l.host}: ${l.task_match}`))];
+    const lanes = lanesFor(allLanes, branch);
 
     // The window's last words: the session log is more precise than the screen,
     // the screen is the fallback.
@@ -1855,7 +1844,6 @@ async function collect() {
     for (const m of String(recap ?? '').matchAll(/#(\d{3,5})/g)) mentioned.add(Number(m[1]));
     const strongVia = (pr) => {
       if (branch && pr.branch === branch) return 'window branch';
-      if (matchesStream(stream, pr.branch)) return 'branch prefix';
       if (lanes.some(l => l.branch === pr.branch)) return 'lane branch';
       return null;
     };
@@ -1879,17 +1867,13 @@ async function collect() {
     cardMerged.sort((a, b) => b.number - a.number);
 
     // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
-    // else from the stream's state file, else from a number the window named.
+    // else from a number the window named.
     let program = null;
     for (const [key, val] of programs) {
       if (key === folder || key.endsWith(folder) || folder.endsWith(key)) { program = val; break; }
     }
-    if (!program && stream?.state_file) {
-      const dirName = path.basename(path.dirname(stream.state_file)).toLowerCase();
-      program = programs.get(dirName) ?? null;
-    }
     let umbrellaNo = program?.umbrella ?? null;
-    // An umbrella often names the stream right in its title, and that is more
+    // An umbrella often names the project folder right in its title, and that is more
     // reliable than a random number that flashed on a screen.
     if (!umbrellaNo) {
       // Whole name first, then the tail of it: one umbrella can drive two
@@ -1933,10 +1917,10 @@ async function collect() {
       ws: p.workspace_id,
       number: ws?.number ?? null,
       place: `${p.workspace_id}:${p.pane_id.split(':')[1] ?? ''}`,
-      // In a window with several tabs the tab gives the name; unnamed tabs
-      // ("1", "2") do not count as a name.
-      name: nameOf(p),
-      window: meta?.label || ws?.label || null,
+      // The retired window registry supplied a label here. The checkout folder
+      // is the stable name that remains on the machine itself.
+      name: folder || nameOf(p),
+      window: nameOf(p),
       folder,
       cwd,
       isWorktree: Boolean(meta?.worktree?.is_linked_worktree),
@@ -1952,8 +1936,6 @@ async function collect() {
       footer: screen?.footer ?? null,
       screenAt: screen?.at ?? null,
       lanes,
-      laneSlots,
-      streamId: stream?.id ?? null,
       prs: cardPrs,
       umbrella,
       program: program ? { name: program.program, file: program.file, updated: program.updated } : null,
@@ -1966,8 +1948,6 @@ async function collect() {
       _shadow: {
         merged: cardMerged,
         openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []).filter(i => i.state !== 'CLOSED') : [],
-        unitsPromised: stream?.units === 'issues',
-        hasPrefixes: (stream?.branch_prefix ?? []).length > 0,
       },
     });
   }
@@ -1991,13 +1971,13 @@ async function collect() {
   // older than ten minutes makes every verdict "facts incomplete": unknown is
   // never read as empty.
   const FRESH_MS = 10 * 60 * 1000;
-  const staleSources = [streamsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
+  const staleSources = [lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
     .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
     .map(s => s.name);
   const shadowFacts = new Map();
   for (const c of cards) {
     if (c.manual) continue;
-    shadowFacts.set(c.name, {
+    const factsForCard = {
       openPrs: c.prs.map(pr => ({
         number: pr.number,
         ci: pr.ci?.color ?? 'none',
@@ -2006,18 +1986,17 @@ async function collect() {
       })),
       merged: c._shadow.merged,
       openUnitIssues: c._shadow.openUnitIssues.map(i => ({ number: i.number, createdAt: i.createdAt })),
-      unitsPromised: c._shadow.unitsPromised,
-      hasPrefixes: c._shadow.hasPrefixes,
       umbrella: c.umbrella?.number ?? null,
       laneBusy: c.lanes.length > 0,
       working: c.status === 'working',
-    });
+    };
+    shadowFacts.set(c.name, factsForCard);
+    if (c.window && c.window !== c.name) shadowFacts.set(c.window, factsForCard);
     delete c._shadow;
   }
   setShadowFacts({ facts: shadowFacts, staleSources, at: now });
 
-  // The sprint sweep sees the sources this sweep just refreshed.
-  sprintSource.at = 0;
+  // Nudge the 30-second sprint sweep without resetting its own clock.
   sprintSource.tick();
 
   // Cards added by hand. They are bound to no window, no lane and no PR — only a
@@ -2045,7 +2024,6 @@ async function collect() {
       explain: null,
       footer: null,
       lanes: [],
-      laneSlots: [],
       prs: [],
       umbrella: null,
       program: null,
@@ -2063,12 +2041,10 @@ async function collect() {
   for (const c of cards) for (const l of c.lanes) laneOwners[`${l.host}|${l.lane}`] = c.name;
   for (const p of hiddenPanes) {
     const cwd = String(p.cwd ?? '');
-    const folder = path.basename(normPath(cwd));
     const { branch } = await checkoutBranch(cwd);
-    const stream = streams?.byPane.get(p.pane_id) ?? streams?.byId.get(folder) ?? null;
-    for (const l of lanesFor(allLanes, stream, branch)) {
+    for (const l of lanesFor(allLanes, branch)) {
       const key = `${l.host}|${l.lane}`;
-      if (!laneOwners[key]) laneOwners[key] = `${nameOf(p)} (hidden from the board)`;
+      if (!laneOwners[key]) laneOwners[key] = `${path.basename(normPath(cwd)) || nameOf(p)} (hidden from the board)`;
     }
   }
 
@@ -2077,7 +2053,7 @@ async function collect() {
     if (l.busy && !laneOwners[`${l.host}|${l.lane}`]) l.orphan = true;
   }
 
-  const sources = [cfgSource, streamsSource, programsSource, lanesSource, prSource, mergedPrSource,
+  const sources = [cfgSource, programsSource, lanesSource, prSource, mergedPrSource,
     unitIssuesSource, umbrellaSource]
     .map(s => ({ name: s.name, ok: s.ok, error: s.error, ageMs: s.at ? Date.now() - s.at : null, tookMs: s.tookMs }));
   const probeRow = probeSourceRow(stale);
@@ -2099,19 +2075,13 @@ async function collect() {
     handHidden: hand.hidden,
     windowsTotal: (snap.workspaces ?? []).length,
     focusedTab: snap.focused_tab_id ?? null,
-    ctoPane: streams?.ctoPane ?? null,
-    // `|| null` and not `??`: an unset repo is an empty string in the config, and
+    // `|| null`: an unset repo is an empty string in the config, and
     // the agent answer must show one single "no value" (`-`), not a blank line.
-    repo: (streams?.repo ?? config.repo) || null,
+    repo: config.repo || null,
     prsOpen: prs.length,
     umbrellas: [...umbrellas.values()],
-    // Records the stream-watch file lost on the way in (skipped or trimmed by
-    // normStreamWatch). The source itself is ok — only these records are not.
-    streamProblems: streams?.problems ?? [],
     sources,
     probeStale: stale,
-    hooksNotice: await hooksNotice(),
-    slotsAlarm: await slotsAlarmMessage(),
   };
 }
 
@@ -2220,13 +2190,7 @@ function buildAgentBoard(payload, full) {
       .map(s => ({ source: s.name, error: clipText(s.error, full) || 'no answer' })),
     ...(payload.hosts ?? []).filter(h => !h.ok)
       .map(h => ({ source: `lane host ${h.host}`, error: clipText(h.error, full) || 'no answer' })),
-    // The stream-watch file was read, but these records were skipped or trimmed.
-    ...(payload.streamProblems ?? [])
-      .map(text => ({ source: 'stream-watch', error: clipText(text, full) })),
   ];
-  if (payload.slotsAlarm) {
-    problems.push({ source: 'ci-slots', error: payload.slotsAlarm });
-  }
 
   return {
     board: `http://127.0.0.1:${PORT}`,
@@ -2308,39 +2272,6 @@ function renderToonBoard(v) {
     + ' its lane is building, idle — idle, off — no agent');
   // Help is a plain list, without fields: these are next steps, not data.
   out.push([`help[${help.length}]:`, ...help.map(t => '  ' + t)].join('\n'));
-  return out.join('\n') + '\n';
-}
-
-function slotsQuery(url) {
-  const allowed = ['format'];
-  for (const key of url.searchParams.keys()) {
-    if (!allowed.includes(key)) {
-      return { error: `error: unknown parameter "${key}"\n`
-        + 'help: allowed is format=json (default) or format=toon' };
-    }
-    if (url.searchParams.getAll(key).length > 1) {
-      return { error: `error: parameter "${key}" given more than once\n`
-        + 'help: leave one value — the board does not guess which of them you meant' };
-    }
-  }
-  const format = url.searchParams.get('format') ?? 'json';
-  if (format !== 'toon' && format !== 'json') {
-    return { error: `error: unknown format "${format}"\n`
-      + 'help: format=json (default) or format=toon' };
-  }
-  return { format };
-}
-
-function renderToonSlots(view) {
-  const rows = (view.slots ?? []).map(s => ({
-    name: s.name,
-    card: s.card || '-',
-    since: s.since || '-',
-  }));
-  const out = [
-    toonTable('slots', rows, ['name', 'card', 'since'], 'no CI slots on the board'),
-  ];
-  if (view.alarm) out.push(`alarm: ${view.alarm}`);
   return out.join('\n') + '\n';
 }
 
@@ -2504,33 +2435,11 @@ const server = http.createServer(async (req, res) => {
       const denied = probeAuthError(req);
       if (denied) return sendText(res, denied.code, denied.text);
     }
-    // Without founder sign-in, /hooks/enqueue keeps using probeToken. With
-    // sign-in on, the gate above already accepted a session, localhost or
-    // apiToken, so the probe secret is not required a second time.
-    if (!authEnabled(config) && url.pathname === '/hooks/enqueue') {
-      const denied = probeAuthError(req);
-      if (denied) return sendText(res, denied.code, denied.text);
-    }
-
     if (req.method === 'POST' && url.pathname === '/probe/snapshot') {
       const body = await readSnapshotBody(req);
       const stored = await saveProbeSnapshot(body);
       return send(res, 200, JSON.stringify({ ok: true, receivedAt: stored.receivedAt }));
     }
-    if (req.method === 'GET' && url.pathname === '/probe/hooks') {
-      return send(res, 200, JSON.stringify({ hooks: await listHooks() }));
-    }
-    if (req.method === 'POST' && url.pathname === '/probe/hooks/ack') {
-      const body = await readBody(req);
-      const result = await ackHooks(body.ids);
-      return send(res, 200, JSON.stringify({ ok: true, removed: result.removed }));
-    }
-    if (req.method === 'POST' && url.pathname === '/hooks/enqueue') {
-      const body = await readBody(req);
-      const hook = await enqueueHook(body.window, body.text);
-      return send(res, 200, JSON.stringify({ ok: true, hook }));
-    }
-
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -2538,23 +2447,6 @@ const server = http.createServer(async (req, res) => {
       const payload = await collect();
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
-    }
-    // CI slot occupancy. Holders live in state/ci-slots.json (written by
-    // bin/ci-slot.mjs). Auth is the same as the other /api/* reads.
-    if (req.method === 'GET' && url.pathname === '/api/slots') {
-      const p = slotsQuery(url);
-      if (p.error) return sendText(res, 400, p.error);
-      const view = await slotsForBoard();
-      const body = {
-        slots: view.slots.map(s => ({
-          name: s.name,
-          card: s.card || null,
-          since: s.since || null,
-        })),
-      };
-      if (view.alarm) body.alarm = view.alarm;
-      if (p.format === 'json') return send(res, 200, JSON.stringify(body, null, 2));
-      return sendText(res, 200, renderToonSlots(body));
     }
     // The board for a watchdog agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
@@ -2736,16 +2628,18 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
-configureSlots(STATE_DIR);
-configureHooks(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
-console.log(config.autoDispatch
-  ? `auto-dispatch: ON — free lanes are charged from the board (launchers: ${FLEET_LAUNCH_FILE})`
-  : 'auto-dispatch: off (dry-run) — the board only says what it would send; autoDispatch: true in the settings to send');
+if (config.autoDispatch && !config.telegramOwnerChatId) {
+  dispatchNote('auto-dispatch: off — telegram.ownerChatId missing');
+} else {
+  console.log(config.autoDispatch
+    ? `auto-dispatch: ON — free lanes are charged from the board (launchers: ${FLEET_LAUNCH_FILE})`
+    : 'auto-dispatch: off (dry-run) — the board only says what it would send; autoDispatch: true in the settings to send');
+}
 artifactSource.tick();
-sprintSource.tick();
+void Promise.resolve(sprintSource.tick()).then(scheduleSprintSweep);
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
     console.log(`Watchtower is already running: http://127.0.0.1:${PORT}`);

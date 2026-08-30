@@ -245,8 +245,8 @@ test('the fleet registry renames lanes and only fleet lanes count as capacity', 
   const named = fleetLane(registry, 'lanes-01', { host: 'lanes-01', lane: 'lane-3', busy: true, branch: 'feat/x' });
   assert.deepEqual({ lane: named.lane, folder: named.folder, server: named.server, fleet: named.fleet, busy: named.busy },
     { lane: 'lane-1', folder: 'lane-3', server: 'Hetzner / codex-dev', fleet: true, busy: true });
-  const slot = fleetSlot({ 'hzci-1': { name: 'ci-slot-1', server: 'Hetzner / ci-runners-01' } }, { name: 'hzci-1', status: 'online', busy: true });
-  assert.deepEqual({ slot: slot.slot, server: slot.server, fleet: slot.fleet, busy: slot.busy }, { slot: 'ci-slot-1', server: 'Hetzner / ci-runners-01', fleet: true, busy: true });
+  const slot = fleetSlot({ 'hzci-1': { name: 'runner-slot-1', server: 'Hetzner / ci-runners-01' } }, { name: 'hzci-1', status: 'online', busy: true });
+  assert.deepEqual({ slot: slot.slot, server: slot.server, fleet: slot.fleet, busy: slot.busy }, { slot: 'runner-slot-1', server: 'Hetzner / ci-runners-01', fleet: true, busy: true });
   assert.equal(fleetSlot({}, { name: 'x-runner' }).slot, 'x-runner');
   const unknown = fleetLane(registry, 'hetzner', { host: 'hetzner', lane: 'lane-1', busy: false });
   assert.deepEqual({ lane: unknown.lane, folder: unknown.folder, server: unknown.server, fleet: unknown.fleet }, { lane: 'lane-1', folder: 'lane-1', server: null, fleet: false });

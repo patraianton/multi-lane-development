@@ -123,7 +123,7 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     // The clock of a spawned card starts at the stage the facts put it in.
     assert.deepEqual(by.U1.stageHistory.map(h => h.stage), ['ticketed', 'ci_pr']);
 
-    // The live review badge (decision 20): the stream window says a reader is
+    // The live review badge (decision 20): the board says a reader is
     // on U1's head; the board shows it and clears it when a verdict newer than
     // the badge lands on the PR, filing the round.
     const lit = await postJson(board.base, '/pipeline/card/update', { id: by.U1.id, review: { running: true, round: 1, by: 'opus' } });
