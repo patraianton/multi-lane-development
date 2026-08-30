@@ -39,8 +39,6 @@ GET http://127.0.0.1:4878/api/board            short text (TOON-flavoured)
 GET http://127.0.0.1:4878/api/board?format=json
 GET http://127.0.0.1:4878/api/board?full=1
 GET http://127.0.0.1:4878/api/board/card/<name> one card in full
-GET http://127.0.0.1:4878/api/slots            CI slot occupancy (JSON)
-GET http://127.0.0.1:4878/api/slots?format=toon
 ```
 
 Parameters:
@@ -112,15 +110,11 @@ window) or `?full=1` (the whole board).
 ### problems — board sources that did not answer
 
 `source` — what failed (`lanes`, `pull-requests`, `umbrella`, `lane host mac`,
-`ci-slots`, and so on); `error` — the short reason. An empty section means every
+`ci-runners`, and so on); `error` — the short reason. An empty section means every
 source is alive. This is worth reading: an empty `lanes` cell with ssh down means
 "the board does not know", not "there are no lanes". Before a project is chosen,
 `problems` carries one row, `project: no project chosen yet` — open the board and
 pick one.
-
-When every CI slot is held by a card, `problems` carries `ci-slots: no free CI
-slot — add capacity`. That is an alarm, not a wait: there is no queue. The same
-sentence appears in the page header. Occupancy itself is `GET /api/slots`.
 
 When an active pipeline card has a stale Status (older than twice the
 Watchdog interval, default 30 minutes), `problems` carries a `watchdog` row
@@ -249,18 +243,17 @@ run of three.
 ### Who sets the stage — the shadow verdict
 
 Stage transitions are made by people (and by agents through the endpoints
-below). Since 2026-08-27 the board also computes, for every stream card (a
+below). Since 2026-08-27 the board also computes, for every window card (a
 card with a `window`), what stage it WOULD set from observable facts alone —
 open PRs bound to the window, merged PRs, open unit tickets referencing the
-stream's umbrella, lane occupancy. This is **step 1 of
+card's umbrella, and lane occupancy. This is **step 1 of
 [ADR-0006](./adr/0006-the-board-decides-the-stage-itself.md)**: the verdict is
 written nowhere — it is printed on the card (`auto would set … / auto agrees /
 auto holds`) and carried as `shadow: { would, same, reasons, at }` on
 `/pipeline/data` and in the `/api/pipeline` JSON rows. A dead or stale source
 voids the verdict (`facts incomplete`) — unknown is never read as empty. A
-stream without a machine-readable sprint scope (no `units: "issues"` promise
-in stream-watch, no branch prefixes, no umbrella) can never reach done
-by facts, and the verdict says what is missing. Automatic transitions are a
+card without an umbrella has no machine-readable sprint scope and cannot reach
+done by facts; the verdict says what is missing. Automatic transitions are a
 later step, enabled only after the shadow has been checked against reality.
 
 ### Clocks
@@ -363,8 +356,7 @@ startable unit the board pairs with a free launchable lane — `unit` is `U3b #1
 journal `state/auto-dispatch.json` says — `launched 12:19Z`, `failed 12:19Z — …`,
 `held 12:19Z — …` — and `held: <why>` for a startable unit that could not be paired
 (no pinned branch, two open-PR dependencies, only light lanes free, no launcher for
-the lane). Journal rows stay in the table for a day. DEVLAUNCH.md "Auto-dispatch
-(decision 16)".
+the lane). Journal rows stay in the table for a day.
 
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
@@ -465,8 +457,8 @@ Valid only while the card is in `grilled` and `subscription` is empty.
 `subscriptions` array. The board sets it, records a comment
 `subscription <name> assigned by <by>`, and moves the card to
 `ticketed`, where the CTO writes the GitHub tickets before development
-starts. `by` is a string or `{ "name", "tag", "tgUserId" }`
-(what the Telegram bot sends). Wrong stage, unknown name, already
+starts. `by` is a string or `{ "name", "tag", "tgUserId" }` supplied by the
+owner-facing client. Wrong stage, unknown name, already
 assigned, or a missing field → `400`. Auth is the same as the other
 pipeline mutations.
 
@@ -475,49 +467,6 @@ stay open — the board listens on `127.0.0.1` only, as before. When the list
 is set, those paths need a founder session, a localhost-as-owner request, or
 (for agents) `apiToken`. See **Auth** below. The probe endpoints use
 `probeToken`, as they always did.
-
-## CI slots
-
-A pool of dedicated CI servers. Holders live in `state/ci-slots.json`, written
-by [`bin/ci-slot.mjs`](../bin/ci-slot.mjs) (see [`EXECUTION.md`](./EXECUTION.md)).
-The board only reads the file.
-
-```
-GET http://127.0.0.1:4878/api/slots
-GET http://127.0.0.1:4878/api/slots?format=json
-GET http://127.0.0.1:4878/api/slots?format=toon
-```
-
-Auth is the same as the other `/api/*` reads: open while `auth.founders` is
-empty; otherwise a founder session, localhost-as-owner, or `apiToken`. `format`
-defaults to `json` (this endpoint's shape is a small object). `full` is not
-accepted. An unknown parameter, an unknown value, an empty value or the same
-parameter twice answers 400 with a hint, same words as `/api/board`.
-
-JSON:
-
-```json
-{
-  "slots": [
-    { "name": "ci-1", "card": "cci1", "since": "2026-08-26T12:00:00.000Z" },
-    { "name": "ci-2", "card": null, "since": null },
-    { "name": "ci-3", "card": null, "since": null }
-  ]
-}
-```
-
-| field | meaning |
-| --- | --- |
-| `name` | Slot id, the same string the card stores in `slot` |
-| `card` | Pipeline card id holding the slot, or `null` when free |
-| `since` | When that holder was claimed, or `null` when free |
-
-When every listed slot has a `card`, the object also has
-`"alarm": "no free CI slot — add capacity"`. That is not a queue: the CI-slot
-process exits 3 and assigns nothing; the fix is adding a slot. The same
-sentence is a `problems` row (`source: ci-slots`) on `/api/board` and the page
-header flag. A missing occupancy file is an empty `slots` array and no alarm —
-there is no pool on disk yet.
 
 ## Auth
 
@@ -551,9 +500,9 @@ path that was open stays open.
 | `auth.trustProxy` | `false` | when `true` **and** the connection arrives over loopback, `X-Forwarded-For` / `X-Real-IP` name the client for rate limiting and `X-Forwarded-Proto` may set the login-link scheme. Otherwise those headers are ignored |
 | `auth.publicUrl` | empty | absolute `http(s)://host[:port]` base for login links. Set it: without it the `Host` header is used only when it names loopback, and everything else falls back to `http://127.0.0.1:<port>` |
 | `auth.cookieSecure` | `true` | the session cookie carries `Secure`. Browsers still accept it on `http://localhost`; set `false` only for a plain-HTTP deployment |
-| `apiToken` | empty | Bearer token accepted on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when sign-in is on |
+| `apiToken` | empty | Bearer token accepted on `/pipeline/*` and `/api/*` when sign-in is on |
 | `probeToken` | empty | unchanged: Bearer token for every `/probe/*` path |
-| `subscriptions` | empty | array of subscription names the owner may assign (Telegram buttons and `POST /pipeline/assign-subscription`) |
+| `subscriptions` | empty | array of subscription names the owner may assign with `POST /pipeline/assign-subscription` |
 | `telegram` | missing | outbound Telegram notifications; see [`TELEGRAM.md`](./TELEGRAM.md). Missing, or present without `botToken` and without `dryRun: true` → no sends, one log line at start-up |
 | `lavish`, `cloudflare` | missing | the artifact pipeline's blocks — the board ignores them; the publish and deploy CLIs read them. See [`ARTIFACT.md`](./ARTIFACT.md) |
 
@@ -595,7 +544,7 @@ Writes go through the same atomic queue as the rest of the board.
   `{ "error": "unauthorized" }`. A forged `wt_session` cookie is `401`.
 - **Mutations** `/card/*`, `/project/select`, `/focus`: session or
   localhost-as-owner.
-- **Mutations** `/pipeline/*` and `POST /hooks/enqueue`: session, localhost-as-owner,
+- **Mutations** `/pipeline/*`: session, localhost-as-owner,
   or `Authorization: Bearer <apiToken>`.
 - **`/probe/*`**: still `probeToken` only, exactly as before. Missing token
   config → `403`; wrong token → `401` plain text.
@@ -633,35 +582,29 @@ Nothing the client sends decides who it is. In detail:
 
 ## Probe
 
-The probe on the owner's machine pushes herdr window data up and pulls queued
-hooks down. The HTTP contract the probe already speaks is in
+The probe on the owner's machine pushes herdr window data up. The HTTP contract
+the probe already speaks is in
 [`PROBE.md`](./PROBE.md); this section is the board side of the same contract.
 
-Auth: every `/probe/*` path and `POST /hooks/enqueue` require
-`Authorization: Bearer <probeToken>`. Missing or wrong token → `401`
-`unauthorized` (plain English text). If `probeToken` is not set in
-`state/autopase-board.json` → `403` `probe access is not configured`.
+Auth: every `/probe/*` path requires `Authorization: Bearer <probeToken>`.
+Missing or wrong token → `401` `unauthorized` (plain English text). If
+`probeToken` is not set in `state/autopase-board.json` → `403`
+`probe access is not configured`.
 
 | endpoint | body | what it does |
 | --- | --- | --- |
 | `POST /probe/snapshot` | the snapshot from [`PROBE.md`](./PROBE.md) | stores it in memory and in `state/probe-snapshot.json` with a `receivedAt` stamp. Entries of `windows` / `tabs` / `panes` / `agents` that are not objects are dropped before storing. Larger than 2 MB → `413` (also for a chunked body with no `Content-Length`: the answer is `413`, not a dropped connection). Broken JSON / wrong shape → `400` |
-| `GET /probe/hooks` | — | `{ "hooks": [ { id, window, text, queuedAt }, … ] }`, oldest first. Empty queue is `{ "hooks": [] }` |
-| `POST /probe/hooks/ack` | `{ "ids": ["hk_…"] }` | drops those entries; unknown ids are ignored. Answers `{ "ok": true, "removed": N }` |
-| `POST /hooks/enqueue` | `{ "window", "text" }` (both required; `window` must be a herdr id — `w4Z:p1` or `w4Z:t1` — anything else is `400`) | queues a hook for the probe to deliver. Answers `{ "ok": true, "hook": { id, window, text, queuedAt } }` |
 
 Config fields on `state/autopase-board.json`:
 
 | field | default | meaning |
 | --- | --- | --- |
 | `probeToken` | empty | shared secret; must match the probe's `token` |
-| `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*`, `/api/*` and `POST /hooks/enqueue` when `auth.founders` is set |
+| `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*` and `/api/*` when `auth.founders` is set |
 | `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
 | `lanes` | `{}` | the fleet registry (docs/FLEET.md): `"host/folder": { "name", "server" }` — a probed lane folder is shown under its fleet name with its server; lanes not listed are shown by folder name, dimmed, and do not count as capacity (`laneCount`, `free`) |
 | `ciSlots` | `{}` | the same registry for CI runners (docs/FLEET.md "CI slots"): `"<runner name>": { "name", "server" }` — the runner is shown under its slot name with its server |
 | `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
-
-A hook that has been waiting more than ten minutes shows `hooks queued, oldest Nm`
-in the board header.
 
 `WATCHTOWER_STATE_DIR` points the board at another folder instead of `state/`
 (tests, a second instance). Unset — `state/` next to the repo, as before.

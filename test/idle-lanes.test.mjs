@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { idleLaneFindings, idleLedger, startable, startableOnBoard, idleLine, idleAlarmText } from '../bin/idle-lanes.mjs';
+import { idleLaneFindings, idleLedger, startable, startableOnBoard, idleLine } from '../bin/idle-lanes.mjs';
 
 const cards = [
   { id: 'cs', title: 'FINANCE-CARDS', stage: 'development', links: { ticket: 'https://github.com/acme/web/issues/1569' } },
@@ -105,11 +105,9 @@ test('the ledger alarms after the grace, repeats after the interval, forgets wha
   assert.equal(r.active.length, 0);
 });
 
-test('the line and the alarm name the lanes, the wait, and the units', () => {
+test('the line names the lanes, the wait, and the units', () => {
   const f = { card: { title: 'FINANCE-CARDS' }, free: ['mac/lane-6'], startable: [{ unit: 'U3b', ticket: 1583 }], ageMs: 12 * 60000 };
   assert.equal(idleLine(f), 'mac/lane-6 free for 12m while U3b #1583 waits with nothing in the way');
-  assert.match(idleAlarmText(f), /^ACHTUNG \(board\): sprint "FINANCE-CARDS" — lanes mac\/lane-6 have been free for 12m while U3b #1583 is queued/);
-  assert.match(idleAlarmText(f), /dispatch now/);
 });
 
 test('the board remembers: a unit whose card left ticketed or carries a PR is never startable again (merge lag)', () => {

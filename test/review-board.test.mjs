@@ -10,6 +10,12 @@ import { executable, getJson, postJson, startBoard } from './helpers.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 const UMBRELLA = 'https://github.com/acme/web/issues/1600';
+const OWNER_TELEGRAM = {
+  dryRun: true,
+  chatId: '-1',
+  ownerChatId: '1',
+  founders: [{ name: 'Owner', tgUserId: 1, tag: '@owner', owner: true }],
+};
 const FLEET = {
   prompt: 'Read {taskFile} and do it whole',
   hosts: { mac: { kitchen: '~/kitchens/web', launch: 'maclane {n} "{prompt}"' } },
@@ -106,7 +112,10 @@ test('the board launches a reviewer off the writer lane and sets the unit review
     };
     board = await startBoard({
       port: 15015,
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', hosts: { mac: { target: 'mock-mac' } } },
+      config: {
+        source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
+        hosts: { mac: { target: 'mock-mac' } },
+      },
       files: {
         'sprint-facts.json': FACTS,
         'fleet-launch.json': FLEET,

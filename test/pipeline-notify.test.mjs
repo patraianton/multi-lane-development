@@ -10,13 +10,20 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { startBoard, postJson } from './helpers.mjs';
+import { getJson, startBoard, postJson } from './helpers.mjs';
+import {
+  configureTelegram,
+  notifyArtifactReady,
+  notifyDone,
+  notifyIdleLanes,
+  notifyReady,
+  notifyStuck,
+} from '../bin/telegram-bot.mjs';
 
 const TELEGRAM = {
   dryRun: true,
   chatId: '-100123',
-  boardUrl: 'https://board.example',
-  apiToken: 'board-token',
+  ownerChatId: '1001',
   founders: [
     { name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true },
     { name: 'Partner', tgUserId: 1002, tag: '@partner', owner: false },
@@ -26,7 +33,7 @@ const TELEGRAM = {
 async function waitFor(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (check()) return;
+    if (await check()) return;
     if (Date.now() > deadline) throw new Error('condition not reached in time');
     await new Promise(r => setTimeout(r, 50));
   }
@@ -35,6 +42,146 @@ async function waitFor(check, timeoutMs = 5000) {
 function countMatches(text, needle) {
   return text.split(needle).length - 1;
 }
+
+test('senders need no board credentials and route group and owner messages', async () => {
+  const originalFetch = globalThis.fetch;
+  const sends = [];
+  globalThis.fetch = async (_url, options) => {
+    sends.push(JSON.parse(options.body));
+    return {
+      status: 200,
+      async json() { return { ok: true, result: { message_id: sends.length } }; },
+    };
+  };
+
+  try {
+    const configured = configureTelegram({
+      botToken: 'test-token',
+      chatId: '-100123',
+      founders: TELEGRAM.founders,
+    });
+    assert.equal('boardUrl' in configured, false);
+    assert.equal('apiToken' in configured, false);
+
+    const card = {
+      id: 'c-routing',
+      title: 'Routing proof',
+      links: {
+        artifact: 'https://artifacts.example/routing-proof',
+        ticket: 'https://github.com/acme/web/issues/42',
+      },
+    };
+    await notifyArtifactReady(card);
+    await notifyDone(card);
+    await assert.rejects(
+      notifyStuck(card, 'three failures'),
+      /no ownerChatId/,
+      'a missing owner destination does not disable group sending');
+
+    configureTelegram({
+      botToken: 'test-token',
+      chatId: '-100123',
+      ownerChatId: '1001',
+      founders: TELEGRAM.founders,
+    });
+    await notifyStuck(card, 'three failures');
+    await notifyIdleLanes(card, {
+      free: ['lane-2'],
+      ageMs: 5 * 60_000,
+      startable: [{ unit: 'T2', ticket: 42 }],
+    });
+    await notifyReady(card);
+
+    assert.deepEqual(
+      sends.map(send => send.chat_id),
+      ['-100123', '-100123', '1001', '1001', '1001']);
+    for (const send of [sends[0], sends[1]]) {
+      assert.ok(!send.text.includes('Card:'), 'group message has no Card link');
+      assert.ok(!send.text.includes('#pipeline/'), 'group message has no board deep link');
+    }
+    assert.ok(!sends[3].text.includes('The CTO window has been told to dispatch'));
+    assert.equal(sends[4].text,
+      'Sprint Routing proof is ready for acceptance — https://github.com/acme/web/issues/42');
+  } finally {
+    configureTelegram(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('autoDispatch stays off without an owner chat and mirrors timestamped logs', async () => {
+  const head = 'abc12345abcdef0123456789abcdef0123456789';
+  const verdict = {
+    round: 1, go: true, head: head.slice(0, 8), at: '2026-08-30T10:00:00.000Z',
+    body: `R1 — GO\nhead ${head.slice(0, 8)}`,
+  };
+  const facts = {
+    lanes: [],
+    prs: [{
+      number: 1616, url: 'https://github.com/acme/web/pull/1616', branch: 'feat/1516',
+      headSha: head, title: 'Missing-owner merge proof', body: 'Ticket: #1516',
+      draft: false, mergeable: 'MERGEABLE', labels: [],
+      ci: { color: 'green', text: 'CI green (1)', headSha: head },
+      verdict, verdicts: [verdict], verdictOnHead: verdict, verdictRounds: 1,
+    }],
+    mergedPrs: [], openIssues: [], ciJobs: {}, ciRunners: [], staleSources: [],
+    unitIssues: {
+      1515: [{
+        number: 1516, title: 'SAFE-U1: mergeable unit',
+        url: 'https://github.com/acme/web/issues/1516', state: 'OPEN',
+        branch: 'feat/1516', labels: [],
+      }],
+    },
+    umbrellaStates: { 1515: 'OPEN' },
+  };
+  const board = await startBoard({
+    port: 14995,
+    config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
+    files: { 'sprint-facts.json': facts },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '200',
+      // If the owner gate regresses, this harmless executable fails the would-be
+      // gh call and the merge journal assertion below catches the side effect.
+      WATCHTOWER_GH: process.execPath,
+    }),
+  });
+  try {
+    const created = await postJson(board.base, '/pipeline/card/create', {
+      title: 'SAFE sprint', spec: 'the spec',
+    });
+    const id = created.body.card.id;
+    assert.equal((await postJson(board.base, '/pipeline/card/move', { id, to: 'grilled' })).status, 200);
+    assert.equal((await postJson(board.base, '/pipeline/card/update', {
+      id, links: { ticket: 'https://github.com/acme/web/issues/1515' },
+    })).status, 200);
+    assert.equal((await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' })).status, 200);
+
+    const reason = 'auto-dispatch: off — telegram.ownerChatId missing';
+    await waitFor(() => board.output().includes(reason));
+    await waitFor(async () => {
+      const api = await getJson(board.base, '/api/pipeline?format=json');
+      return api.body.cards.some(card => card.parent === id && card.stage === 'ci_pr');
+    });
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    const output = board.output();
+    const log = await readFile(path.join(board.dir, 'board.log'), 'utf8');
+    assert.equal(countMatches(output, reason), 1, 'the reason is printed once');
+    assert.equal(countMatches(log, reason), 1, 'the same reason is appended once');
+    assert.equal(log, output, 'the process-owned log mirrors the captured output');
+    for (const line of output.trimEnd().split(/\r?\n/)) {
+      assert.match(line, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    }
+
+    const removed = await fetch(board.base + '/api/slots');
+    assert.equal(removed.status, 404);
+    assert.deepEqual(await removed.json(), { error: 'no such path' });
+    await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')),
+      'the effective-off board creates no dispatch journal');
+  } finally {
+    await board.stop();
+  }
+});
 
 test('links.artifact first set on a grilled card sends the doorbell once', async () => {
   const board = await startBoard({
@@ -70,7 +217,7 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
     const out = board.output();
     assert.ok(out.includes('@anton @partner'), 'tags both founders');
     assert.ok(out.includes(url), 'carries the artifact URL');
-    assert.ok(out.includes(`https://board.example/#pipeline/${id}`), 'links the card');
+    assert.ok(!out.includes('Card:'), 'group message has no board card link');
 
     // The one-shot stamp is recorded in the same write and persisted to disk.
     assert.ok(updated.body.card.notified?.artifact, 'notified.artifact timestamp recorded');

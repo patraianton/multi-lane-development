@@ -29,8 +29,7 @@ const FACTS = {
 const TELEGRAM = {
   dryRun: true,
   chatId: '-100123',
-  boardUrl: 'https://board.example',
-  apiToken: 'board-token',
+  ownerChatId: '4242',
   founders: [{ name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true }],
 };
 

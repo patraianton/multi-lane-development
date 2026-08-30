@@ -1,8 +1,7 @@
-// Probe — push local herdr state to the remote board and deliver queued hooks.
+// Probe — push local herdr state to the remote board.
 //
-// Lives on the owner's Windows machine, next to herdr (ADR-0002 / ADR-0003).
-// The board never talks to herdr itself: this process posts a snapshot and
-// pulls pending hooks down, then runs them with `herdr pane run`.
+// Lives on the owner's Windows machine, next to herdr (ADR-0002). The board
+// never talks to herdr itself: this process posts a snapshot.
 //
 // Sources (same local herdr calls watchtower.mjs uses):
 //   herdr api snapshot     — windows, tabs, panes, focus
@@ -29,7 +28,7 @@ const HERDR_CANDIDATES = [
   'herdr',
 ];
 
-const HELP = `Probe: push herdr snapshots to the board and deliver queued hooks.
+const HELP = `Probe: push herdr snapshots to the board.
 
 Usage:
   node bin\\probe.mjs [--once] [--dry-run]
@@ -37,8 +36,7 @@ Usage:
 
 Flags:
   --once       one cycle, then exit
-  --dry-run    collect and print what WOULD be sent and delivered;
-               no network calls, no herdr pane run
+  --dry-run    collect and print what WOULD be sent; no network calls
   --help       this help
 
 Config file (required except with --dry-run): ${CONFIG_REL}
@@ -167,20 +165,19 @@ function boardPath(base, p) {
 
 // ---------------------------------------------------------------- herdr
 
-function runHerdr(bin, argv, { json = true, extraEnv = null } = {}) {
+function runHerdr(bin, argv) {
   return new Promise((resolve, reject) => {
     execFile(bin, argv, {
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
       timeout: HERDR_TIMEOUT_MS,
-      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+      env: process.env,
     }, (err, stdout, stderr) => {
       const out = String(stdout ?? '');
       const errText = String(stderr ?? '').trim();
       if (err) {
         return reject(new Error(`herdr ${argv.join(' ')}: ${errText || err.message}`));
       }
-      if (!json) return resolve(out);
       try { resolve(JSON.parse(out)); }
       catch { reject(new Error(`herdr ${argv.join(' ')}: answer is not JSON`)); }
     });
@@ -288,13 +285,6 @@ function summarize(payload) {
   return lines.join('\n');
 }
 
-async function paneRun(bin, window, text) {
-  return runHerdr(bin, ['pane', 'run', window, '--', text], {
-    json: false,
-    extraEnv: { HERDR_ENV: '1' },
-  });
-}
-
 // ---------------------------------------------------------------- board HTTP
 
 async function boardFetch(url, { method, token, body }) {
@@ -325,28 +315,6 @@ async function boardFetch(url, { method, token, body }) {
   catch { throw new Error(`board unreachable: non-JSON answer (${url})`); }
 }
 
-function asHooks(data) {
-  if (data == null) return [];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data.hooks)) return data.hooks;
-  throw new Error('GET /probe/hooks: expected a JSON array of {id, window, text}');
-}
-
-function normHook(raw, index) {
-  if (!raw || typeof raw !== 'object') {
-    log(`skipping malformed hook at ${index}: not an object`);
-    return null;
-  }
-  const id = String(raw.id ?? '').trim();
-  const window = String(raw.window ?? '').trim();
-  const text = raw.text == null ? '' : String(raw.text);
-  if (!id || !window) {
-    log(`skipping malformed hook at ${index}: need id and window`);
-    return null;
-  }
-  return { id, window, text };
-}
-
 // ---------------------------------------------------------------- one cycle
 
 async function cycle(bin, cfg) {
@@ -358,41 +326,12 @@ async function cycle(bin, cfg) {
       : '{boardUrl}/probe/snapshot';
     log(`dry-run: would POST ${dest}`);
     process.stdout.write(summarize(payload) + '\n');
-    log(`dry-run: would GET ${cfg.boardUrl ? boardPath(cfg.boardUrl, '/probe/hooks') : '{boardUrl}/probe/hooks'}`);
-    log('dry-run: hook-delivery plan: 0 pending (no board contact in dry-run)');
     return;
   }
 
   const snapUrl = boardPath(cfg.boardUrl, '/probe/snapshot');
   await boardFetch(snapUrl, { method: 'POST', token: cfg.token, body: payload });
   log(`posted snapshot: windows ${(payload.windows ?? []).length}, panes ${(payload.panes ?? []).length}, agents ${(payload.agents ?? []).length}`);
-
-  const hookUrl = boardPath(cfg.boardUrl, '/probe/hooks');
-  const pending = asHooks(await boardFetch(hookUrl, { method: 'GET', token: cfg.token }))
-    .map(normHook)
-    .filter(Boolean);
-
-  if (!pending.length) {
-    log('hooks: 0 pending');
-    return;
-  }
-
-  log(`hooks: ${pending.length} pending`);
-  const acked = [];
-  for (const h of pending) {
-    try {
-      await paneRun(bin, h.window, h.text);
-      acked.push(h.id);
-      log(`delivered hook ${h.id} -> ${h.window}`);
-    } catch (e) {
-      log(`hook ${h.id} not delivered: ${e.message || e}`);
-    }
-  }
-
-  if (!acked.length) return;
-  const ackUrl = boardPath(cfg.boardUrl, '/probe/hooks/ack');
-  await boardFetch(ackUrl, { method: 'POST', token: cfg.token, body: { ids: acked } });
-  log(`acked ${acked.length} hook(s)`);
 }
 
 // ---------------------------------------------------------------- main
@@ -420,7 +359,7 @@ async function runOnce() {
       log(msg);
       return;
     }
-    if (msg.includes('board unreachable') || msg.includes('GET /probe/hooks')) {
+    if (msg.includes('board unreachable')) {
       log(msg);
       return;
     }

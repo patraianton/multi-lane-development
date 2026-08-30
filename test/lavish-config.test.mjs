@@ -42,14 +42,13 @@ test('readBoardConfig reads the file and survives a missing one', async () => {
       apiToken: 'board-token',
       lavish: { publicBaseUrl: 'https://lavish.example.com/', apiToken: 'pub' },
       cloudflare: { accountId: 'acc', apiToken: 'cf' },
-      telegram: { boardUrl: 'https://board.example/' },
     }));
     const cfg = await readBoardConfig(file);
     assert.equal(cfg.lavish.publicBaseUrl, 'https://lavish.example.com');
     assert.equal(cfg.lavish.apiToken, 'pub');
     assert.equal(cfg.cloudflare.accountId, 'acc');
     assert.equal(cfg.boardApiToken, 'board-token');
-    assert.equal(cfg.boardUrl, 'https://board.example');
+    assert.equal(cfg.boardUrl, 'http://127.0.0.1:4878');
 
     const empty = await readBoardConfig(path.join(dir, 'missing.json'));
     assert.equal(empty.lavish.publicBaseUrl, '');

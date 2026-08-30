@@ -10,8 +10,6 @@ const TELEGRAM = {
   dryRun: true,
   chatId: '-100123',
   ownerChatId: '4242',
-  boardUrl: 'https://board.example',
-  apiToken: 'board-token',
   founders: [{ name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true }],
 };
 
@@ -87,6 +85,7 @@ test('the watchtower persists one readyAt notification and clears it for a later
     await until(board.base, () => board.output().includes('--- notifyReady ---'));
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(count(board.output(), '--- notifyReady ---'), 1);
+    assert.match(board.output(), /chatId: 4242/);
     assert.match(board.output(), new RegExp(`Sprint Payments sprint is ready for acceptance — ${UMBRELLA}`));
 
     const accepted = await postJson(board.base, '/pipeline/card/move', { id, to: 'done' });
