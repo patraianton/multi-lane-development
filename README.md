@@ -2,7 +2,9 @@
 
 A delivery pipeline for a coding-agent fleet, served by one process (`bin/watchtower.mjs` — the board, still called Watchtower inside the code and the services).
 
-The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → QA → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards, the shadow verdict, `/api/board` for agents) and is not drawn.
+The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → merged → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards, the shadow verdict, `/api/board` for agents) and is not drawn.
+
+**Since 2026-08-30 the board is the scheduler**: it dispatches every lane task, starts reviews, merges and alarms by itself. How it works and how to run it: [`docs/BOARD.md`](docs/BOARD.md); the rules every agent gets: [`docs/RULES.md`](docs/RULES.md); the design: [`docs/specs/2026-08-30-board-is-the-scheduler.md`](docs/specs/2026-08-30-board-is-the-scheduler.md). Older contracts live in [`docs/history/`](docs/history/).
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
@@ -12,11 +14,11 @@ This repository grew from the windows board through waves A–G (pipeline store,
 
 ## Pipeline stages
 
-The step-by-step instruction for every stage is one file: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+The step-by-step instruction for every stage is one file: [`docs/history/RUNBOOK.md`](docs/history/RUNBOOK.md).
 
 A card sits in one stage at a time. The road is one-way:
 
-`spec → grilled → ticketed → development → local_check → ci_pr → qa → done`
+`spec → grilled → ticketed → development → local_check → ci_pr → merged → done`
 
 | Stage | Meaning |
 | --- | --- |
@@ -30,7 +32,7 @@ A card sits in one stage at a time. The road is one-way:
 | `done` | Terminal; the PR is merged, the card is finished |
 | `stuck` | Three failures in a row — a human has to look |
 
-`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/GRILL.md`](docs/GRILL.md) §2).
+`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/history/GRILL.md`](docs/history/GRILL.md) §2).
 
 A **sprint** — a card whose `links.ticket` is an umbrella issue — splits into **unit cards** once it has left `grilled` and its unit tickets exist: one card per ticket, bound to the sprint, moved by facts alone (busy lane → `development`, the lane running the project's local check → `local_check`, PR open → `ci_pr`, PR merged → `qa`, ticket closed after the merge → `done` — merged is delivered, not accepted; the PR's own "Closes #N" does not count). The sprint card then leaves the columns for the **sprint band** above them, and its own stage follows the units: `development` once any unit has started, `qa` once every unit is merged or closed, `done` once every unit is accepted, its **QA tickets** — issues labelled `qa` that reference the umbrella, where the reviews' leftover findings are written — are closed and the umbrella is closed. A QA ticket is a card of its own in the QA column from the day it is written. Details: [`docs/API.md`](docs/API.md) (Unit cards).
 
@@ -293,7 +295,7 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 | [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Watchdog, Status, lane, spec, grill, Artifact, probe, ticket, founder |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Waves A–G |
 | [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, auth, probe endpoints |
-| [`docs/GRILL.md`](docs/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
+| [`docs/history/GRILL.md`](docs/history/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
 | [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
 | [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle and snapshot shape |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Send-only Telegram notifications and config |
