@@ -20,7 +20,8 @@ export async function startBoard({ port, config = {}, files = {}, env = {} }) {
     await writeFile(path.join(dir, name),
       typeof content === 'string' ? content : JSON.stringify(content, null, 2));
   }
-  const cfg = typeof config === 'function' ? config(dir) : config;
+  const rawCfg = typeof config === 'function' ? config(dir) : config;
+  const cfg = { autoDispatch: false, ...(rawCfg ?? {}) };
   await writeFile(path.join(dir, 'autopase-board.json'), JSON.stringify(cfg, null, 2));
   // `env` adds process environment for the board (a function receives the
   // state directory, for variables that must point into it).

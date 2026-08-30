@@ -34,8 +34,9 @@ import {
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { idleLaneFindings, idleLedger, idleAlarmText, idleLine } from './idle-lanes.mjs';
 import {
-  planDispatchFull, recordDispatch, dispatchRows, baseLine, taskText, specDirFor, loadBrief, launchPlan, runLaunch,
+  planDispatchFull, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
 } from './auto-dispatch.mjs';
+import { readRules, cutRules } from './rules.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -130,6 +131,10 @@ const DEFAULTS = {
   // so and /api/board lists it under problems. 60 is three times the probe's
   // usual 15-second interval, with a little slack.
   probeStaleSec: 60,
+  // Sending is an explicit setting, re-read with the rest of this file.
+  autoDispatch: false,
+  // Full local gate written into every task file unless a fleet host overrides it.
+  check: 'bash ../ci-local-and-stamp.sh',
 };
 
 const HERDR_CANDIDATES = [
@@ -254,6 +259,8 @@ function applyConfig(raw) {
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
   config.probeToken = String(config.probeToken ?? '').trim();
   config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
+  config.autoDispatch = src.autoDispatch === true;
+  config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
   // Missing, broken or empty founders list → null, and the board stays open.
@@ -493,15 +500,14 @@ async function idleLaneSweep(sprints, facts) {
 // ------------------------------------------------------ auto-dispatch
 //
 // Decision 16: the board itself sends a startable unit to a free assigned
-// lane — the task file (ticket + common brief + base), the spec bundle, the
-// launcher from the fleet registry. Off by default: without
-// WATCHTOWER_AUTO_DISPATCH=1 the sweep only says what it would do (the log,
-// the auto-dispatch table). The journal state/auto-dispatch.json keeps a unit
-// from being sent twice and holds a failed launch for ten minutes.
+// lane — the task file (ticket + committed rules + base), the spec bundle, the
+// launcher from the fleet registry. Off by default: unless autoDispatch is true
+// in the settings, the sweep only says what it would do (the log and table).
+// The journal state/auto-dispatch.json keeps a task from being sent twice and
+// holds a failed launch for ten minutes.
 const DISPATCH_JSON = path.join(STATE_DIR, 'auto-dispatch.json');
 const DISPATCH_DIR = path.join(STATE_DIR, 'auto-dispatch'); // this machine's copy of every task file sent
 const FLEET_LAUNCH_FILE = process.env.WATCHTOWER_FLEET_LAUNCH_FILE || path.join(STATE_DIR, 'fleet-launch.json');
-const AUTO_DISPATCH_ON = process.env.WATCHTOWER_AUTO_DISPATCH === '1';
 const SCP = process.env.WATCHTOWER_SCP || (process.platform === 'win32' ? path.join(path.dirname(SSH), 'scp.exe') : 'scp');
 const dispatchNotices = new Set();
 function dispatchNote(line) {
@@ -522,8 +528,8 @@ function execCmd(bin, args, timeout = 60000) {
   });
 }
 const bins = { ssh: SSH, scp: SCP, gh: GH };
-async function dispatchOne(pair, { fleet, repo, at }) {
-  // The ticket, verbatim, from GitHub; the sprint's brief from its spec folder.
+async function dispatchOne(pair, { fleet, repo, at, rules }) {
+  // The ticket comes verbatim from GitHub; rules come from this board's HEAD.
   let ticket = null;
   if (repo) {
     const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url'], 60000);
@@ -533,24 +539,47 @@ async function dispatchOne(pair, { fleet, repo, at }) {
   const specDir = specDirFor({ card: (await listPipelineCards()).find(c => c.id === pair.card.id), umbrella: pair.umbrella, programs: programsSource.value, specsDir: config.specsDir });
   let localSpec = null;
   if (specDir) { try { if ((await stat(specDir)).isDirectory()) localSpec = specDir; } catch { localSpec = null; } }
-  const brief = await loadBrief(localSpec);
   const plan0 = launchPlan(pair, { fleet, hosts: config.hosts ?? {}, localTask: '', localSpec, home: HOME, repo });
-  const text = taskText({ pair, ticket, brief, kitchen: plan0.kitchen, taskFile: plan0.taskFile, specRemote: plan0.bundle, repo, at });
+  const role = pair.role || (pair.unit.labels?.includes('qa-run') ? 'qa' : 'lane');
+  const taskRules = { sha: rules.sha, text: cutRules(rules.text, role) };
+  const hostCheck = String(fleet?.hosts?.[pair.host]?.check ?? '').trim();
+  const configCheck = String(config.check ?? '').trim();
+  const check = hostCheck || configCheck || DEFAULTS.check;
+  const text = taskText({
+    pair, ticket, role, kind: pair.kind, round: pair.round, head: pair.head,
+    rules: taskRules, check, sections: pair.sections ?? [], kitchen: plan0.kitchen,
+    taskFile: plan0.taskFile, specRemote: plan0.bundle, repo, at,
+  });
   await mkdir(DISPATCH_DIR, { recursive: true });
-  const localTask = path.join(DISPATCH_DIR, `TASK-${pair.unit.ticket}.md`);
+  const localTask = path.join(DISPATCH_DIR, taskFileName(pair));
   await writeFile(localTask, text);
   const plan = launchPlan(pair, { fleet, hosts: config.hosts ?? {}, localTask, localSpec, home: HOME, repo });
   const outcome = await runLaunch(plan, (bin, args, timeout) => execCmd(bins[bin] ?? bin, args, timeout));
-  return { ...outcome, taskFile: plan.taskFile, brief: brief?.file ?? null, specDir: localSpec };
+  return { ...outcome, taskFile: plan.taskFile, rules: rules.sha, specDir: localSpec };
 }
-async function autoDispatchSweep(sprints) {
+async function autoDispatchSweep(sprints, facts) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
   const ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
-  const { pairs, holds } = planDispatchFull(cards, sprints, { ledger, at, fleet });
-  if (!AUTO_DISPATCH_ON) {
-    for (const p of pairs) dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)} (WATCHTOWER_AUTO_DISPATCH=1 to send)`);
+  const { pairs, holds } = planDispatchFull(cards, sprints, {
+    ledger, at, fleet, facts,
+    needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
+  });
+  const rules = await readRules({ root: ROOT, exec: runText });
+  if (!rules) {
+    const rulesHolds = pairs.map(p => ({
+      card: p.card, unit: p.unit.unit, ticket: p.unit.ticket, lane: p.lane,
+      reason: 'docs/RULES.md is not committed',
+    }));
+    setAutoDispatch({
+      at, on: config.autoDispatch,
+      rows: dispatchRows({ pairs: [], holds: [...holds, ...rulesHolds], ledger, at }),
+    });
+    return;
+  }
+  if (!config.autoDispatch) {
+    for (const p of pairs) dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)} (autoDispatch: true in the settings to send)`);
     setAutoDispatch({ at, on: false, rows: dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' }) });
     return;
   }
@@ -563,8 +592,10 @@ async function autoDispatchSweep(sprints) {
   let next = ledger;
   for (const p of pairs) {
     const label = `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
+    next = recordDispatch(next, p, { result: 'launching' }, at);
+    await writeJsonAtomic(DISPATCH_JSON, next);
     let outcome;
-    try { outcome = await dispatchOne(p, { fleet, repo, at }); }
+    try { outcome = await dispatchOne(p, { fleet, repo, at, rules }); }
     catch (e) { outcome = { result: 'failed', error: String(e?.message || e), ran: [] }; }
     next = recordDispatch(next, p, outcome, at);
     await writeJsonAtomic(DISPATCH_JSON, next);
@@ -993,10 +1024,14 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     const text = [it.title, it.body ?? '', ...(it.comments ?? []).map(c => c.body ?? '')].join('\n');
     for (const m of text.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
     refs.delete(it.number);
+    const qaRun = labels.includes('qa-run');
+    const branch = parseUnitBranch(it.body) || `feat/${it.number}`;
+    const depsMerged = parseUnitDepsMerged(it.body) || qaRun;
+    const qa = labels.includes('qa') || qaRun;
     if (issueState.get(it.number) === 'OPEN') {
       work.push({
         number: it.number, title: it.title, url: it.url, labels,
-        branch: parseUnitBranch(it.body), deps: parseUnitDeps(it.body), depsMerged: parseUnitDepsMerged(it.body), qa: labels.includes('qa'),
+        branch, deps: parseUnitDeps(it.body), depsMerged, qa,
         dependsLine: /\bdepends?\s+on\b/i.test(String(it.body ?? '')),
         refs: [...refs],
       });
@@ -1007,9 +1042,9 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
       byUmbrella.get(n).push({
         number: it.number, title: it.title, url: it.url, createdAt: it.createdAt,
         state: String(it.state ?? 'OPEN').toUpperCase(), closedAt: it.closedAt ?? null,
-        branch: parseUnitBranch(it.body),
-        deps: parseUnitDeps(it.body), depsMerged: parseUnitDepsMerged(it.body),
-        qa: labels.includes('qa'),
+        branch, labels,
+        deps: parseUnitDeps(it.body), depsMerged,
+        qa,
       });
     }
   }
@@ -2706,9 +2741,9 @@ configureHooks(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
-console.log(AUTO_DISPATCH_ON
+console.log(config.autoDispatch
   ? `auto-dispatch: ON — free lanes are charged from the board (launchers: ${FLEET_LAUNCH_FILE})`
-  : 'auto-dispatch: off (dry-run) — the board only says what it would send; WATCHTOWER_AUTO_DISPATCH=1 to send');
+  : 'auto-dispatch: off (dry-run) — the board only says what it would send; autoDispatch: true in the settings to send');
 artifactSource.tick();
 sprintSource.tick();
 server.on('error', (e) => {

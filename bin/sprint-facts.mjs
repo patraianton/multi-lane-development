@@ -159,7 +159,7 @@ export function ciSlotSummary(runners = []) {
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
 // umbrellaStates: Map(umbrella number -> 'OPEN' | 'CLOSED') from the same issue
 //   list, or null when unknown — a sprint is done only once its umbrella is closed;
-// unitIssues: Map(umbrella number -> [{ number, title, url, state, closedAt, branch, deps, qa }]) —
+// unitIssues: Map(umbrella number -> [{ number, title, url, state, closedAt, branch, deps, labels, qa }]) —
 //   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps);
 //   qa = the issue carries the `qa` label: a QA ticket (the findings a sprint's
 //   reviews left behind), listed apart from the work units as `qaTickets`.
@@ -173,23 +173,30 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     if (card?.parent) continue;
     const umbrella = umbrellaOf(card?.links?.ticket);
     if (!umbrella) continue;
-    const units = (unitIssues.get(umbrella) ?? []).map(i => ({
-      unit: i.qa ? 'QA' : unitLabel(i.title),
-      qa: Boolean(i.qa),
-      ticket: i.number,
-      title: i.title ?? '',
-      url: i.url ?? '',
-      branch: normBranch(i.branch),
-      open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
-      closedAt: i.closedAt ?? null,
-      depTickets: (Array.isArray(i.deps) ? i.deps : []).map(Number).filter(Number.isFinite),
-      depsMerged: Boolean(i.depsMerged),
-      deps: [],
-      lane: null,
-      pr: null,
-      merged: null,
-      state: 'queued',
-    }));
+    const units = (unitIssues.get(umbrella) ?? []).map(i => {
+      const labels = Array.isArray(i.labels) ? i.labels.map(String) : [];
+      const lowerLabels = labels.map(label => label.toLowerCase());
+      const qaRun = lowerLabels.includes('qa-run');
+      const qa = Boolean(i.qa) || qaRun || lowerLabels.includes('qa');
+      return {
+        unit: qa ? 'QA' : unitLabel(i.title),
+        qa,
+        ticket: i.number,
+        title: i.title ?? '',
+        url: i.url ?? '',
+        branch: normBranch(i.branch) || `feat/${i.number}`,
+        labels,
+        open: String(i.state ?? 'OPEN').toUpperCase() !== 'CLOSED',
+        closedAt: i.closedAt ?? null,
+        depTickets: (Array.isArray(i.deps) ? i.deps : []).map(Number).filter(Number.isFinite),
+        depsMerged: Boolean(i.depsMerged) || qaRun,
+        deps: [],
+        lane: null,
+        pr: null,
+        merged: null,
+        state: 'queued',
+      };
+    });
     units.sort((a, b) => unitOrder(a) - unitOrder(b) || a.ticket - b.ticket);
     const byTicket = new Map(units.map(u => [u.ticket, u]));
     // Several tickets may pin one branch (one PR closing three QA findings):
@@ -282,6 +289,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
 
     const bound = units.filter(u => u.lane).map(u => ({ ...u.lane, ticket: u.ticket, unit: u.unit }));
     const isBound = l => bound.some(x => x.host === l.host && x.lane === l.lane);
+    const isBoundToUnmerged = l => units.some(u => u.lane && !u.merged && u.lane.host === l.host && u.lane.lane === l.lane);
     const name = l => `${l.host}/${l.lane}`;
     // Capacity is the fleet (FLEET.md): once a registry names lanes, only those
     // count as free; a lane outside it is still listed, but not as capacity.
@@ -309,7 +317,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       laneTable,
       ciTable,
       laneCount: inFleet.length,
-      free: inFleet.filter(l => !l.busy && !isBound(l)).map(name),
+      free: inFleet.filter(l => !l.busy && !isBoundToUnmerged(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
       ciSlots,
       counts: {
