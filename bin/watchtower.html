@@ -1678,7 +1678,7 @@ function pcard(c) {
     }
   }
   // The live review badge (decision 20): a reader is on the PR head right now —
-  // the board said so when it started one; the verdict clears it.
+  // the board set it when it started one; the verdict clears it.
   if (c.review && c.review.running) {
     const from = Date.parse(c.review.since || '') || Date.now();
     bits.push('<div class="row review-live" title="a reviewer is reading the PR head — set by the board when it starts a reader, cleared by the verdict on the PR">'
@@ -1898,8 +1898,8 @@ function renderPipeline(d) {
       + '</div>'
     : '';
 
-  // Auto-dispatch: one line per pair — what goes to which lane from which
-  // base, and the journal's word on it (dry-run while the switch is off).
+  // Auto-dispatch: review/develop launches and merge decisions, with the
+  // journal's word on each (dry-run while the switch is off).
   const ad = d.autoDispatch && typeof d.autoDispatch === 'object' ? d.autoDispatch : {};
   const adRows = Array.isArray(ad.rows) ? ad.rows : [];
   const dzZone = $('dispatch-zone');
@@ -1908,8 +1908,15 @@ function renderPipeline(d) {
     ? '<h2>Auto-dispatch — ' + (ad.on ? '<b>on</b>' : 'off, dry-run') + ' · ' + adRows.length + ' line' + (adRows.length === 1 ? '' : 's') + '</h2>'
       + adRows.map(r => {
         const st = String(r.state || '');
-        const cls = /^launched|^dispatched/.test(st) ? 'sent' : (/^failed/.test(st) ? 'bad' : '');
-        return '<div class="dz-row"><b>' + esc(r.unit || '-') + '</b> → ' + esc(r.lane || '-') + ' from ' + esc(r.base || '-')
+        const cls = /^launched|^dispatched|^merged/.test(st) ? 'sent' : (/^failed|^merge failed/.test(st) ? 'bad' : '');
+        if (r.kind === 'merge') {
+          const words = /^would merge\b/.test(st)
+            ? esc(st)
+            : '<b>' + esc(r.unit || 'PR') + '</b>' + (/^hold-merge\b/.test(st) ? ': ' : ' ') + esc(st);
+          return '<div class="dz-row"><b>merge</b> · ' + words + ' · ' + esc(r.card || '') + '</div>';
+        }
+        return '<div class="dz-row"><b>' + esc(r.unit || '-') + '</b> ' + esc(r.kind || 'develop')
+          + ' → ' + esc(r.lane || '-') + ' from ' + esc(r.base || '-')
           + ' · ' + esc(r.card || '') + ' · <span class="dz-state ' + cls + '">' + esc(st) + '</span></div>';
       }).join('')
     : '';
