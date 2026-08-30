@@ -538,6 +538,118 @@ test('a hold on a pre-ticket sibling blocks their shared active PR', async () =>
   }
 });
 
+test('one sibling without no-review keeps the verdict gate on their shared PR', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-mixed-label-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    const mixedFacts = facts();
+    mixedFacts.prs[0].verdict = null;
+    mixedFacts.prs[0].verdicts = [];
+    mixedFacts.prs[0].verdictOnHead = null;
+    mixedFacts.prs[0].verdictRounds = 0;
+    mixedFacts.unitIssues[1600][0].labels = ['no-review'];
+    mixedFacts.unitIssues[1700] = [{
+      number: 1724,
+      title: 'UNIT-U2: strict sibling on the shared branch',
+      url: 'https://github.com/acme/web/issues/1724',
+      state: 'OPEN',
+      branch: 'feat/1624',
+      labels: [],
+    }];
+    mixedFacts.umbrellaStates[1700] = 'OPEN';
+    board = await startBoard({
+      port: 15027,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': mixedFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    const strict = await postJson(board.base, '/pipeline/card/create', { title: 'STRICT sibling', spec: 'fixture' });
+    await postJson(board.base, '/pipeline/card/move', { id: strict.body.card.id, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/update', {
+      id: strict.body.card.id,
+      links: { ticket: 'https://github.com/acme/web/issues/1700' },
+    });
+    await postJson(board.base, '/pipeline/card/move', { id: strict.body.card.id, to: 'ticketed' });
+    const sprintId = await createTicketed(board);
+    await until(board.base, body => [1624, 1724].every(ticket =>
+      body.cards.some(card => card.ticket === ticket && card.stage === 'ci_pr')));
+    void sprintId;
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.deepEqual(await calls(callsFile), []);
+    await assert.rejects(readFile(path.join(board.dir, 'auto-dispatch.json')));
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a shared PR merges without a verdict once every sibling carries no-review', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-all-labelled-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    const labelledFacts = facts();
+    labelledFacts.prs[0].verdict = null;
+    labelledFacts.prs[0].verdicts = [];
+    labelledFacts.prs[0].verdictOnHead = null;
+    labelledFacts.prs[0].verdictRounds = 0;
+    labelledFacts.unitIssues[1600][0].labels = ['no-review'];
+    labelledFacts.unitIssues[1700] = [{
+      number: 1724,
+      title: 'UNIT-U2: labelled sibling on the shared branch',
+      url: 'https://github.com/acme/web/issues/1724',
+      state: 'OPEN',
+      branch: 'feat/1624',
+      labels: ['no-review'],
+    }];
+    labelledFacts.umbrellaStates[1700] = 'OPEN';
+    board = await startBoard({
+      port: 15028,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': labelledFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    const sibling = await postJson(board.base, '/pipeline/card/create', { title: 'LABELLED sibling', spec: 'fixture' });
+    await postJson(board.base, '/pipeline/card/move', { id: sibling.body.card.id, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/update', {
+      id: sibling.body.card.id,
+      links: { ticket: 'https://github.com/acme/web/issues/1700' },
+    });
+    await postJson(board.base, '/pipeline/card/move', { id: sibling.body.card.id, to: 'ticketed' });
+    await createTicketed(board);
+    const journal = await journalUntil(path.join(board.dir, 'auto-dispatch.json'),
+      value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merged'
+        && value?.dispatched?.['1724:merge:abc12345']?.result === 'merged');
+    assert.equal(journal.dispatched['1624:merge:abc12345'].pr, 1632);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const ghCalls = await calls(callsFile);
+    assert.equal(ghCalls.filter(args => args[0] === 'pr' && args[1] === 'merge').length, 1,
+      'one shared PR is one squash merge, journalled under both tickets');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a merge refused as out of date updates the branch, at most once a sweep', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-behind-main-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');

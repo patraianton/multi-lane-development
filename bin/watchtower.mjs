@@ -1094,7 +1094,7 @@ async function mergeSweep(sprints) {
     // A no-review merge needs every ticket association to carry the label:
     // one sibling without it keeps the verdict gate for their shared PR.
     const strict = group.items.find(({ unit }) =>
-      !(unit.labels ?? []).some(label => String(label).toLowerCase() === 'no-review'));
+      !(unit.labels ?? []).some(label => String(label?.name ?? label).toLowerCase() === 'no-review'));
     const decision = canMerge({ pr: group.pr, unit: (strict ?? group.items[0]).unit });
     if (!decision.ok) continue;
 
