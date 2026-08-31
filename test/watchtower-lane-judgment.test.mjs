@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { executable, getJson, postJson, startBoard } from './helpers.mjs';
+import { executable, getJson, journalUntil, postJson, startBoard, until } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const FACTS_AT = '2099-01-01T00:00:00Z';
@@ -32,28 +32,6 @@ const TELEGRAM = {
   ownerChatId: '4242',
   founders: [{ name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true }],
 };
-
-async function until(check, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  for (;;) {
-    last = await check();
-    if (last) return last;
-    if (Date.now() > deadline) throw new Error('condition not reached in time');
-    await new Promise(resolve => setTimeout(resolve, 80));
-  }
-}
-
-async function journalUntil(file, check, timeoutMs = 12000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    let journal = null;
-    try { journal = JSON.parse(await readFile(file, 'utf8')); } catch { /* not written yet */ }
-    if (journal && check(journal)) return journal;
-    if (Date.now() > deadline) throw new Error(`journal condition not reached: ${JSON.stringify(journal)}`);
-    await new Promise(resolve => setTimeout(resolve, 40));
-  }
-}
 
 async function addLaunch(file, parent, round) {
   let journal = { dispatched: {} };
@@ -112,7 +90,6 @@ test('three freed develop lanes without proof fail once per round and notify Stu
       ],
     };
     board = await startBoard({
-      port: 14977,
       config: {
         source: 'probe', autoDispatch: true, telegram: TELEGRAM, repo: 'acme/web',
         hosts: { alpha: { target: 'fake-alpha' }, beta: { target: 'fake-beta' } },
@@ -193,7 +170,6 @@ test('a judged-ok fix (the head changed) does not clear the failure streak', asy
     },
   };
   const board = await startBoard({
-    port: 15029,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': heldFacts },
     env: dir => ({
@@ -284,7 +260,6 @@ test('journal entries whose PR is merged are pruned after a day of grace', async
     mergedPrs: [{ number: 900, branch: 'feat/done', headSha: 'aaaa111100000000000000000000000000000000' }],
   };
   const board = await startBoard({
-    port: 15033,
     config: { source: 'probe' },
     files: {
       'sprint-facts.json': prunedFacts,
@@ -331,7 +306,6 @@ test('a proved lane clears only the failure streak that predates its free observ
     },
   };
   const board = await startBoard({
-    port: 14978,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': heldFacts },
     env: dir => ({

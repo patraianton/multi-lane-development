@@ -9,7 +9,6 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 test('status writes remain plain card data without watchdog configuration or stale machinery', async () => {
   const board = await startBoard({
-    port: 15055,
     config: { source: 'probe' },
     files: { 'watchdog.json': { boardUrl: 'http://board.invalid', intervalMin: 1 } },
   });
