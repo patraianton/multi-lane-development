@@ -8,6 +8,23 @@
 // fixtures.
 
 const ACTIVE = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
+const FIX_DEBT_STAGES = new Set(['development', 'local_check', 'ci_pr']);
+
+function sameHead(a, b) {
+  const x = String(a ?? '').toLowerCase();
+  const y = String(b ?? '').toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(x) && /^[0-9a-f]{7,40}$/.test(y)
+    && (x.startsWith(y) || y.startsWith(x));
+}
+
+function failureOnCurrentHead(pr, head) {
+  const verdict = pr?.verdictOnHead;
+  if (sameHead(verdict?.head, head)) return verdict.go === false;
+  const ciHead = pr?.ci?.headSha ?? pr?.rollupHeadSha ?? null;
+  const red = String(pr?.ci?.color ?? pr?.ciColor ?? '').toLowerCase() === 'red';
+  if (red && (!ciHead || sameHead(ciHead, head))) return true;
+  return String(pr?.mergeable ?? '').toUpperCase() === 'CONFLICTING';
+}
 
 function isQaRun(unit) {
   const labels = Array.isArray(unit?.labels) ? unit.labels.map(label => String(label).toLowerCase()) : [];
@@ -80,6 +97,38 @@ export function idleLaneFindings(cards, sprints, { at = null, excludeTickets = [
       startable: waiting,
       at,
     });
+  }
+  return out;
+}
+
+// An open PR can carry fix debt while no free-lane finding exists. This second
+// finding is deliberately unit-card scoped: only work already on the road can
+// be stuck, and a planner hold/attempt or a busy lane means it was dispatched.
+export function fixDebtFindings(cards, sprints, { at = null, excludeTickets = [] } = {}) {
+  const excluded = new Set([...excludeTickets].map(ticket => String(ticket)));
+  const out = [];
+  for (const card of cards ?? []) {
+    if (card?.parent || !ACTIVE.has(card?.stage)) continue;
+    const sprint = sprints?.get?.(card.id);
+    if (!sprint || sprint.umbrellaOpen !== true) continue;
+    if (Array.isArray(sprint.stale) && sprint.stale.length) continue;
+    for (const unit of [...(sprint.units ?? []), ...(sprint.qaTickets ?? [])]) {
+      if (excluded.has(String(unit?.ticket))) continue;
+      const unitCard = unitCardOf(cards, card.id, unit);
+      if (!unitCard || !FIX_DEBT_STAGES.has(unitCard.stage)) continue;
+      const pr = unit?.pr;
+      const head = String(pr?.headSha ?? '');
+      const closed = pr?.open === false || ['CLOSED', 'MERGED'].includes(String(pr?.state ?? '').toUpperCase());
+      if (!head || !pr || unit?.merged || closed || !failureOnCurrentHead(pr, head)) continue;
+      const busy = unit?.lane?.busy === true || (sprint.laneTable ?? []).some(lane =>
+        lane?.busy === true && Number(lane.ticket) === Number(unit.ticket));
+      if (busy) continue;
+      out.push({
+        key: `fix-debt:${card.id}:${unit.ticket}:${head.slice(0, 8)}`,
+        card: { id: unitCard.id, title: String(unitCard.title ?? `${unit.unit || ''} #${unit.ticket}`).trim() },
+        ticket: unit.ticket, unit: unit.unit || '', head, at,
+      });
+    }
   }
   return out;
 }

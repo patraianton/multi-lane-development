@@ -702,11 +702,11 @@ function applyFailure(card, {
 // Board-owned failures (for example, a freed lane with no proof) have no HTTP
 // failure kind. They still use the exact same streak/stage/history mutation and
 // must emit the Stuck alarm because there is no request wrapper to do it.
-export async function failCard(id, reason) {
+export async function failCard(id, reason, { forceStuck = false } = {}) {
   const why = str(reason, LIMIT.comment).trim();
   if (!why) throw new BadRequest('a failure reason is required');
   const { card, events } = unwrapMutation(await editCard(id, current => {
-    applyFailure(current, { reason: why, allowAnyStage: true });
+    applyFailure(current, { reason: why, forceStuck, allowAnyStage: true });
   }));
   await emitNotifications(card, events);
   return card;

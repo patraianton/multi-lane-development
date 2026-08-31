@@ -33,7 +33,7 @@ import {
   failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
-import { idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
+import { fixDebtFindings, idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
   planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
   launchFailureHolds, launchFailureHoldLine, quarantinedLanes,
@@ -780,6 +780,7 @@ async function readyAcceptanceSweep(sprints) {
 const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
+const FIX_DEBT_STUCK_MS = 30 * 60 * 1000;
 let idleNotice = '';
 
 // One line to the owner about the board itself, once per distinct key. Kept in
@@ -836,22 +837,35 @@ async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
   const at = new Date().toISOString();
   const cards = await listPipelineCards();
   const findings = idleLaneFindings(cards, sprints, { at, excludeTickets });
+  const fixDebt = fixDebtFindings(cards, sprints, { at, excludeTickets });
   const ledger = await readJsonSoft(IDLE_JSON, { seen: {} });
-  const r = idleLedger(ledger, findings, at, { graceMs: IDLE_GRACE_MS, repeatMs: IDLE_REPEAT_MS });
-  await writeJsonAtomic(IDLE_JSON, r.ledger);
-  setIdleLanes({ at, findings: r.active });
-  for (const f of r.active) {
+  const idleSeen = Object.fromEntries(Object.entries(ledger?.seen ?? {}).filter(([key]) => !key.startsWith('fix-debt:')));
+  const debtSeen = Object.fromEntries(Object.entries(ledger?.seen ?? {}).filter(([key]) => key.startsWith('fix-debt:')));
+  const idle = idleLedger({ seen: idleSeen }, findings, at, { graceMs: IDLE_GRACE_MS, repeatMs: IDLE_REPEAT_MS });
+  const debt = idleLedger({ seen: debtSeen }, fixDebt, at, { graceMs: FIX_DEBT_STUCK_MS, repeatMs: FIX_DEBT_STUCK_MS });
+  await writeJsonAtomic(IDLE_JSON, { seen: { ...idle.ledger.seen, ...debt.ledger.seen } });
+  setIdleLanes({ at, findings: idle.active });
+  for (const f of idle.active) {
     const line = `idle lanes: ${f.card.title}: ${idleLine(f)}`;
     if (line !== idleNotice) { idleNotice = line; console.log(line); }
   }
-  if (!r.active.length) idleNotice = '';
-  for (const f of r.alarms) {
+  if (!idle.active.length) idleNotice = '';
+  for (const f of idle.alarms) {
     const card = cards.find(c => c.id === f.card.id);
     if (config.telegramOn && card) {
       try { await notifyIdleLanes(card, f); }
       catch (e) { console.log(`idle lanes: telegram failed: ${e.message}`); }
     }
     console.log(`idle lanes: ALARM ${f.card.title}: ${idleLine(f)}`);
+  }
+  for (const f of debt.alarms) {
+    const reason = `fix debt on head ${String(f.head).slice(0, 8)} not dispatched for 30 min`;
+    try {
+      await failCard(f.card.id, reason, { forceStuck: true });
+      console.log(`fix debt: STUCK ${f.card.title} — ${reason}`);
+    } catch (e) {
+      console.log(`fix debt: could not stick ${f.card.title} — ${String(e?.message || e)}`);
+    }
   }
 }
 
@@ -903,7 +917,9 @@ function dispatchNote(line) {
   console.log(line);
 }
 function dispatchHoldNote(hold) {
-  const identity = `${hold?.failureKey ?? ''}:${hold?.failureAt ?? ''}`;
+  const identity = hold?.failureKey
+    ? `${hold.failureKey}:${hold?.failureAt ?? ''}`
+    : `${hold?.ticket ?? ''}:${hold?.reason ?? ''}`;
   if (dispatchHoldNotices.has(identity)) return;
   dispatchHoldNotices.add(identity);
   console.log(launchFailureHoldLine(hold));
@@ -1188,7 +1204,8 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
       `lane ${q.lane} killed ${q.deaths} runs at startup within an hour — quarantined for new launches; look at the host`);
   }
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
-  const reviews = planReviews({ cards, sprints, ledger, fleet, at });
+  const reviewHolds = [];
+  const reviews = planReviews({ cards, sprints, ledger, fleet, at, holds: reviewHolds });
   const develop = planDispatchFull(cards, sprints, {
     ledger, at, fleet, facts,
     takenLanes: reviews.map(pair => pair.lane),
@@ -1208,7 +1225,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
     return true;
   });
   const failureHolds = launchFailureHolds(ledger, { at });
-  const holds = [...develop.holds];
+  const holds = [...reviewHolds, ...develop.holds];
   for (const hold of failureHolds) {
     if (!holds.some(item => item.failureKey && item.failureKey === hold.failureKey)) holds.push(hold);
   }
@@ -1218,6 +1235,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
         `dependency dead end: #${hold.ticket} waits for #${dependency} (stuck)`);
     }
   }
+  for (const hold of holds) if (hold.log) dispatchHoldNote(hold);
   // A unit the planner has a reason to hold is not waiting "with nothing in the
   // way". One rule for every reason at once — light lane, cooling host, qa-run
   // without a browser, a base error, a red main — and the reason stays on the

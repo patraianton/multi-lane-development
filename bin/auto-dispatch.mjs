@@ -434,6 +434,12 @@ function entryBlocksDispatch(entry, now, launchingMs) {
   return true;
 }
 
+function newerNoGoThanEntry(verdict, entry) {
+  return entry?.judged != null && verdict?.go === false
+    && sameHead(verdict.head, entry.head)
+    && Date.parse(verdict.at ?? '') > Date.parse(entry.at ?? '');
+}
+
 function latestAttemptHost(journal, ticket) {
   const attempts = entriesFor(journal, ticket)
     .filter(x => ['develop', 'review', 'fix'].includes(x.kind))
@@ -623,9 +629,19 @@ export function planFixes({
       const fixEntries = entriesFor(journal, unit.ticket, 'fix');
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;
-      const retry = dispatchRetry(journal, unit.ticket, 'fix', head, now, retryMs);
       const previous = entryForHead(journal, unit.ticket, 'fix', head);
       const headGuard = journal[`${unit.ticket}:fix:${shortSha(head)}`];
+      let retry = dispatchRetry(journal, unit.ticket, 'fix', head, now, retryMs);
+      const superseded = [previous, headGuard].find(entry => newerNoGoThanEntry(pr?.verdictOnHead, entry));
+      if (!retry && superseded) {
+        const previousKey = entriesFor(journal, unit.ticket, 'fix').find(item => item.entry === superseded)?.key;
+        retry = {
+          type: 'new-no-go', previousKey,
+          round: nextRetryRound(journal, unit.ticket, 'fix', head, previousKey,
+            Math.max(Number(superseded.round) + 1 || 2, Number(pr.verdictOnHead.round) || 1)),
+          avoidHost: entryHost(superseded),
+        };
+      }
       const retryEntry = retry ? journal[retry.previousKey] : null;
       const savedSections = Array.isArray(retryEntry?.sections)
         ? retryEntry.sections.map(section => ({
@@ -636,7 +652,7 @@ export function planFixes({
       // fact turns green or a comment disappears before the next sweep. Its
       // original verbatim task context is part of the durable launch record.
       const currentNeed = fixNeed(unit, fixEntries);
-      let need = retry && savedSections.length
+      let need = retry && retry.type !== 'new-no-go' && savedSections.length
         ? { round: retry.round, sections: savedSections }
         : currentNeed;
       const heldEntry = previous?.result === 'held' ? previous : null;
@@ -665,8 +681,15 @@ export function planFixes({
 
       // no-proof is explicitly re-queued as another round; every other live
       // launch on this head is the ticket's head-key guard.
-      if (entryBlocksDispatch(headGuard, now, launchingMs)) continue;
-      if (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs)) continue;
+      const blocked = [headGuard, previous].find(entry => entryBlocksDispatch(entry, now, launchingMs)
+        && !newerNoGoThanEntry(pr?.verdictOnHead, entry));
+      if (blocked) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `fix of head ${shortSha(head)} was already dispatched`, log: true,
+        });
+        continue;
+      }
 
       const build = needsBuild ? needsBuild(unit) !== false : true;
       const lanes = [];
@@ -901,6 +924,7 @@ function lastWriterLane(journal, ticket) {
 export function planReviews({
   cards = [], sprints = null, ledger = null, fleet = null, at = null,
   retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS,
+  holds = null,
 } = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
@@ -932,12 +956,24 @@ export function planReviews({
       const retry = dispatchRetry(journal, unit.ticket, 'review', head, now, retryMs);
       const headGuard = journal[`${unit.ticket}:review:${shortSha(head)}`];
       const previous = entryForHead(journal, unit.ticket, 'review', head);
-      if (entryBlocksDispatch(headGuard, now, launchingMs)) continue;
-      if (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs)) continue;
+      if (entryBlocksDispatch(headGuard, now, launchingMs)
+          || (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs))) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `review of head ${shortSha(head)} was already dispatched`, log: true,
+        });
+        continue;
+      }
       // Issue #17 mirror: while a fixer is working on this head the branch is
       // about to move — reviewing the doomed head wastes the reviewer's round.
       // The fixer's entry keeps its old head, so the new head reviews freely.
-      if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) continue;
+      if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `fix of head ${shortSha(head)} is running — the review waits for a new head`, log: true,
+        });
+        continue;
+      }
 
       const lanes = [];
       for (const name of laneNamesFor(sprint, Boolean(retry?.expandLanes))) {
@@ -952,7 +988,10 @@ export function planReviews({
       const lane = (retry?.type === 'no-proof' && retry.avoidHost
         ? lanes.find(candidate => eligible(candidate) && candidate.host !== retry.avoidHost)
         : null) ?? lanes.find(eligible);
-      if (!lane) continue;
+      if (!lane) {
+        holds?.push({ card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '', reason: 'no free lane', log: true });
+        continue;
+      }
 
       const rawRound = Number(pr.verdictRounds);
       const firstRound = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
