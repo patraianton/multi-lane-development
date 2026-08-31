@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executable, getJson, postJson, startBoard } from './helpers.mjs';
+import { executable, postJson, startBoard, until } from './helpers.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 const UMBRELLA = 'https://github.com/acme/web/issues/1600';
@@ -63,17 +63,6 @@ const FACTS = {
   staleSources: [],
 };
 
-async function until(base, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    last = (await getJson(base, '/api/pipeline?format=json')).body;
-    if (ready(last)) return last;
-    if (Date.now() > deadline) throw new Error(`review fixture did not settle in ${ms}ms: ${JSON.stringify(last?.autoDispatch ?? [])}`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
 async function createTicketed(board) {
   const made = await postJson(board.base, '/pipeline/card/create', { title: 'REVIEW sprint', spec: 'fixture' });
   const id = made.body.card.id;
@@ -111,7 +100,6 @@ test('the board launches a reviewer off the writer lane and sets the unit review
       },
     };
     board = await startBoard({
-      port: 15015,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'mock-mac' } },
@@ -222,7 +210,6 @@ test('a no-review unit gets no reviewer while its ordinary sibling does', async 
       },
     };
     board = await startBoard({
-      port: 15026,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'mock-mac' } },
@@ -274,7 +261,6 @@ test('a launched review journal repairs a missing board badge', async () => {
     },
   };
   const board = await startBoard({
-    port: 15010,
     config: { source: 'probe', autoDispatch: false, repo: 'acme/web' },
     files: { 'sprint-facts.json': FACTS, 'auto-dispatch.json': ledger },
     env: dir => ({
@@ -304,7 +290,6 @@ test('stale PR facts never restore a review badge from the journal', async () =>
     kind: 'review', round: 1, head: HEAD, at, result: 'launching', error: null,
   };
   const board = await startBoard({
-    port: 15011,
     config: { source: 'probe', autoDispatch: false, repo: 'acme/web' },
     files: {
       'sprint-facts.json': FACTS,
