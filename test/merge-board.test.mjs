@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { executable, getJson, journalUntil, postJson, startBoard, until } from './helpers.mjs';
@@ -1146,13 +1146,13 @@ test('a journal that exists but cannot be parsed holds dispatch and merges and a
   }
 });
 
-test('a sweep that throws leaves one line in the log', async () => {
+test('a source error is logged again after that source recovers', async () => {
   let board;
   try {
     const brokenFacts = facts();
     brokenFacts.unitIssues[1600] = 5; // not a list of tickets: the sweep throws
     board = await startBoard({
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      config: { source: 'probe', autoDispatch: false, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': brokenFacts },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -1169,6 +1169,16 @@ test('a sweep that throws leaves one line in the log', async () => {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal((board.output().match(/source sprint-units: /g) ?? []).length, 1,
       'one line per distinct message — a flapping source cannot flood the log');
+
+    const beforeRecovery = (await getJson(board.base, '/pipeline/data')).body.swept?.at;
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(facts(), null, 2));
+    await until(board.base, body => body.swept?.at && body.swept.at !== beforeRecovery ? body : null,
+      { pathName: '/pipeline/data' });
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(brokenFacts, null, 2));
+    await until(() => (board.output().match(/source sprint-units: /g) ?? []).length === 2);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal((board.output().match(/source sprint-units: /g) ?? []).length, 2,
+      'success resets the notice, then the next failure is logged once again');
   } finally {
     if (board) await board.stop();
   }

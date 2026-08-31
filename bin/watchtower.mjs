@@ -30,7 +30,7 @@ import {
 import {
   configurePipeline, handlePipeline, setPipelineBoard,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
-  failCard, succeedCard, setCardReadyAt,
+  failCard, succeedCard, setCardReadyAt, sweepStuck,
 } from './pipeline.mjs';
 import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
 import { fixDebtFindings, idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
@@ -350,16 +350,20 @@ const sourceErrorNotices = new Set();
 // Every source refreshes at its own pace in the background: the page polls
 // /data every 3 seconds and never waits for ssh or for GitHub.
 function makeSource(name, everyMs, fn) {
-  const src = { name, at: 0, ok: false, busy: false, error: null, value: null, tookMs: null };
-  src.tick = () => {
-    if (src.busy || Date.now() - src.at < everyMs) return src.pending ?? null;
+  const src = { name, at: 0, startedAt: 0, ok: false, busy: false, error: null, value: null, tookMs: null };
+  src.tick = (force = false) => {
+    if (src.busy || (!force && Date.now() - src.at < everyMs)) return src.pending ?? null;
     src.busy = true;
     const started = Date.now();
+    src.startedAt = started;
     src.pending = (async () => {
       try {
         src.value = await fn();
         src.ok = true;
         src.error = null;
+        for (const notice of sourceErrorNotices) {
+          if (notice.startsWith(`${name}: `)) sourceErrorNotices.delete(notice);
+        }
       } catch (e) {
         src.ok = false;
         src.error = String(e?.message || e);
@@ -412,6 +416,7 @@ function applyConfig(raw) {
       ready: notifyReady,
       done: notifyDone,
     } : null,
+    sweepStuckMs,
   });
   return config;
 }
@@ -536,6 +541,7 @@ function lanesWithMemory(hostResults, staleSources) {
 }
 
 const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
+const sweepStuckMs = 20 * sprintSweepMs;
 const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   // The scheduler runs with no page open. Re-read its safety switch on this
   // cadence so turning auto-dispatch off also stops merges within one sweep.
@@ -1666,14 +1672,25 @@ async function offBoardSweep(facts) {
   for (const f of r.fresh) console.log(`off the board: ${f.ref} — ${f.reason}`);
   for (const f of r.resolved) console.log(`back on the board: ${f.ref}`);
 }
-// Schedule the next sweep after this one finishes. A fixed interval can fire a
-// few milliseconds before makeSource's freshness window expires and turn the
-// advertised 30-second sweep into a 60-second sweep on a headless board.
+function fireSprintSweep() {
+  if (sweepStuck(sprintSource, Date.now(), sweepStuckMs)) {
+    const ageMin = Math.max(1, Math.floor((Date.now() - sprintSource.startedAt) / 60000));
+    void alarmOwner(
+      `sprint-sweep-stuck:${sprintSource.startedAt}`,
+      `the board's sweep has not finished for ${ageMin} min — dispatch, merges, acceptance and the watchdogs are all held`,
+    );
+  }
+  void Promise.resolve(sprintSource.tick(true)).catch(e => {
+    console.log(`sprint sweep: ${String(e?.message || e)}`);
+  });
+}
+
+// Arm first: a sweep that never settles cannot silence the next scheduler
+// turn. force skips freshness only; makeSource still returns the busy promise.
 function scheduleSprintSweep() {
-  const timer = setTimeout(async () => {
-    const pending = sprintSource.tick();
-    if (pending) await pending;
+  const timer = setTimeout(() => {
     scheduleSprintSweep();
+    fireSprintSweep();
   }, sprintSweepMs);
   timer.unref();
 }
@@ -1996,14 +2013,14 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
   const live = (prSource.value ?? []).filter(p => p.headSha && p.ci?.color === 'run').slice(0, 8);
   for (const pr of live) {
     const runsOut = await runText(GH, ['api', `repos/${repo}/actions/runs?head_sha=${pr.headSha}&per_page=5`,
-      '--jq', '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting") | {id, name, status}]'], 60000);
+      '--jq', '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting") | {id, name, status}]'], 15000);
     if (runsOut === null) continue;
     let runs;
     try { runs = JSON.parse(runsOut); } catch { continue; }
     const jobs = [];
     for (const run of runs.slice(0, 3)) {
       const jobsOut = await runText(GH, ['api', `repos/${repo}/actions/runs/${run.id}/jobs?per_page=30`,
-        '--jq', '[.jobs[] | {name, status, runner_name, started_at}]'], 60000);
+        '--jq', '[.jobs[] | {name, status, runner_name, started_at}]'], 15000);
       if (jobsOut === null) continue;
       let list;
       try { list = JSON.parse(jobsOut); } catch { continue; }
@@ -3507,7 +3524,8 @@ if (config.autoDispatch && !config.telegramOwnerChatId) {
     : 'auto-dispatch: off (dry-run) — the board only says what it would send; autoDispatch: true in the settings to send');
 }
 artifactSource.tick();
-void Promise.resolve(sprintSource.tick()).then(scheduleSprintSweep);
+scheduleSprintSweep();
+fireSprintSweep();
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
     console.log(`Watchtower is already running: http://127.0.0.1:${PORT}`);
