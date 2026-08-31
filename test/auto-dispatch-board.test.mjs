@@ -497,6 +497,119 @@ test('the idle watch still alarms when the planner produced neither a pair nor a
   }
 });
 
+test('fix debt not dispatched for 30 minutes forces the unit Stuck and notifies once', async () => {
+  const sprintId = 'fix-debt-sprint';
+  const unitId = 'fix-debt-unit';
+  const head = 'abc1234500000000000000000000000000000000';
+  const old = new Date(Date.now() - 31 * 60_000).toISOString();
+  const facts = {
+    ...TICKETED_FACTS,
+    lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
+    prs: [{
+      number: 1616, url: 'https://github.com/acme/web/pull/1616', branch: 'feat/1516', headSha: head,
+      ci: { color: 'green', headSha: head }, mergeable: 'MERGEABLE',
+      verdictOnHead: { round: 2, go: false, head, at: new Date(Date.now() - 32 * 60_000).toISOString(), body: `R2 — NO-GO\nhead ${head}` },
+      verdictRounds: 2,
+    }],
+    unitIssues: { 1515: [{ ...TICKETED_FACTS.unitIssues[1515][0], branch: 'feat/1516' }] },
+  };
+  const board = await startBoard({
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: {
+      'sprint-facts.json': facts,
+      'fleet-launch.json': FLEET,
+      'pipeline-cards.json': { cards: [
+        { id: sprintId, title: 'FIX-DEBT sprint', spec: 'the spec', stage: 'development', links: { ticket: TICKETED_UMBRELLA } },
+        { id: unitId, title: 'U1 #1516', spec: '', stage: 'ci_pr', parent: sprintId, ticket: 1516, links: { ticket: 'https://github.com/acme/web/issues/1516', pr: 'https://github.com/acme/web/pull/1616', branch: 'feat/1516' } },
+      ] },
+      'auto-dispatch.json': { dispatched: { '1516:fix:abc12345': {
+        ticket: 1516, kind: 'fix', round: 1, head, result: 'launched', judged: 'ok',
+        at: new Date(Date.now() - 40 * 60_000).toISOString(), lane: 'lanes-01/lane-1', host: 'lanes-01',
+      } } },
+      'idle-lanes.json': { seen: { [`fix-debt:${sprintId}:1516:${head.slice(0, 8)}`]: { first: old, last: old, alarmedAt: null } } },
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+    }),
+  });
+  try {
+    const api = await until(board.base, body => body.cards?.some(card => card.id === unitId && card.stage === 'stuck'));
+    assert.equal(api.cards.find(card => card.id === unitId).stage, 'stuck');
+    const stored = await readJsonUntil(path.join(board.dir, 'pipeline-cards.json'), value =>
+      value?.cards?.some(card => card.id === unitId && card.stage === 'stuck'));
+    assert.equal(stored.cards.find(card => card.id === unitId).stageHistory.at(-1).reason,
+      'fix debt on head abc12345 not dispatched for 30 min');
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal((board.output().match(/--- notifyStuck ---/g) ?? []).length, 1);
+    assert.match(board.output(), /fix debt: STUCK U1 #1516 — fix debt on head abc12345 not dispatched for 30 min/);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('the four silent dispatch skips log HELD reasons, and a no-free-lane hold suppresses fix-debt Stuck', async () => {
+  const sprintId = 'held-fix-debt-sprint';
+  const head = ticket => `${ticket.toString(16).padStart(8, 'a')}${'0'.repeat(32)}`;
+  const old = new Date(Date.now() - 31 * 60_000).toISOString();
+  const tickets = [1516, 1517, 1518, 1519];
+  const issues = tickets.map(ticket => ({
+    number: ticket, title: `SALON-U${ticket - 1515}: unit`, url: `https://github.com/acme/web/issues/${ticket}`,
+    state: 'OPEN', branch: `feat/${ticket}`, labels: [],
+  }));
+  const prs = tickets.map(ticket => ({
+    number: ticket + 100, url: `https://github.com/acme/web/pull/${ticket + 100}`, branch: `feat/${ticket}`,
+    headSha: head(ticket), mergeable: 'MERGEABLE', verdictRounds: ticket === 1516 ? 1 : 0,
+    ci: { color: ticket >= 1518 ? 'red' : 'green', headSha: head(ticket), failedNames: ticket >= 1518 ? ['test'] : [] },
+    verdictOnHead: ticket === 1516
+      ? { round: 1, go: false, head: head(ticket), at: '2026-08-31T05:00:00.000Z' }
+      : null,
+  }));
+  const journal = { dispatched: {
+    [`1516:fix:${head(1516).slice(0, 8)}`]: { ticket: 1516, kind: 'fix', round: 1, head: head(1516), result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z' },
+    [`1517:review:${head(1517).slice(0, 8)}`]: { ticket: 1517, kind: 'review', round: 1, head: head(1517), result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z' },
+    [`1518:fix:${head(1518).slice(0, 8)}`]: { ticket: 1518, kind: 'fix', round: 1, head: head(1518), result: 'launched', at: '2026-08-31T05:30:00.000Z' },
+  } };
+  const facts = {
+    ...TICKETED_FACTS, lanes: [], prs, unitIssues: { 1515: issues },
+  };
+  const cards = [
+    { id: sprintId, title: 'HELD-FIX-DEBT sprint', spec: 'the spec', stage: 'development', links: { ticket: TICKETED_UMBRELLA } },
+    ...tickets.map(ticket => ({
+      id: `held-unit-${ticket}`, title: `U${ticket - 1515} #${ticket}`, spec: '', stage: 'ci_pr', parent: sprintId, ticket,
+      links: { ticket: `https://github.com/acme/web/issues/${ticket}`, pr: `https://github.com/acme/web/pull/${ticket + 100}`, branch: `feat/${ticket}` },
+    })),
+  ];
+  const board = await startBoard({
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: {
+      'sprint-facts.json': facts, 'fleet-launch.json': FLEET, 'pipeline-cards.json': { cards },
+      'auto-dispatch.json': journal,
+      'idle-lanes.json': { seen: { [`fix-debt:${sprintId}:1519:${head(1519).slice(0, 8)}`]: { first: old, last: old, alarmedAt: null } } },
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+    }),
+  });
+  try {
+    await until(() => /auto-dispatch: HELD U4 #1519 — no free lane/.test(board.output()));
+    const output = board.output();
+    assert.match(output, /auto-dispatch: HELD U1 #1516 — fix of head [0-9a-f]{8} was already dispatched/);
+    assert.match(output, /auto-dispatch: HELD U2 #1517 — review of head [0-9a-f]{8} was already dispatched/);
+    assert.match(output, /auto-dispatch: HELD U3 #1518 — fix of head [0-9a-f]{8} is running — the review waits for a new head/);
+    assert.match(output, /auto-dispatch: HELD U4 #1519 — no free lane/);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const api = (await getJson(board.base, '/pipeline/data')).body;
+    assert.notEqual(api.cards.find(card => card.ticket === 1519)?.stage, 'stuck');
+    assert.doesNotMatch(board.output(), /fix debt: STUCK U4 #1519/);
+  } finally {
+    await board.stop();
+  }
+});
+
 test('main red holds develop, announces once, and resumes', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-main-red-tools-'));
   let board;
