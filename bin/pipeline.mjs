@@ -130,6 +130,7 @@ let BOARD = {
   subscriptions: [],
   notifyEnabled: false,
   senders: null,
+  sweepStuckMs: 0,
 };
 
 // What is being built off the board (decision 14): watchtower.mjs runs the
@@ -179,6 +180,7 @@ export function setPipelineBoard(next = {}) {
       : [],
     notifyEnabled: Boolean(next.notifyEnabled),
     senders: next.senders && typeof next.senders === 'object' ? next.senders : null,
+    sweepStuckMs: Number(next.sweepStuckMs) || 0,
   };
 }
 
@@ -459,6 +461,17 @@ export function fmtDur(ms) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+// The scheduler may ask while a source is still on its very first tick, so
+// `at` cannot identify a stuck sweep. startedAt=0 is deliberately never an
+// episode; busy is always required, including for forced ticks.
+export function sweepStuck(source, now = Date.now(), stuckMs = 0) {
+  const startedAt = Number(source?.startedAt);
+  return source?.busy === true
+    && Number.isFinite(startedAt)
+    && startedAt > 0
+    && now - startedAt > stuckMs;
 }
 
 // -------------------------------------------------------------------- status
@@ -1010,6 +1023,7 @@ export async function sweepArtifactAnswers(probe) {
 // second without a request per second.
 async function pageData() {
   const st = await load();
+  const swept = sweptHeartbeat();
   return {
     stages: STAGES,
     stuckAfter: STUCK_AFTER,
@@ -1021,8 +1035,21 @@ async function pageData() {
     usesSubscriptions: BOARD.subscriptions.length > 0,
     offBoard: OFF_BOARD,
     idleLanes: IDLE_LANES,
+    swept,
     autoDispatch: AUTO_DISPATCH,
     cards: st.cards.map(c => cardExtras(c, st.cards)),
+  };
+}
+
+function sweptHeartbeat(now = Date.now()) {
+  const at = IDLE_LANES.at ?? null;
+  const atMs = typeof at === 'number' ? at : Date.parse(at ?? '');
+  const ageMs = Number.isFinite(atMs) ? Math.max(0, now - atMs) : null;
+  return {
+    at,
+    age: ageMs === null ? '-' : fmtDur(ageMs),
+    ageMs,
+    stuck: ageMs !== null && BOARD.sweepStuckMs > 0 && ageMs > BOARD.sweepStuckMs,
   };
 }
 
@@ -1407,6 +1434,7 @@ async function buildAgentPipeline(cards, full, port) {
   const view = {
     pipeline: `http://127.0.0.1:${port}`,
     generated: new Date(now).toISOString(),
+    swept: sweptHeartbeat(now),
     full: Boolean(full),
     summary: {
       cards: cards.length,
@@ -1454,6 +1482,7 @@ function renderToonPipeline(v) {
   const out = [
     `pipeline: ${v.pipeline}`,
     `generated: ${v.generated}`,
+    `swept: ${v.swept.at ?? 'never'} (age ${v.swept.age})`,
     `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done}, failures ${s.failures}`,
     toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
       'no cards in the pipeline'),
