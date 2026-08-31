@@ -82,7 +82,12 @@ see the working copy; edit the rules, commit, and the next task carries the new 
   the PR is not draft, GitHub says mergeable, the ticket has no `hold-merge` label, and GitHub does not refuse the
   merge because the branch has fallen behind `main`. It refuses because `main` requires branches to be up to date
   (branch protection, `strict`, administrators included); the board then sends `gh pr update-branch` itself — no
-  lane — and `pr-ci` and the reviewer run again on the new head. At most one branch is updated per sweep. Before
+  lane — and `pr-ci` runs again on the new head. The old head's merge budget closes as `superseded` (all attempts
+  spent, no gave-up alarm — the new head merges on its own budget), and the PR snapshot is re-read on the next
+  tick. A GO the old head already had is carried to the new head as a board comment (`R<n+1> — GO / head <new>`):
+  the board's own update changes no PR diff — only main was pulled in, and that combination is exactly what
+  `pr-ci` re-checks — so no review round is spent on it. A `no-review` PR carries nothing: it merges on the green
+  check alone. At most one branch is updated per sweep. Before
   merging it rewrites `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not
   accepted. The squash subject and body go to `gh` as a file, never on the command line.
 - On a `no-review` ticket the GO requirement is dropped — the green check on the exact head, not draft, mergeable

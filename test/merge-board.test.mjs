@@ -707,6 +707,55 @@ test('a merge refused as out of date updates the branch once and closes the dead
   }
 });
 
+test('after its own update-branch the board carries the GO to the new head', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-carry-go-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[1] === 'merge') {",
+      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
+      '  process.exit(1);',
+      '}',
+      "if (a[1] === 'view') process.stdout.write(JSON.stringify({ headRefOid: " + JSON.stringify(OTHER) + ' }));',
+    ].join('\n'));
+    const behindFacts = facts();
+    behindFacts.prs[0].body = 'Ticket: #1624';
+    board = await startBoard({
+      port: 15031,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': behindFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if (/carries GO to def12345 after update-branch/.test(board.output())) break;
+      if (Date.now() > deadline) throw new Error(`no carried GO in output:\n${board.output()}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const ghCalls = await calls(callsFile);
+    const comment = ghCalls.find(args => args[1] === 'comment');
+    assert.ok(comment, 'the carried verdict is a PR comment');
+    const body = comment[comment.indexOf('--body') + 1];
+    assert.match(body, /^R2 — GO\nhead def12345abcdef0123456789abcdef0123456789\n/,
+      'the carried verdict names the new head in the parseable format');
+    assert.match(body, /Carried by the board from R1 — GO on abc12345/);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a stale merging entry is re-judged from GitHub facts: merged PR → merged, open PR → merge-failed', async () => {
   const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const freshAt = new Date(Date.now() - 60 * 1000).toISOString();

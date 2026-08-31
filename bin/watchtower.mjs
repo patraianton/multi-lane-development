@@ -1222,6 +1222,32 @@ async function mergeSweep(sprints, facts = null) {
           // neither retry nor raise the gave-up alarm on a dead head.
           await writeResult('merge-failed', SUPERSEDED, MERGE_ATTEMPTS);
           prSource.at = 0;
+          // The board's own update changes no PR diff — only main was pulled
+          // in, and that combination is exactly what pr-ci re-checks on the
+          // new head. Carrying the GO forward spares a full review round on a
+          // lane (6 rounds burned this way on the night of 30→31.08). Only
+          // the head the update itself produced inherits; a no-review PR
+          // carries nothing — it merges on the green check alone.
+          const verdict = group.pr.verdictOnHead;
+          if (verdict?.go === true) {
+            const seen = await execCmd(bins.gh,
+              ['pr', 'view', String(group.pr.number), '--repo', repo, '--json', 'headRefOid'], 60000);
+            let newHead = null;
+            if (seen.code === 0) {
+              try { newHead = JSON.parse(seen.out ?? '')?.headRefOid ?? null; } catch { /* not JSON */ }
+            }
+            if (newHead && String(newHead).toLowerCase() !== String(group.pr.headSha).toLowerCase()) {
+              const round = (Number(group.pr.verdictRounds) || Number(verdict.round) || 0) + 1;
+              const body = `R${round} — GO\nhead ${newHead}\n\n`
+                + `Carried by the board from R${verdict.round} — GO on ${String(group.pr.headSha).slice(0, 8)}: `
+                + 'update-branch changed no PR diff; the combination with main is what pr-ci re-checks on this head.';
+              const posted = await execCmd(bins.gh,
+                ['pr', 'comment', String(group.pr.number), '--repo', repo, '--body', body], 60000);
+              console.log(`merge: PR #${group.pr.number} ${posted.code === 0
+                ? `carries GO to ${String(newHead).slice(0, 8)} after update-branch`
+                : 'could not carry its GO — ' + (posted.stderr || posted.out)}`);
+            }
+          }
         }
         // The table says what happened, not what was tried: an update the board
         // could not make must never read there as a repaired branch.
