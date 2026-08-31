@@ -199,6 +199,21 @@ function entryForHead(journal, ticket, kind, head) {
   return matches.at(-1)?.entry ?? null;
 }
 
+// A live, not-yet-judged launch of `kind` on this very head (issue #17). The
+// fix planner consults the reviewer's entries and the review planner the
+// fixer's: while one of them is working on a head, launching the other on the
+// same head wastes both rounds — the fixer moves the head under the reviewer
+// and the verdict lands on a dead head. Matched by entry head, not by key:
+// no-proof retries are keyed by round number.
+function liveEntryOnHead(journal, ticket, kind, head, now, launchingMs) {
+  return entriesFor(journal, ticket, kind).some(x =>
+    sameHead(x.head, head)
+    && x.entry.judged == null
+    && (x.entry.result === 'launched'
+      || (x.entry.result === 'launching'
+        && now - (Date.parse(x.entry.at ?? '') || 0) < launchingMs)));
+}
+
 function latestEntryForKind(journal, ticket, kind) {
   const matches = entriesFor(journal, ticket, kind);
   matches.sort((a, b) => {
@@ -432,15 +447,61 @@ function latestAttemptHost(journal, ticket) {
   return last?.host || String(last?.lane ?? '').split('/')[0] || null;
 }
 
+// A lane that keeps killing runs right at startup: three no-proof judgments
+// within an hour, each freed in under eight minutes (a real run takes ~20).
+// mac/lane-6 died like this four times in two hours on 30.08 and nobody heard.
+// Takeovers are not the lane's fault and do not count.
+export function quarantinedLanes(ledger, at = null) {
+  const now = Date.parse(at ?? '') || Date.now();
+  const deaths = new Map();
+  for (const e of Object.values(ledger?.dispatched ?? ledger ?? {})) {
+    if (!e?.lane || e.result !== 'launched' || e.judged !== 'no-proof') continue;
+    if (/taken over/i.test(String(e.judgeReason ?? ''))) continue;
+    const launchedAt = Date.parse(e.at ?? '') || 0;
+    const judgedAt = Date.parse(e.judgedAt ?? '') || 0;
+    if (!judgedAt || now - judgedAt >= 60 * 60 * 1000) continue;
+    if (judgedAt - launchedAt >= 8 * 60 * 1000) continue;
+    deaths.set(e.lane, (deaths.get(e.lane) ?? 0) + 1);
+  }
+  return [...deaths.entries()].filter(([, n]) => n >= 3)
+    .map(([lane, n]) => ({ lane, deaths: n }));
+}
+
 function heldLaneNames(journal, now, holdMs, launchingMs) {
-  return new Set(Object.values(journal ?? {})
+  const held = new Set(Object.values(journal ?? {})
     .filter(e => {
       const age = now - (Date.parse(e?.at ?? '') || 0);
       return (e?.result === 'launched' && !e?.judged && age < holdMs)
-        || (e?.result === 'launching' && age < launchingMs);
+        || (e?.result === 'launching' && age < launchingMs)
+        // A launcher that answered "reserved" (exit 3) keeps answering it:
+        // the lane rests for holdMs instead of eating an scp+ssh every sweep
+        // (25 refusals in 47 minutes on 30.08 while Mac lanes stood free).
+        // "Busy" (exit 2) can free any second — it keeps its same-key retry.
+        || (e?.result === 'held' && Number(e?.heldCode) === 3 && age < holdMs);
     })
     .map(e => e?.lane)
     .filter(Boolean));
+  for (const q of quarantinedLanes(journal, new Date(now).toISOString())) held.add(q.lane);
+  return held;
+}
+
+// The freshest launch on each lane, for spreading work: on 30.08 the planner
+// always took the lowest lane number, so lane-1 worked 62% of the night while
+// mac/lane-7 and lane-8 stood at ~21% — and lanes-01 also runs the CI runners.
+function lastLaunchOnLane(journal) {
+  const last = new Map();
+  for (const e of Object.values(journal ?? {})) {
+    if (!e?.lane) continue;
+    const t = Date.parse(e.at ?? '') || 0;
+    if (t > (last.get(e.lane) ?? 0)) last.set(e.lane, t);
+  }
+  return last;
+}
+
+function laneOrder(journal) {
+  const last = lastLaunchOnLane(journal);
+  return (a, b) => (last.get(a.name) ?? 0) - (last.get(b.name) ?? 0)
+    || laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host);
 }
 
 // sprint.free intentionally omits an idle lane still bound to an unmerged
@@ -522,7 +583,7 @@ function fixNeed(unit, fixEntries) {
 export function planFixes({
   cards = [], sprints = new Map(), ledger = null, fleet = null, at = null,
   needsBuild = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS,
-  launchingMs = LAUNCHING_HOLD_MS, taken = [], takenTickets = [],
+  launchingMs = LAUNCHING_HOLD_MS, taken = [], takenTickets = [], holds = null,
 } = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
@@ -571,6 +632,19 @@ export function planFixes({
       }
       if (!need) continue;
 
+      // Issue #17: while the board's own reviewer is still reading this very
+      // head, a fixer would move it and the verdict would land on a dead head
+      // — both rounds wasted. A verdict already on this head means the review
+      // is over, so an honest fix after an honest NO-GO never waits.
+      if (!sameHead(pr?.verdictOnHead?.head, head)
+        && liveEntryOnHead(journal, unit.ticket, 'review', head, now, launchingMs)) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `review of head ${shortSha(head)} is running — the fix waits for its verdict`,
+        });
+        continue;
+      }
+
       // no-proof is explicitly re-queued as another round; every other live
       // launch on this head is the ticket's head-key guard.
       if (entryBlocksDispatch(headGuard, now, launchingMs)) continue;
@@ -585,7 +659,7 @@ export function planFixes({
         if (lane.noBuilds && build) continue;
         lanes.push(lane);
       }
-      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+      lanes.sort(laneOrder(journal));
       const lastHost = retry?.avoidHost ?? latestAttemptHost(journal, unit.ticket);
       const lane = retry?.type === 'launch-failed'
         ? lanes[0]
@@ -621,9 +695,10 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
   const journal = ledger?.dispatched ?? {};
   const higherPriority = new Set(takenLanes ?? []);
   const higherPriorityTickets = new Set([...(takenTickets ?? [])].map(ticket => String(ticket)));
+  const holds = [];
   const fixes = planFixes({
     cards, sprints, ledger, fleet, at, needsBuild, retryMs, holdMs, launchingMs,
-    taken: higherPriority, takenTickets: higherPriorityTickets,
+    taken: higherPriority, takenTickets: higherPriorityTickets, holds,
   });
   const fixLanes = new Set(fixes.map(pair => pair.lane));
   const developSprints = new Map();
@@ -631,7 +706,6 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     developSprints.set(id, { ...sprint, free: (sprint?.free ?? []).filter(name => !fixLanes.has(name)) });
   }
   const pairs = [];
-  const holds = [];
   const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
   // While main's own check is red, a lane starting from main only rediscovers
   // it: on 2026-08-30 eight runs came back with the same QUESTION. Unknown or
@@ -670,7 +744,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (heldLanes.has(l.name)) continue;
       lanes.push(l);
     }
-    lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+    lanes.sort(laneOrder(journal));
     const retryLanes = [...lanes];
     const regularNames = new Set(free);
     for (const name of laneNamesFor(s, true)) {
@@ -679,7 +753,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (!lane || lane.reserved || heldLanes.has(lane.name)) continue;
       retryLanes.push(lane);
     }
-    retryLanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+    retryLanes.sort(laneOrder(journal));
     for (const u of waiting) {
       if (takenTicketSet.has(String(u.ticket))) continue;
       const hold = reason => holds.push({ card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '', reason });
@@ -830,6 +904,10 @@ export function planReviews({
       const previous = entryForHead(journal, unit.ticket, 'review', head);
       if (entryBlocksDispatch(headGuard, now, launchingMs)) continue;
       if (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs)) continue;
+      // Issue #17 mirror: while a fixer is working on this head the branch is
+      // about to move — reviewing the doomed head wastes the reviewer's round.
+      // The fixer's entry keeps its old head, so the new head reviews freely.
+      if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) continue;
 
       const lanes = [];
       for (const name of laneNamesFor(sprint, Boolean(retry?.expandLanes))) {
@@ -838,7 +916,7 @@ export function planReviews({
         if (failureState?.blockedHosts.has(lane.host)) continue;
         lanes.push(lane);
       }
-      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+      lanes.sort(laneOrder(journal));
       const authorLane = lastWriterLane(journal, unit.ticket);
       const eligible = candidate => candidate.name !== authorLane;
       const lane = (retry?.type === 'no-proof' && retry.avoidHost
@@ -890,7 +968,7 @@ export function recordDispatch(ledger, pair, outcome, at) {
   // A successful launch is final for its key. Every retry has its own key, so
   // a delayed duplicate write can never turn a launched attempt back to failed.
   if (dispatched[key]?.result === 'launched') return { dispatched };
-  dispatched[key] = {
+  const boardFields = {
     card: pair.card.id, title: pair.card.title, unit: pair.unit.unit, ticket: pair.unit.ticket,
     branch: pair.unit.branch, lane: pair.lane, host: pair.host ?? null, base: baseLine(pair.base),
     kind: kindOf(pair), round: roundOf(pair), head: pair.head ?? null,
@@ -900,8 +978,16 @@ export function recordDispatch(ledger, pair, outcome, at) {
     })),
     ...(pair.retryOf ? { retryOf: pair.retryOf } : {}),
     at: new Date(now).toISOString(), result: outcome.result, error: outcome.error ?? null,
-    ...(outcome.launchFailure ? { launchFailure: true } : {}),
+    // These describe this launch outcome. A judgment or launch failure left
+    // on the same key by an older intent must not leak into the new write.
+    judged: null, judgedAt: null, judgeReason: null,
+    launchFailure: outcome.launchFailure ? true : null,
+    heldCode: outcome.heldCode ?? null,
   };
+  // The journal passed here was re-read under updateJournal's write lock. Keep
+  // hand-added fields on its same-key entry, while the board's fields above
+  // remain authoritative for this outcome.
+  dispatched[key] = { ...(dispatched[key] ?? {}), ...boardFields };
   return { dispatched };
 }
 
@@ -925,7 +1011,10 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
   const seen = new Set(pairs.map(p => dispatchKey(p)));
   const entries = Object.entries(ledger?.dispatched ?? {})
     .filter(([, e]) => e && (
-      (e.kind === 'merge' && e.result === 'merge-failed' && Number(e.attempts) >= 3)
+      // A superseded budget is bookkeeping for a head the board replaced
+      // itself — it shows for a day like any entry, never forever.
+      (e.kind === 'merge' && e.result === 'merge-failed' && Number(e.attempts) >= 3
+        && !String(e.error ?? '').startsWith('superseded'))
       || now - (Date.parse(e.at ?? '') || 0) <= recentMs
     ))
     .sort(([, a], [, b]) => String(b.at).localeCompare(String(a.at)));
@@ -1119,7 +1208,7 @@ export async function runLaunch(plan, exec) {
         bundleMissing = /\bMISSING\b/.test(out);
         break;
       case 'launch':
-        if (r.code === 2 || r.code === 3) return { result: 'held', error: `launcher refused: ${out.trim().slice(0, 120)}`, ran };
+        if (r.code === 2 || r.code === 3) return { result: 'held', heldCode: r.code, error: `launcher refused: ${out.trim().slice(0, 120)}`, ran };
         if (r.code !== 0) return { result: 'failed', launchFailure: true, error: `launch failed (exit ${r.code}): ${out.trim().slice(0, 160)}`, ran };
         break;
       case 'comment':

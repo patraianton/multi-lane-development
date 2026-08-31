@@ -315,6 +315,16 @@ test('the fleet registry renames lanes and only fleet lanes count as capacity', 
   assert.equal(lanesLine(s), 'lanes-01/lane-1 (folder lane-3) U1 #1516');
 });
 
+test('a lane the host calls reserved is not free capacity', () => {
+  const facts = sprintFactsFor([{ id: 'c1', links: { ticket: 'https://github.com/acme/web/issues/9' } }],
+    { lanes: [
+      { host: 'h', lane: 'lane-1', busy: false, state: 'RESERVED', branch: 'main' },
+      { host: 'h', lane: 'lane-2', busy: false, state: 'free', branch: 'main' },
+    ] });
+  const s = facts.get('c1');
+  assert.deepEqual(s.free, ['h/lane-2'], 'a booked lane must not eat launches (25 burned on 30.08)');
+});
+
 test('an umbrella with no unit tickets yet is a sprint with an empty table', () => {
   const facts = sprintFactsFor([{ id: 'c1', links: { ticket: 'https://github.com/acme/web/issues/9' } }],
     { lanes: [{ host: 'h', lane: 'lane-1', busy: false, branch: 'main' }] });

@@ -38,7 +38,7 @@ A **sprint** — a card whose `links.ticket` is an umbrella issue — splits int
 
 `stuck` is not a step of the road. A **failure** (`local`, `ci`, or `review`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `qa`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
 
-A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`).
+A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`). A judged fix ("the head changed") or review ("a verdict exists") does **not** reset it — only a develop PR, a closed qa-run ticket or a current-head GO counts as progress, so a review→fix carousel still reaches `stuck` on the third NO-GO.
 
 Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
 
