@@ -896,9 +896,17 @@ function parseGithubIdentity(raw) {
 function onGithubIdentityConfig(pin) {
   const key = pin ? `${pin.account}\n${pin.tokenFile}` : '';
   if (key !== ghPinKey) {
+    const hadPin = Boolean(ghPinKey);
     ghPinKey = key;
     ghTokenCache = { at: 0, file: '', token: '', error: null };
     ghIdentity = { at: 0, ok: false, login: null, reason: 'the github identity is not verified yet' };
+    // An in-flight check verifies the OLD pin with the OLD token; its answer
+    // must not green-light the new pin. Forget it — the guard inside
+    // verifyGithubIdentity also drops its late result.
+    ghIdentityCheck = null;
+    // A pin that vanishes from the settings is worth a line in the log: a
+    // hand edit is fine, a truncated settings file is not.
+    if (hadPin && !pin) console.log('github identity: the pin was removed from the settings — gh runs on the keyring account');
   }
   if (!pin && !ghUnpinnedSaid) {
     ghUnpinnedSaid = true;
@@ -928,12 +936,23 @@ function githubToken() {
 function githubEnv(bin, options) {
   if (bin !== GH || !config.github) return options;
   const { token } = githubToken();
-  if (!token) return options;
-  return { ...options, env: { ...process.env, ...(options.env ?? {}), GH_TOKEN: token } };
+  // A pinned board must never reach GitHub as the keyring account. The gate
+  // holds the sweeps, but a token file that vanishes MID-sweep (a non-atomic
+  // rotation, a deletion) would otherwise let the calls already in flight
+  // fall back to the keyring silently — so a missing token becomes a token
+  // that cannot authenticate, and the call fails instead of impersonating.
+  return {
+    ...options,
+    env: { ...process.env, ...(options.env ?? {}), GH_TOKEN: token || 'watchtower-held-no-token' },
+  };
 }
 
 async function verifyGithubIdentity(pin) {
+  const key = ghPinKey;
   const out = await runText(GH, ['api', 'user', '--jq', '.login'], 30000);
+  // The pin changed while gh was answering: this answer proves nothing about
+  // the new account/token pair. The next gate starts a fresh check.
+  if (key !== ghPinKey) return;
   const login = String(out ?? '').trim().split(/\r?\n/)[0];
   if (out === null || !login) {
     // No answer is a network fact, not proof of a wrong account: an earlier
@@ -972,7 +991,13 @@ async function githubGate() {
       const age = Date.now() - ghIdentity.at;
       const fresh = ghIdentity.at > 0 && age < (ghIdentity.ok ? GH_IDENTITY_OK_MS : GH_IDENTITY_RETRY_MS);
       if (!fresh) {
-        ghIdentityCheck ??= verifyGithubIdentity(pin).finally(() => { ghIdentityCheck = null; });
+        if (!ghIdentityCheck) {
+          // The finally clears only its own slot: a pin change may have
+          // already replaced this promise with a fresh check.
+          const check = verifyGithubIdentity(pin)
+            .finally(() => { if (ghIdentityCheck === check) ghIdentityCheck = null; });
+          ghIdentityCheck = check;
+        }
         await ghIdentityCheck;
       }
       reason = ghIdentity.ok ? null : ghIdentity.reason;
