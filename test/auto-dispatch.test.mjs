@@ -84,6 +84,27 @@ test('the planner pairs startable units with free launchable lanes, one unit per
   assert.deepEqual(pairs[0].unit.labels, []);
 });
 
+test('a unit startable except for dependencies gets a hold row naming a stuck blocker', () => {
+  const blocked = {
+    unit: 'U8', ticket: 1687, title: 'FIN-U8', branch: 'feat/1687', state: 'queued',
+    deps: [{ ticket: 1686, unit: 'U7', state: 'on lane', met: false }],
+  };
+  const blockedCards = [
+    cards[0],
+    { id: 'u7', title: 'U7 #1686', stage: 'stuck', parent: 'cs', ticket: 1686 },
+    { id: 'u8', title: 'U8 #1687', stage: 'ticketed', parent: 'cs', ticket: 1687 },
+  ];
+  const result = planDispatchFull(blockedCards, new Map([['cs', sprint({
+    units: [blocked], qaTickets: [], free: ['mac/lane-6'],
+  })]]), { fleet: FLEET });
+
+  assert.equal(result.pairs.length, 0);
+  assert.deepEqual(dispatchRows({ holds: result.holds }).find(row => row.unit === 'U8 #1687'), {
+    kind: 'develop', card: 'FINANCE-CARDS', unit: 'U8 #1687', lane: '-', base: '-',
+    state: 'held: waits for #1686 (stuck)',
+  });
+});
+
 test('ticketed and merged sprints dispatch, and a missing branch defaults to feat/<ticket>', () => {
   const one = sprint({
     free: ['mac/lane-6'],
@@ -1066,7 +1087,7 @@ test('the table rows: pairs as would-dispatch, the journal\'s recent word, and h
   const { pairs, holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET, at });
   const rows = dispatchRows({ pairs, holds, at, state: 'would dispatch' });
   assert.deepEqual(rows[0], { kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'would dispatch' });
-  assert.equal(holds.length, 0);
+  assert.deepEqual(holds.map(hold => [hold.ticket, hold.reason]), [[1581, 'waits for #1580 (on lane)']]);
   const ledger = recordDispatch({ dispatched: {} }, pairs[0], { result: 'launched', error: null }, at);
   const later = dispatchRows({ pairs: [], holds: [], ledger, at: '2026-08-29T12:30:00.000Z' });
   assert.deepEqual(later, [{ kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'launched 12:00Z' }]);
@@ -1219,7 +1240,10 @@ test('qa-run waits for merged or closed dependencies, uses origin/main, and need
   };
   const card = { ...cards[0], stage: 'merged' };
   const waiting = sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [], qaTickets: [qaRun] });
-  assert.equal(planDispatch([card], new Map([['cs', waiting]]), { fleet: FLEET }).length, 0, 'an open PR does not meet a qa-run dependency');
+  const waitingPlan = planDispatchFull([card], new Map([['cs', waiting]]), { fleet: FLEET });
+  assert.equal(waitingPlan.pairs.length, 0, 'an open PR does not meet a qa-run dependency');
+  assert.equal(waitingPlan.holds.find(hold => hold.ticket === 1605)?.reason,
+    'waits for #1583 (pr green)', 'the qa-run dependency filter leaves a visible reason');
 
   const ready = sprint({
     free: ['lanes-01/lane-1', 'mac/lane-6'],
