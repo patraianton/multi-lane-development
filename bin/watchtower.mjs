@@ -73,9 +73,30 @@ const nativeConsole = {
   error: console.error.bind(console),
   warn: console.warn.bind(console),
 };
+// Credentials belong in child environments and request headers, never in the
+// operator journal. Remember every configured value for the life of the
+// process so a rotated credential is also removed from older lines we serve.
+const logSecrets = new Set();
+function rememberLogSecret(value) {
+  const secret = String(value ?? '').trim();
+  if (secret) logSecrets.add(secret);
+}
+rememberLogSecret(process.env.GH_TOKEN);
+
+function redactLog(value) {
+  let text = String(value ?? '');
+  for (const secret of logSecrets) text = text.replaceAll(secret, '[redacted]');
+  return text
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, '[redacted]')
+    .replace(/\b\d{6,12}:[A-Za-z0-9_-]{20,}\b/g, '[redacted]')
+    .replace(/(authorization\s*:\s*(?:bearer\s+)?)[^\s,;]+/ig, '$1[redacted]')
+    .replace(/\b(token|secret|password|api[_-]?key)\s*([=:])\s*("[^"]*"|'[^']*'|[^\s,;]+)/ig,
+      '$1$2[redacted]');
+}
+
 function writeLog(method, args) {
   const at = new Date().toISOString();
-  const rendered = format(...args);
+  const rendered = redactLog(format(...args));
   const line = rendered.split(/\r?\n/).map(part => `${at} ${part}`).join('\n');
   appendFileSync(BOARD_LOG_FILE, `${line}\n`);
   nativeConsole[method](line);
@@ -182,6 +203,56 @@ function normPath(p) {
   s = s.replaceAll('/', '\\').toLowerCase();
   while (s.endsWith('\\')) s = s.slice(0, -1);
   return s;
+}
+
+// Read backward from the end in bounded chunks. Filtering happens while the
+// scan moves toward the start and stops as soon as enough matches exist; the
+// whole file is never read into one buffer. Newlines are found as bytes so a
+// multi-byte character split across chunks is decoded only with its full line.
+async function readBoardLogTail(limit, filter = '') {
+  let file;
+  try {
+    file = await open(BOARD_LOG_FILE, 'r');
+  } catch (e) {
+    if (e?.code === 'ENOENT') return [];
+    throw e;
+  }
+  try {
+    const size = (await file.stat()).size;
+    const needle = String(filter).toLocaleLowerCase();
+    const lines = [];
+    let position = size;
+    let carry = Buffer.alloc(0);
+    let atFileEnd = true;
+    const accept = bytes => {
+      // A normally terminated file has an empty fragment after its last \n.
+      if (atFileEnd && bytes.length === 0) { atFileEnd = false; return; }
+      atFileEnd = false;
+      let line = redactLog(bytes.toString('utf8'));
+      if (line.endsWith('\r')) line = line.slice(0, -1);
+      if (!needle || line.toLocaleLowerCase().includes(needle)) lines.push(line);
+    };
+
+    while (position > 0 && lines.length < limit) {
+      const length = Math.min(64 * 1024, position);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      await file.read(chunk, 0, length, position);
+      const joined = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+      let end = joined.length;
+      while (lines.length < limit) {
+        const newline = joined.lastIndexOf(0x0a, end - 1);
+        if (newline < 0) break;
+        accept(joined.subarray(newline + 1, end));
+        end = newline;
+      }
+      carry = Buffer.from(joined.subarray(0, end));
+    }
+    if (position === 0 && lines.length < limit && carry.length) accept(carry);
+    return lines;
+  } finally {
+    await file.close();
+  }
 }
 
 // Same trimming as normPath, but the original case is kept: project names are
@@ -315,6 +386,9 @@ let config = { ...DEFAULTS };
 
 function applyConfig(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  rememberLogSecret(src.telegram?.botToken ?? src.telegram?.token);
+  rememberLogSecret(src.lavish?.apiToken);
+  rememberLogSecret(src.cloudflare?.apiToken);
   config = { ...DEFAULTS, ...src, hosts: { ...DEFAULTS.hosts, ...(src.hosts ?? {}) } };
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
@@ -920,6 +994,7 @@ function githubToken() {
   }
   let token = '';
   try { token = readFileSync(pin.tokenFile, 'utf8').trim(); } catch { token = ''; }
+  rememberLogSecret(token);
   const error = token ? null : `the github token file is missing or empty (${pin.tokenFile || 'github.tokenFile is not set'})`;
   ghTokenCache = { at: Date.now(), file: pin.tokenFile, token, error };
   return ghTokenCache;
@@ -3227,6 +3302,23 @@ const server = http.createServer(async (req, res) => {
       const payload = await collect();
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/log') {
+      for (const key of url.searchParams.keys()) {
+        if (!['lines', 'filter'].includes(key)) {
+          return send(res, 400, JSON.stringify({ error: `unknown parameter "${key}"` }));
+        }
+        if (url.searchParams.getAll(key).length > 1) {
+          return send(res, 400, JSON.stringify({ error: `parameter "${key}" given more than once` }));
+        }
+      }
+      const rawLines = url.searchParams.get('lines');
+      if (rawLines !== null && (!/^\d+$/.test(rawLines) || Number(rawLines) < 1)) {
+        return send(res, 400, JSON.stringify({ error: 'lines must be a positive integer' }));
+      }
+      const lines = Math.min(rawLines === null ? 200 : Number(rawLines), 1000);
+      const filter = url.searchParams.get('filter') ?? '';
+      return send(res, 200, JSON.stringify({ lines: await readBoardLogTail(lines, filter) }));
     }
     // The board for an agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
