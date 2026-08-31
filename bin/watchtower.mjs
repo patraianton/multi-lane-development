@@ -17,7 +17,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { readFile, mkdir, stat, readdir, open, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { format } from 'node:util';
@@ -28,7 +28,7 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import {
-  configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
+  configurePipeline, handlePipeline, setPipelineBoard,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
   failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
@@ -54,10 +54,6 @@ import {
   notifyOwner,
   notifyDone,
 } from './telegram-bot.mjs';
-import {
-  configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
-  accessDecision, signInPage, withJsonBody,
-} from './auth.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
@@ -139,13 +135,6 @@ const DEFAULTS = {
   lanes: {},
   // The same for CI runners (FLEET.md), keyed by runner name.
   ciSlots: {},
-  // Shared secret the probe sends as Authorization: Bearer. Empty — every
-  // /probe/* path answers 403 until one is set.
-  probeToken: '',
-  // Shared secret agents send as Authorization: Bearer on /pipeline/* when
-  // founder sign-in is on. Empty — those paths then need a session or
-  // localhost instead. Unused while `auth.founders` is empty.
-  apiToken: '',
   // Where window data comes from: "local" talks to herdr on this machine
   // (the original board); "probe" uses the last snapshot the probe posted.
   source: 'local',
@@ -157,6 +146,12 @@ const DEFAULTS = {
   autoDispatch: false,
   // Full local gate written into every task file unless a fleet host overrides it.
   check: 'bash ../ci-local-and-stamp.sh',
+  // The GitHub identity the board acts as. Absent — gh runs on whatever
+  // account the keyring holds, as before, and the board says so once at start.
+  // Present — { account, tokenFile }: every gh call gets GH_TOKEN from
+  // tokenFile, and a missing token or a login mismatch holds every gh sweep
+  // (sources, merges, dispatch) instead of silently acting as someone else.
+  github: null,
 };
 
 const HERDR_CANDIDATES = [
@@ -235,7 +230,7 @@ function commandInvocation(bin, args, options) {
 }
 
 function execExternal(bin, args, options, callback) {
-  const call = commandInvocation(bin, args, options);
+  const call = commandInvocation(bin, args, githubEnv(bin, options));
   execFile(call.bin, call.args, call.options, callback);
 }
 
@@ -324,16 +319,13 @@ function applyConfig(raw) {
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
-  config.probeToken = String(config.probeToken ?? '').trim();
-  config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.autoDispatch = src.autoDispatch === true;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
+  config.github = parseGithubIdentity(src.github);
+  onGithubIdentityConfig(config.github);
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
-  // Missing, broken or empty founders list → null, and the board stays open.
-  config.auth = parseAuth(src);
-  reportAuthWarnings(config.auth);
   config.subscriptions = parseSubscriptions(src.subscriptions);
   const telegramOn = wireTelegram(src.telegram);
   config.telegramOn = telegramOn;
@@ -408,17 +400,6 @@ function wireTelegram(raw) {
   }
   noteTelegram(dryRun ? 'telegram notifications: dry-run' : 'telegram notifications: on');
   return true;
-}
-
-// Risky sign-in settings are said out loud once, and again whenever they change,
-// so the operator sees them in `journalctl -u watchtower`.
-let lastAuthWarning = '';
-function reportAuthWarnings(auth) {
-  const lines = authWarnings(auth);
-  const key = lines.join('\n');
-  if (key === lastAuthWarning) return;
-  lastAuthWarning = key;
-  for (const line of lines) console.warn(`auth warning: ${line}`);
 }
 
 const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
@@ -878,6 +859,152 @@ function execCmd(bin, args, timeout = 60000) {
   });
 }
 const bins = { ssh: SSH, scp: SCP, gh: GH };
+
+// ------------------------------------------------- the board's GitHub identity
+//
+// On 31.08 the keyring's "active" gh account turned out to be a banned one and
+// every GitHub sweep died silently for hours. When the settings pin an identity
+// ({ "github": { "account", "tokenFile" } }), every gh the board spawns runs
+// with GH_TOKEN from tokenFile — inside gh the token wins over the keyring —
+// and the sweeps hold (fail closed) until `gh api user` answers with exactly
+// that login: checked at start and then once an hour, one owner alarm a day.
+// Without the block the keyring is used as before, said out loud once.
+const GH_TOKEN_TTL_MS = 30_000;
+const GH_IDENTITY_OK_MS = 60 * 60 * 1000;
+const GH_IDENTITY_RETRY_MS = 60 * 1000;
+let ghTokenCache = { at: 0, file: '', token: '', error: null };
+let ghIdentity = { at: 0, ok: false, login: null, reason: 'the github identity is not verified yet' };
+let ghIdentityCheck = null;
+let ghPinKey = null;
+let ghUnpinnedSaid = false;
+
+function parseGithubIdentity(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    account: String(raw.account ?? '').trim(),
+    tokenFile: String(raw.tokenFile ?? '').trim(),
+  };
+}
+
+// A changed pin (account or token file) drops both caches, so the next gh
+// sweep verifies the new identity instead of trusting the old answer.
+function onGithubIdentityConfig(pin) {
+  const key = pin ? `${pin.account}\n${pin.tokenFile}` : '';
+  if (key !== ghPinKey) {
+    const hadPin = Boolean(ghPinKey);
+    ghPinKey = key;
+    ghTokenCache = { at: 0, file: '', token: '', error: null };
+    ghIdentity = { at: 0, ok: false, login: null, reason: 'the github identity is not verified yet' };
+    // An in-flight check verifies the OLD pin with the OLD token; its answer
+    // must not green-light the new pin. Forget it — the guard inside
+    // verifyGithubIdentity also drops its late result.
+    ghIdentityCheck = null;
+    // A pin that vanishes from the settings is worth a line in the log: a
+    // hand edit is fine, a truncated settings file is not.
+    if (hadPin && !pin) console.log('github identity: the pin was removed from the settings — gh runs on the keyring account');
+  }
+  if (!pin && !ghUnpinnedSaid) {
+    ghUnpinnedSaid = true;
+    console.log('github identity is not pinned — gh runs on the keyring account ("github" in state/autopase-board.json to pin one)');
+  }
+}
+
+// The token itself: read from disk at most once every 30 seconds, so replacing
+// the file lands within a sweep or two. It is NEVER logged and never appears
+// in an alarm — only the file path does.
+function githubToken() {
+  const pin = config.github;
+  if (!pin) return { token: '', error: null };
+  if (ghTokenCache.file === pin.tokenFile && Date.now() - ghTokenCache.at < GH_TOKEN_TTL_MS) {
+    return ghTokenCache;
+  }
+  let token = '';
+  try { token = readFileSync(pin.tokenFile, 'utf8').trim(); } catch { token = ''; }
+  const error = token ? null : `the github token file is missing or empty (${pin.tokenFile || 'github.tokenFile is not set'})`;
+  ghTokenCache = { at: Date.now(), file: pin.tokenFile, token, error };
+  return ghTokenCache;
+}
+
+// Every gh child gets the pinned token in its environment; ssh, scp, git and
+// herdr children are left alone. No token — no override: the gate below is
+// what refuses to act, so nothing ever falls back to the keyring silently.
+function githubEnv(bin, options) {
+  if (bin !== GH || !config.github) return options;
+  const { token } = githubToken();
+  // A pinned board must never reach GitHub as the keyring account. The gate
+  // holds the sweeps, but a token file that vanishes MID-sweep (a non-atomic
+  // rotation, a deletion) would otherwise let the calls already in flight
+  // fall back to the keyring silently — so a missing token becomes a token
+  // that cannot authenticate, and the call fails instead of impersonating.
+  return {
+    ...options,
+    env: { ...process.env, ...(options.env ?? {}), GH_TOKEN: token || 'watchtower-held-no-token' },
+  };
+}
+
+async function verifyGithubIdentity(pin) {
+  const key = ghPinKey;
+  const out = await runText(GH, ['api', 'user', '--jq', '.login'], 30000);
+  // The pin changed while gh was answering: this answer proves nothing about
+  // the new account/token pair. The next gate starts a fresh check.
+  if (key !== ghPinKey) return;
+  const login = String(out ?? '').trim().split(/\r?\n/)[0];
+  if (out === null || !login) {
+    // No answer is a network fact, not proof of a wrong account: an earlier
+    // confirmed identity stands until the hourly check can answer again. An
+    // identity never confirmed stays held — fail closed.
+    ghIdentity = ghIdentity.ok
+      ? { ...ghIdentity, at: Date.now() }
+      : { at: Date.now(), ok: false, login: null, reason: 'gh api user did not answer — the pinned github identity cannot be verified' };
+    return;
+  }
+  if (login === pin.account) {
+    if (!ghIdentity.ok) console.log(`github identity: gh acts as ${login} (pinned)`);
+    ghIdentity = { at: Date.now(), ok: true, login, reason: null };
+  } else {
+    ghIdentity = {
+      at: Date.now(), ok: false, login,
+      reason: `gh api user answers as "${login}" while the settings pin "${pin.account}"`,
+    };
+  }
+}
+
+// The single gate every gh sweep asks before acting. Null — go ahead (either
+// the identity is pinned and confirmed, or nothing is pinned at all). A string
+// — the reason to hold, already alarmed to the owner once today.
+async function githubGate() {
+  const pin = config.github;
+  if (!pin) return null;
+  let reason;
+  if (!pin.account || !pin.tokenFile) {
+    reason = 'the github block needs both account and tokenFile';
+  } else {
+    const { error } = githubToken();
+    if (error) {
+      reason = error;
+    } else {
+      const age = Date.now() - ghIdentity.at;
+      const fresh = ghIdentity.at > 0 && age < (ghIdentity.ok ? GH_IDENTITY_OK_MS : GH_IDENTITY_RETRY_MS);
+      if (!fresh) {
+        if (!ghIdentityCheck) {
+          // The finally clears only its own slot: a pin change may have
+          // already replaced this promise with a fresh check.
+          const check = verifyGithubIdentity(pin)
+            .finally(() => { if (ghIdentityCheck === check) ghIdentityCheck = null; });
+          ghIdentityCheck = check;
+        }
+        await ghIdentityCheck;
+      }
+      reason = ghIdentity.ok ? null : ghIdentity.reason;
+    }
+  }
+  if (reason) {
+    await alarmOwner(`github-identity:${new Date().toISOString().slice(0, 10)}`,
+      `github identity: ${reason} — the board holds every gh sweep (sources, merges, dispatch) until this is fixed`);
+  }
+  return reason;
+}
+
 async function dispatchOne(pair, { fleet, repo, at, rules }) {
   // The ticket comes verbatim from GitHub; rules come from this board's HEAD.
   let ticket = null;
@@ -970,6 +1097,9 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   const cards = await listPipelineCards();
   const ledger = await readJournalStrict();
   if (!ledger) { if (beforeLaunch) await beforeLaunch(attemptedTickets); return attemptedTickets; }
+  // Fail closed: no ticket read, no launch, no comment as an unverified
+  // GitHub account — the same hold as an unreadable journal.
+  if (await githubGate()) { if (beforeLaunch) await beforeLaunch(attemptedTickets); return attemptedTickets; }
   // A successful launch is durable before the card write. If the process or
   // disk failed between them, the next sweep restores the board-owned badge.
   // This is crash recovery, not a new dispatch, so it remains safe while the
@@ -1189,6 +1319,8 @@ async function mergeSweep(sprints, facts = null) {
   const rows = [];
   if (autoDispatchNeedsOwner()) return rows;
   if (!repo) return rows;
+  // Fail closed: no merge may run as an unverified GitHub account.
+  if (await githubGate()) return rows;
 
   let ledger = await readJournalStrict();
   if (!ledger) return rows;
@@ -1236,8 +1368,10 @@ async function mergeSweep(sprints, facts = null) {
   // costs a fresh pr-ci and a fresh review round. One branch per sweep.
   let updatedThisSweep = false;
   for (const group of plannedMergeGroups) {
-    const held = group.items.some(({ unit }) =>
-      (unit.labels ?? []).some(label => String(label).toLowerCase() === 'hold-merge'));
+    const held = (group.pr.labels ?? [])
+      .some(label => String(label?.name ?? label).toLowerCase() === 'hold-merge')
+      || group.items.some(({ unit }) => (unit.labels ?? [])
+        .some(label => String(label?.name ?? label).toLowerCase() === 'hold-merge'));
     if (held) {
       rows.push(mergeTableRow(group, 'hold-merge — the owner merges by hand'));
       continue;
@@ -1677,9 +1811,14 @@ function ciColor(rollup) {
   return { color: 'green', text: `CI green (${ok})`, failedNames };
 }
 
+// Every GitHub source asks the identity gate first: a pinned identity that
+// cannot be confirmed makes the source fail visibly (problems on the page,
+// stale sources hold the unit cards) instead of reading as someone else.
 const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
     '--json', 'number,title,body,headRefName,headRefOid,isDraft,mergeable,labels,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
@@ -1717,6 +1856,8 @@ export function prVerdict(comments) {
 const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['api', `repos/${repo}/actions/runners?per_page=100`,
     '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
   if (out === null) throw new Error('gh api actions/runners did not answer');
@@ -1733,6 +1874,8 @@ const MAIN_CI_CONCLUSIONS = new Set(['success', 'failure']);
 const mainCiSource = makeSource('main-ci', 60000, async () => {
   const repo = config.repo;
   if (!repo) return null;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['run', 'list', '--repo', repo, '--branch', 'main',
     '--workflow', 'pr-ci.yml', '--limit', '5',
     '--json', 'databaseId,conclusion,headSha,url,createdAt'], 60000);
@@ -1749,6 +1892,8 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
   const repo = config.repo;
   const byPr = new Map();
   if (!repo) return byPr;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const live = (prSource.value ?? []).filter(p => p.headSha && p.ci?.color === 'run').slice(0, 8);
   for (const pr of live) {
     const runsOut = await runText(GH, ['api', `repos/${repo}/actions/runs?head_sha=${pr.headSha}&per_page=5`,
@@ -1777,6 +1922,8 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
 const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
     '--json', 'number,title,body,headRefName,headRefOid,url,createdAt,mergedAt,comments'], 90000);
   if (out === null) throw new Error('gh pr list --state merged did not answer');
@@ -1815,6 +1962,8 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
   if (!repo) return byUmbrella;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   // Closed units are read too: a sprint card shows a finished unit as done,
   // not as vanished. Consumers that want the open scope filter on `state`.
   const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
@@ -1872,6 +2021,8 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
   const out = new Map();
   const repo = config.repo;
   if (!repo) return out;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const listOut = await runText(GH, ['issue', 'list', '--repo', repo, '--label', 'umbrella',
     '--state', 'open', '--limit', '40', '--json', 'number,title,url,updatedAt'], 90000);
   if (listOut === null) throw new Error('gh issue list did not answer');
@@ -2305,9 +2456,6 @@ function lanesFor(allLanes, branch) {
 // ------------------------------------------------- probe snapshot (source=probe)
 
 const SNAPSHOT_FILE = path.join(STATE_DIR, 'probe-snapshot.json');
-const SNAPSHOT_MAX = 2 * 1024 * 1024;
-
-class PayloadTooLarge extends Error {}
 
 // Last snapshot the probe posted: { receivedAt, snapshot }. Loaded from disk
 // on the first read so a restart still has windows to draw.
@@ -2330,20 +2478,6 @@ async function loadProbeSnapshot() {
     probeSnapshot = null;
   }
   return probeSnapshot;
-}
-
-async function saveProbeSnapshot(body) {
-  const stored = { receivedAt: new Date().toISOString(), snapshot: normalizeSnapshot(body) };
-  const prev = probeSnapshot;
-  probeSnapshot = stored;
-  probeSnapshotLoaded = true;
-  try {
-    await writeJsonAtomic(SNAPSHOT_FILE, stored);
-  } catch (e) {
-    probeSnapshot = prev;
-    throw new Error(`could not save the probe snapshot to disk: ${String(e?.message || e)}`);
-  }
-  return stored;
 }
 
 function asList(v) {
@@ -2598,8 +2732,6 @@ async function collect() {
 
   const programs = programsSource.value ?? new Map();
   const prs = prSource.value ?? [];
-  const mergedPrs = mergedPrSource.value ?? [];
-  const unitIssues = unitIssuesSource.value ?? new Map();
   const umbrellas = umbrellaSource.value ?? new Map();
   const laneHosts = lanesSource.value ?? [];
   const allLanes = laneHosts.flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok })));
@@ -2653,19 +2785,6 @@ async function collect() {
       if (via) cardPrs.push({ ...pr, via });
     }
     cardPrs.sort((a, b) => b.number - a.number);
-    // Merged PRs of this window: the same strong bindings, plus the numbers the
-    // window named itself (weak — good enough as evidence of delivered work,
-    // never used alone to move a card forward).
-    const cardMerged = [];
-    for (const pr of mergedPrs) {
-      const via = strongVia(pr);
-      if (via) cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via, strong: true });
-      else if (mentioned.has(pr.number)) {
-        cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via: 'named by the window', strong: false });
-      }
-    }
-    cardMerged.sort((a, b) => b.number - a.number);
-
     // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
     // else from a number the window named.
     let program = null;
@@ -2745,10 +2864,6 @@ async function collect() {
       askReasons,
       column,
       tabCount,
-      _shadow: {
-        merged: cardMerged,
-        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []).filter(i => i.state !== 'CLOSED') : [],
-      },
     });
   }
 
@@ -2765,36 +2880,6 @@ async function collect() {
     c.prs.sort((a, b) => b.number - a.number);
     delete c.mentioned;
   }
-
-  // Facts for the pipeline's shadow verdicts (step 1: the board only says what
-  // it WOULD do — no transition is written anywhere). A source that is dead or
-  // older than ten minutes makes every verdict "facts incomplete": unknown is
-  // never read as empty.
-  const FRESH_MS = 10 * 60 * 1000;
-  const staleSources = [lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
-    .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
-    .map(s => s.name);
-  const shadowFacts = new Map();
-  for (const c of cards) {
-    if (c.manual) continue;
-    const factsForCard = {
-      openPrs: c.prs.map(pr => ({
-        number: pr.number,
-        ci: pr.ci?.color ?? 'none',
-        strong: pr.via !== 'named by the window',
-        createdAt: pr.createdAt ?? null,
-      })),
-      merged: c._shadow.merged,
-      openUnitIssues: c._shadow.openUnitIssues.map(i => ({ number: i.number, createdAt: i.createdAt })),
-      umbrella: c.umbrella?.number ?? null,
-      laneBusy: c.lanes.length > 0,
-      working: c.status === 'working',
-    };
-    shadowFacts.set(c.name, factsForCard);
-    if (c.window && c.window !== c.name) shadowFacts.set(c.window, factsForCard);
-    delete c._shadow;
-  }
-  setShadowFacts({ facts: shadowFacts, staleSources, at: now });
 
   // Nudge the 30-second sprint sweep without resetting its own clock.
   sprintSource.tick();
@@ -2887,7 +2972,7 @@ async function collect() {
 
 // --------------------------------------------- the agent view (/api/board)
 //
-// An endpoint for a watchdog agent: the same board without a picture and without
+// An endpoint for an agent: the same board without a picture and without
 // a browser. Its shape is pinned separately from /data: the page lives on /data
 // and its fields change together with the layout, while the agent reads
 // /api/board, so editing the page does not break it.
@@ -3099,83 +3184,6 @@ function renderToonCard(c) {
 // the pipeline endpoints answer in the same shape and reject a bad parameter
 // with the same words.
 
-function probeAuthError(req) {
-  const token = String(config.probeToken ?? '').trim();
-  if (!token) return { code: 403, text: 'probe access is not configured' };
-  const hdr = String(req.headers.authorization ?? '').trim();
-  const m = /^Bearer\s+(.+)$/i.exec(hdr);
-  if (!m || m[1].trim() !== token) return { code: 401, text: 'unauthorized' };
-  return null;
-}
-
-// Reading the body without killing the connection. A body with no
-// Content-Length (chunked) is only known to be too large half way through it,
-// and tearing the socket down there left the probe with a reset connection
-// instead of an answer. So the rest is read and thrown away — up to a sane
-// bound — and the request then fails as 413, which the client can actually
-// read.
-const SNAPSHOT_DRAIN_MAX = 16 * 1024 * 1024;
-
-function readSnapshotBytes(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    let over = false;
-    let discarded = 0;
-    const finish = (fn, arg) => {
-      req.off('data', onData);
-      req.off('end', onEnd);
-      req.off('error', onErr);
-      fn(arg);
-    };
-    const onData = (chunk) => {
-      if (over) {
-        discarded += chunk.length;
-        // Past this point the sender is not going to stop on its own; there is
-        // nothing to be gained by reading further.
-        if (discarded > SNAPSHOT_DRAIN_MAX) finish(reject, new PayloadTooLarge('payload too large'));
-        return;
-      }
-      size += chunk.length;
-      if (size > SNAPSHOT_MAX) {
-        over = true;
-        chunks.length = 0;
-        return;
-      }
-      chunks.push(chunk);
-    };
-    const onEnd = () => {
-      if (over) finish(reject, new PayloadTooLarge('payload too large'));
-      else finish(resolve, Buffer.concat(chunks));
-    };
-    const onErr = (e) => finish(reject, e);
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', onErr);
-  });
-}
-
-async function readSnapshotBody(req) {
-  const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > SNAPSHOT_MAX) {
-    throw new PayloadTooLarge('payload too large');
-  }
-  const body = await readSnapshotBytes(req);
-  if (!body.length) throw new BadRequest('malformed snapshot: body is empty');
-  let parsed;
-  try { parsed = JSON.parse(body.toString('utf8')); }
-  catch { throw new BadRequest('malformed snapshot: body cannot be parsed'); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new BadRequest('malformed snapshot: an object was expected');
-  }
-  for (const key of ['windows', 'tabs', 'panes', 'agents']) {
-    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
-      throw new BadRequest(`malformed snapshot: ${key} must be an array`);
-    }
-  }
-  return parsed;
-}
-
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
 // A project name comes from the herdr snapshot: a folder name, so no control
 // characters, no path separators and nothing longer than a folder can be.
@@ -3201,45 +3209,11 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
-    if (await handleAuth(req, res, url, { port: PORT, config })) return;
-
-    // Sign-in is off (no auth.founders) — the rest of the board is reached
-    // exactly as before. When it is on, a session, localhost-as-owner or
-    // (on agent paths) apiToken is required before anything else runs.
-    if (authEnabled(config)) {
-      const viewer = await resolveViewer(req, config);
-      const decision = accessDecision(req, url, viewer);
-      if (decision === 'signin') {
-        return send(res, 200, signInPage(), 'text/html; charset=utf-8');
-      }
-      if (decision === 'deny') {
-        return send(res, 401, JSON.stringify({ error: 'unauthorized' }));
-      }
-      // A signed-in founder commenting without an author: fill it in here so
-      // pipeline.mjs can keep requiring one. Agents (apiToken) still send their
-      // own author.
-      if (viewer.founder && req.method === 'POST' && url.pathname === '/pipeline/card/comment') {
-        const body = await readBody(req);
-        if (!String(body.author ?? '').trim()) body.author = viewer.founder.name;
-        req = withJsonBody(req, body);
-      }
-    }
-
     // The pipeline owns everything under /pipeline/… and /api/pipeline. It is
     // asked first and answers only its own paths, so the windows view below is
     // reached exactly as before.
     if (await handlePipeline(req, res, url, PORT)) return;
 
-    const probeOnly = url.pathname.startsWith('/probe/');
-    if (probeOnly) {
-      const denied = probeAuthError(req);
-      if (denied) return sendText(res, denied.code, denied.text);
-    }
-    if (req.method === 'POST' && url.pathname === '/probe/snapshot') {
-      const body = await readSnapshotBody(req);
-      const stored = await saveProbeSnapshot(body);
-      return send(res, 200, JSON.stringify({ ok: true, receivedAt: stored.receivedAt }));
-    }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -3248,7 +3222,7 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
-    // The board for a watchdog agent: no page, no pictures, short text. Built by
+    // The board for an agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
     // timers, so this costs no extra ssh or gh call.
     if (req.method === 'GET' && url.pathname === '/api/board') {
@@ -3263,24 +3237,6 @@ const server = http.createServer(async (req, res) => {
           + 'help: check that herdr answers — herdr api snapshot');
       }
       const view = buildAgentBoard(payload, p.full);
-      try {
-        const stale = await pipelineStaleProblems();
-        if (stale.count) {
-          const n = stale.count;
-          const ids = stale.ids.join(', ');
-          view.problems.push({
-            source: 'watchdog',
-            error: n === 1
-              ? `1 active card has a stale Status (older than ${stale.staleAfterMin}m): ${ids}`
-              : `${n} active cards have a stale Status (older than ${stale.staleAfterMin}m): ${ids}`,
-          });
-        }
-      } catch (e) {
-        view.problems.push({
-          source: 'watchdog',
-          error: `could not read pipeline Status: ${String(e?.message || e)}`,
-        });
-      }
       if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
       return sendText(res, 200, renderToonBoard(view));
     }
@@ -3415,12 +3371,6 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, '{"error":"no such path"}');
   } catch (e) {
-    if (e instanceof PayloadTooLarge) {
-      // The answer goes out first; the connection is closed after it, so the
-      // client reads 413 rather than a reset.
-      if (!res.headersSent) res.setHeader('Connection', 'close');
-      return sendText(res, 413, e.message);
-    }
     if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
   }
@@ -3428,9 +3378,11 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
-configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
+// The start-of-life identity check (then hourly inside the gate): a wrong or
+// missing token alarms the owner now, before the first sweep quietly holds.
+void githubGate();
 if (config.autoDispatch && !config.telegramOwnerChatId) {
   dispatchNote('auto-dispatch: off — telegram.ownerChatId missing');
 } else {
@@ -3448,7 +3400,7 @@ server.on('error', (e) => {
   throw e;
 });
 server.listen(PORT, '127.0.0.1', () => {
-  const url = `http://127.0.0.1:${PORT}`;
+  const url = `http://127.0.0.1:${server.address().port}`;
   console.log(`Watchtower: ${url}`);
   if (process.argv.includes('--open')) {
     execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});

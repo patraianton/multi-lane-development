@@ -2,13 +2,13 @@
 
 A delivery pipeline for a coding-agent fleet, served by one process (`bin/watchtower.mjs` — the board, still called Watchtower inside the code and the services).
 
-The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → merged → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards, the shadow verdict, `/api/board` for agents) and is not drawn.
+The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → merged → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards and `/api/board` for agents) and is not drawn.
 
 **Since 2026-08-30 the board is the scheduler**: it dispatches every lane task, starts reviews, merges and alarms by itself. How it works and how to run it: [`docs/BOARD.md`](docs/BOARD.md); the rules every agent gets: [`docs/RULES.md`](docs/RULES.md); the design: [`docs/specs/2026-08-30-board-is-the-scheduler.md`](docs/specs/2026-08-30-board-is-the-scheduler.md). Older contracts live in [`docs/history/`](docs/history/).
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
-This repository grew from the windows board through waves A–G (pipeline store, remote board, sign-in, Telegram, execution stages, Watchdog). The contracts live under [`docs/`](docs/). This README describes the code and those contracts as they stand. It does not claim a production run or a production test.
+This repository grew from the windows board through several waves. Older contracts live under [`docs/history/`](docs/history/). This README describes the code and current contracts as they stand. It does not claim a production run or a production test.
 
 ---
 
@@ -42,7 +42,7 @@ A successful step along the road resets `consecutiveFails` to zero. So does a hu
 
 Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
 
-**Status** is a different field: a one-line "what is happening right now", written by the Watchdog, with a verdict `moving` / `stalled` / `looping`. It is not the stage.
+**Status** is a different field: a one-line "what is happening right now", with a verdict `moving` / `stalled` / `looping`. It is not the stage.
 
 How a card is created, moved, failed, commented, and updated: [`docs/API.md`](docs/API.md).
 
@@ -50,20 +50,17 @@ How a card is created, moved, failed, commented, and updated: [`docs/API.md`](do
 
 ## Moving parts
 
-Each piece is a small Node process with no extra packages. Local-check defaults to dry-run: it only sshes or POSTs when you pass `--run`.
+Each piece is a small Node process with no extra packages.
 
 | Piece | Process | What it does |
 | --- | --- | --- |
-| **Board server** | `bin/watchtower.mjs` | Serves the page, `/api/*`, pipeline mutations, and probe endpoints. Listens on `127.0.0.1:4878`. |
-| **Probe** | `bin/probe.mjs` | Runs on the owner's machine, next to herdr. Every `intervalSec` seconds it POSTs a herdr snapshot to the board. Lanes, PRs and CI are not in this payload — the board host reads those itself. |
+| **Board server** | `bin/watchtower.mjs` | Serves the page, `/api/*`, and pipeline mutations. Listens on `127.0.0.1:4878`. |
 | **Telegram sender** | `bin/telegram-bot.mjs` | The board sends artifact-ready and done doorbells to the founders' group, plus stuck, idle-lane and ready-for-acceptance alarms to the owner. It never polls Telegram. |
-| **Local-check** | `bin/local-check.mjs` | For a card in `local_check`: on the same lane, run the project's local test command, poll the log for `LOCAL_CHECK_EXIT=N`. Pass → move to `ci_pr`. Fail → `POST /pipeline/card/fail` `{ "kind": "local" }`. |
-| **Watchdog** | `bin/watchdog.mjs` | A separate process from the board. Every `intervalMin` minutes (default 15) it scores each **active** card (`development`, `local_check`, `ci_pr`): lane log tail, CI via `gh` if the card has a PR link, then a cheap language-model command writes Status and a verdict. It never moves a card and never talks to herdr. |
 | **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
 
 The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
 
-Contracts: [`docs/PROBE.md`](docs/PROBE.md), [`docs/TELEGRAM.md`](docs/TELEGRAM.md), [`docs/EXECUTION.md`](docs/EXECUTION.md), [`docs/WATCHDOG.md`](docs/WATCHDOG.md).
+Contract: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
 
 ---
 
@@ -81,12 +78,9 @@ Another port: set `WATCHTOWER_PORT` before starting (the older `AUTOPASE_BOARD_P
 
 If `ssh` or `gh` are not on the default path, point at them with `WATCHTOWER_SSH` and `WATCHTOWER_GH`. A second instance, or tests, can keep their own files with `WATCHTOWER_STATE_DIR` instead of `state/`.
 
-The probe, Watchdog, and the execution helpers are separate commands. They need their own config files under `state/` (not in git). The Telegram sender is imported by the board. Dry-run first:
+The Telegram sender is imported by the board. Its self-test makes no network call:
 
 ```
-node bin/probe.mjs --once --dry-run
-node bin/local-check.mjs --once <card-id> --dry-run
-node bin/watchdog.mjs --once --dry-run
 node bin/telegram-bot.mjs --selftest
 ```
 
@@ -110,7 +104,7 @@ Everything being built is on the board — the watch (`bin/off-board.mjs`) check
 
 ## Sources
 
-The server reads these on their own timers; the windows they describe are no longer drawn (decision 12) but still feed the cards, the shadow verdict and `/api/board`.
+The server reads these on their own timers; the windows they describe are no longer drawn (decision 12) but still feed the cards and `/api/board`.
 
 | What | Source | How often |
 | --- | --- | --- |
@@ -162,28 +156,13 @@ GET /api/pipeline/card/<id>
 
 `format` is `toon` (short text) or `json`. `full=1` lifts clipping on the list views. Unknown parameters, empty values, or the same parameter twice answer 400 with a hint.
 
-Field-by-field contract, pipeline mutations, probe endpoints, and errors: [`docs/API.md`](docs/API.md).
+Field-by-field contract, pipeline mutations, and errors: [`docs/API.md`](docs/API.md).
 
 ---
 
 ## Auth
 
-Founder sign-in is off until `auth.founders` is a non-empty list in `state/autopase-board.json`. With no `auth` block the board is an open page on localhost, which is the desktop mode.
-
-When the list is set:
-
-- The page and read APIs need a founder session, localhost-as-owner, or (on `/api/*` and `/pipeline/data`) `Authorization: Bearer <apiToken>`.
-- Window-board mutations (`/card/*`, `/project/select`, `/focus`) need a session or localhost-as-owner.
-- Pipeline mutations also accept `apiToken`.
-- `/probe/*` uses `probeToken` only, as before.
-
-`POST /auth/request` with `{ "email" }` always answers `{ "ok": true, "sent": "if that address is on the list" }`. If the email is listed, a one-time token is stored for 15 minutes and the server prints `login link for <email>: <url>` on stdout. **The board does not send email.** Login-link delivery by mail or Telegram is not implemented. `GET /auth/link?token=…` sets the `wt_session` cookie.
-
-`allowLocalhost` is off by default. Turn it on only when nothing forwards to the port: `ssh -L`, a bare nginx `proxy_pass`, `socat`, or a tunnel client all look like loopback to the board, and every visitor on the far end would silently become the owner. The service prints an `auth warning:` line at start-up while it is on.
-
-Set `auth.publicUrl` to the public HTTPS base before exposing the port. Without it, login links fall back to `http://127.0.0.1:<port>` for any non-loopback `Host` header.
-
-Full flow, cookie flags, rate limits, and what the board trusts: [`docs/API.md`](docs/API.md) (Auth) and [`docs/DEPLOY.md`](docs/DEPLOY.md).
+Founder sign-in: removed 31.08 — git history keeps it; the board is open on `127.0.0.1`.
 
 ---
 
@@ -206,20 +185,7 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
   },
   "source": "local",
   "probeStaleSec": 60,
-  "probeToken": "the probe's shared secret",
-  "apiToken": "a long random secret for agents",
   "subscriptions": ["cx1", "initech", "hz1"],
-  "auth": {
-    "founders": [
-      { "email": "owner@example.com", "name": "Ada", "owner": true },
-      { "email": "partner@example.com", "name": "Bob", "owner": false }
-    ],
-    "sessionDays": 30,
-    "allowLocalhost": false,
-    "trustProxy": true,
-    "publicUrl": "https://board.example.com",
-    "cookieSecure": true
-  },
   "telegram": {
     "botToken": "123456:ABC…",
     "chatId": "-1001234567890",
@@ -242,15 +208,13 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
 - `subscriptions` — names the owner may assign with `POST /pipeline/assign-subscription`.
 - `telegram` — send-only notifications. `chatId` is the founders' group and `ownerChatId` is the owner's private chat. Missing, or present without `botToken` → no sends, one log line at start-up.
 
-Other processes have their own files next to that one, also not in git: `state/probe.json`, `state/local-check.json`, `state/watchdog.json`.
-
-The board also writes `state/autopase-seen.json` (when each pane was first seen in its current state — herdr does not keep that), `state/autopase-cards.json` (hidden and hand-typed window cards), `state/pipeline-cards.json`, `state/auth.json`, and `state/probe-snapshot.json`.
+The board also writes `state/autopase-seen.json` (when each pane was first seen in its current state — herdr does not keep that), `state/autopase-cards.json` (hidden and hand-typed window cards), `state/pipeline-cards.json`, and reads `state/probe-snapshot.json` when `source` is `"probe"`.
 
 ---
 
 ## Deploy on a Linux host
 
-The board is meant to run as a systemd service on a Linux host so the partner can reach cards without the owner's desktop. Local herdr stays on that desktop and is pushed up by the probe ([`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md)).
+The board and herdr run on the same machine in the current setup; no probe executable pushes desktop data to a server. The systemd files remain available for a Linux installation, and probe source mode remains for loading a posted snapshot in tests or compatible deployments.
 
 Layout:
 
@@ -275,14 +239,11 @@ bash /opt/watchtower/deploy/setup.sh
 
 `setup.sh` is idempotent. It requires Node.js 22 or newer already on `PATH`. It does not install Node, a reverse proxy, or TLS certificates. The board listens on `127.0.0.1:4878`; put a reverse proxy with TLS in front if anyone outside this host should open the page.
 
-Set `auth.founders` in `/opt/watchtower/state/autopase-board.json` **before** the reverse proxy is reachable from the internet. With an empty founders list, anyone who can hit the proxy can read and mutate cards.
-
 Units in `deploy/`:
 
 | Unit | Command | Installed by `setup.sh`? |
 | --- | --- | --- |
 | `watchtower.service` | `node bin/watchtower.mjs` | Yes |
-| `watchtower-watchdog.service` | `node bin/watchdog.mjs run` | No — enable by hand after `state/watchdog.json` exists (without it the process exits 1 and systemd would restart it in a loop) |
 
 Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
@@ -292,22 +253,19 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 | File | Contents |
 | --- | --- |
-| [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Watchdog, Status, lane, spec, grill, Artifact, probe, ticket, founder |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Waves A–G |
-| [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, auth, probe endpoints |
+| [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Status, lane, spec, grill, Artifact, probe, ticket, founder |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Earlier roadmap |
+| [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, and compatibility contracts |
 | [`docs/history/GRILL.md`](docs/history/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
 | [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
-| [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle and snapshot shape |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Send-only Telegram notifications and config |
-| [`docs/EXECUTION.md`](docs/EXECUTION.md) | Local-check and failure loops |
-| [`docs/WATCHDOG.md`](docs/WATCHDOG.md) | Watchdog sweep, Status contract, stale Status |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Linux install |
 | [`docs/herdr-api.md`](docs/herdr-api.md) | What herdr provides and what it accepts back |
 
 Architecture notes:
 
 - [`docs/adr/0001-watchtower-becomes-the-pipeline.md`](docs/adr/0001-watchtower-becomes-the-pipeline.md) — the pipeline is built into Watchtower, not as a second app or on GitHub Issues
-- [`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md) — board on a Linux host; probe pushes local herdr
+- [`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md) — historical remote-host design; the current setup instead keeps the board and herdr on one machine without the removed probe executable
 - [`docs/adr/0004-grill-outcome-becomes-one-github-ticket.md`](docs/adr/0004-grill-outcome-becomes-one-github-ticket.md) — one GitHub ticket after the grill, written by the CTO's GitHub App
 
 ---

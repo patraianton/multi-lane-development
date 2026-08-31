@@ -19,7 +19,7 @@ async function cardAtGrilled(base, title) {
 }
 
 test('artifact-answered marks the card once, gates ticketed, and a new link resets it', async () => {
-  const board = await startBoard({ port: 14998, config: { source: 'probe', subscriptions: ['cx1'] } });
+  const board = await startBoard({ config: { source: 'probe', subscriptions: ['cx1'] } });
   try {
     const id = await cardAtGrilled(board.base, 'artifact answers card');
 
@@ -129,7 +129,6 @@ test('the sweep reads the desktop Lavish state and marks the card without draini
     },
   };
   const board = await startBoard({
-    port: 14999,
     config: { source: 'probe' },
     files: { 'state.json': state },
     env: dir => ({ LAVISH_AXI_STATE_DIR: dir, WATCHTOWER_ARTIFACT_SWEEP_MS: '300' }),

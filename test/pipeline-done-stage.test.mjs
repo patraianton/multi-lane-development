@@ -33,7 +33,7 @@ const OLD = {
 };
 
 test('acceptance and accepted from an older state file load as done; ci_pr moves to done through qa', async () => {
-  const board = await startBoard({ port: 14975, config: { source: 'probe' }, files: { 'pipeline-cards.json': OLD } });
+  const board = await startBoard({ config: { source: 'probe' }, files: { 'pipeline-cards.json': OLD } });
   try {
     const data = await getJson(board.base, '/pipeline/data');
     const by = Object.fromEntries(data.body.cards.map(c => [c.id, c]));

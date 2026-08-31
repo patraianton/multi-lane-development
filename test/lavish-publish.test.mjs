@@ -23,14 +23,14 @@ const CLI = path.join(ROOT, 'bin', 'lavish-publish.mjs');
 const run = promisify(execFile);
 
 const TOKEN = 'local-test-token';
-const PORT = 14993;
-const BASE = `http://127.0.0.1:${PORT}`;
 
 async function withInstance(fn) {
   const env = { LAVISH_KV: createMemoryKv(), LAVISH_API_TOKEN: TOKEN };
-  const server = serveWorker(createWorker(stubAssets), env, PORT);
+  const server = serveWorker(createWorker(stubAssets), env, 0);
   await new Promise(r => server.once('listening', r));
-  try { return await fn(); }
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  try { return await fn(base); }
   finally { await new Promise(r => server.close(r)); }
 }
 
@@ -41,20 +41,20 @@ async function cli(cliArgs, stateDir) {
 }
 
 test('publish dry-run against a local instance prints the plan and sends nothing', async () => {
-  await withInstance(async () => {
+  await withInstance(async base => {
     const dir = await mkdtemp(path.join(tmpdir(), 'lavish-publish-test-'));
     try {
       const file = path.join(dir, 'grill.html');
       await writeFile(file, '<html><head><title>Grill round 1</title></head><body>q</body></html>');
       const { stdout } = await cli(
-        ['publish', file, '--base', BASE, '--token', TOKEN, '--card', 'c-x', '--dry-run'], dir);
+        ['publish', file, '--base', base, '--token', TOKEN, '--card', 'c-x', '--dry-run'], dir);
       assert.ok(stdout.includes('dry-run: POST'), stdout);
       assert.ok(stdout.includes('/api/publish'));
       assert.ok(stdout.includes('would publish'));
       assert.ok(stdout.includes('Grill round 1'), 'title read from the file');
       assert.ok(stdout.includes('/pipeline/card/update'));
       // Nothing was actually published.
-      const poll = await fetch(`${BASE}/api/poll?key=0123456789abcdef`,
+      const poll = await fetch(`${base}/api/poll?key=0123456789abcdef`,
         { headers: { authorization: `Bearer ${TOKEN}` } });
       assert.equal((await poll.json()).status, 'missing');
     } finally {
@@ -64,14 +64,14 @@ test('publish dry-run against a local instance prints the plan and sends nothing
 });
 
 test('publish, annotate, poll, reply — the full round against the local instance', async () => {
-  await withInstance(async () => {
+  await withInstance(async base => {
     const dir = await mkdtemp(path.join(tmpdir(), 'lavish-publish-test-'));
     try {
       const file = path.join(dir, 'grill.html');
       await writeFile(file, '<html><head><title>Grill</title></head><body><h2 id="q1">Q1</h2></body></html>');
       // The config-file path: base and token read from the lavish block.
       await writeFile(path.join(dir, 'autopase-board.json'), JSON.stringify({
-        lavish: { publicBaseUrl: BASE, apiToken: TOKEN },
+        lavish: { publicBaseUrl: base, apiToken: TOKEN },
       }));
       const { stdout } = await cli(['publish', file], dir);
       const url = /published: (\S+)/.exec(stdout)[1];
@@ -83,7 +83,7 @@ test('publish, annotate, poll, reply — the full round against the local instan
       assert.ok((await page.text()).includes('lavish-session'));
 
       // A founder annotates on the page…
-      const send = await fetch(`${BASE}/api/${key}/prompts`, {
+      const send = await fetch(`${base}/api/${key}/prompts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -104,7 +104,7 @@ test('publish, annotate, poll, reply — the full round against the local instan
       assert.ok(pageAfter.includes('Yes, Q1 stays in scope.'));
 
       await cli(['end', key], dir);
-      const afterEnd = await fetch(`${BASE}/api/poll?key=${key}`,
+      const afterEnd = await fetch(`${base}/api/poll?key=${key}`,
         { headers: { authorization: `Bearer ${TOKEN}` } });
       assert.deepEqual(await afterEnd.json(), { status: 'ended', ended_by: 'agent' });
     } finally {
@@ -114,9 +114,8 @@ test('publish, annotate, poll, reply — the full round against the local instan
 });
 
 test('publish --card sets links.artifact on the board and rings the doorbell', async () => {
-  await withInstance(async () => {
+  await withInstance(async base => {
     const board = await startBoard({
-      port: 14994,
       config: {
         source: 'probe',
         telegram: {
@@ -137,7 +136,7 @@ test('publish --card sets links.artifact on the board and rings the doorbell', a
       const file = path.join(dir, 'grill.html');
       await writeFile(file, '<html><head><title>Grill</title></head><body>q</body></html>');
       const { stdout } = await cli(
-        ['publish', file, '--base', BASE, '--token', TOKEN, '--card', id, '--board', board.base], dir);
+        ['publish', file, '--base', base, '--token', TOKEN, '--card', id, '--board', board.base], dir);
       assert.ok(stdout.includes(`card ${id}: links.artifact set`), stdout);
 
       const deadline = Date.now() + 5000;
@@ -145,7 +144,7 @@ test('publish --card sets links.artifact on the board and rings the doorbell', a
         if (Date.now() > deadline) assert.fail(`doorbell never rang:\n${board.output()}`);
         await new Promise(r => setTimeout(r, 50));
       }
-      assert.ok(board.output().includes(`${BASE}/session/`), 'the notification carries the artifact URL');
+      assert.ok(board.output().includes(`${base}/session/`), 'the notification carries the artifact URL');
     } finally {
       await rm(dir, { recursive: true, force: true });
       await board.stop();

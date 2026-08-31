@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { startBoard, postJson, getJson } from './helpers.mjs';
+import { getJson, postJson, startBoard, until as waitUntil } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const REVIEW_HEAD = 'abc12345abcdef0123456789abcdef0123456789';
@@ -50,14 +50,7 @@ const FACTS = {
 };
 
 // The sprint sweep runs on its own short timer in the test; wait for it.
-async function until(base, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const data = await getJson(base, '/pipeline/data');
-    if (ready(data.body) || Date.now() > deadline) return data.body;
-    await new Promise(r => setTimeout(r, 150));
-  }
-}
+const until = (base, ready) => waitUntil(base, ready, { pathName: '/pipeline/data' });
 const untilUnits = (base, parent, count) => until(base, d => d.cards.filter(c => c.parent === parent).length >= count);
 const settle = ms => new Promise(r => setTimeout(r, ms));
 
@@ -90,7 +83,6 @@ function failureFacts({ ci = null, comments = [] } = {}) {
 
 test('a sprint card spawns unit cards from its tickets and the facts move them', async () => {
   const board = await startBoard({
-    port: 14990,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': FACTS },
     env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '300' }),
@@ -314,7 +306,6 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
 test('a red check on the current head counts once and records its reason', async () => {
   const green = failureFacts({ ci: { color: 'green', text: 'CI green (2)' } });
   const board = await startBoard({
-    port: 15012,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': green },
     env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),
@@ -388,7 +379,6 @@ test('a red check on the current head counts once and records its reason', async
 test('a newer QUESTION comment sticks the unit with its first line and is ignored after unstuck', async () => {
   const facts = failureFacts();
   const board = await startBoard({
-    port: 15013,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': facts },
     env: dir => ({ WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'), WATCHTOWER_SPRINT_SWEEP_MS: '200' }),

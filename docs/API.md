@@ -116,13 +116,6 @@ source is alive. This is worth reading: an empty `lanes` cell with ssh down mean
 `problems` carries one row, `project: no project chosen yet` — open the board and
 pick one.
 
-When an active pipeline card has a stale Status (older than twice the
-Watchdog interval, default 30 minutes), `problems` carries a `watchdog` row
-with the count and the card ids. The same count is `stale status` on
-`GET /api/pipeline`. Without a Status on the card the row is absent (the
-surface stays empty until the Watchdog has written one, unless
-`state/watchdog.json` is present).
-
 ## Clipping of long texts
 
 On a board sweep long texts are clipped and marked with their size
@@ -245,19 +238,7 @@ review→fix carousel still reaches `stuck` on the third NO-GO in a row.
 
 ### Who sets the stage — the shadow verdict
 
-Stage transitions are made by people (and by agents through the endpoints
-below). Since 2026-08-27 the board also computes, for every window card (a
-card with a `window`), what stage it WOULD set from observable facts alone —
-open PRs bound to the window, merged PRs, open unit tickets referencing the
-card's umbrella, and lane occupancy. This is **step 1 of
-[ADR-0006](./adr/0006-the-board-decides-the-stage-itself.md)**: the verdict is
-written nowhere — it is printed on the card (`auto would set … / auto agrees /
-auto holds`) and carried as `shadow: { would, same, reasons, at }` on
-`/pipeline/data` and in the `/api/pipeline` JSON rows. A dead or stale source
-voids the verdict (`facts incomplete`) — unknown is never read as empty. A
-card without an umbrella has no machine-readable sprint scope and cannot reach
-done by facts; the verdict says what is missing. Automatic transitions are a
-later step, enabled only after the shadow has been checked against reality.
+Shadow verdict: removed 31.08 — git history keeps it; JSON keeps `shadow: null`.
 
 ### Clocks
 
@@ -270,17 +251,14 @@ segment, `done` included, stays in the history and is readable in `clock-by-stag
 ### What is in the answer
 
 Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
-counters: **cards**, **stuck**, **done**, **failures**, **stale status**), then:
+counters: **cards**, **stuck**, **done**, **failures**), then:
 
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
-  (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (the watchdog's word: `moving`,
-  `stalled`, `looping`, or `-`). JSON also carries `lane`, `links`, `status`
-  (`text`, `verdict`, `at`), `slot`, `subscription`, `window`, `consecutiveFails`
-  and `statusStale` so the Watchdog can score the card without a second request;
+  (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (`moving`, `stalled`,
+  `looping`, or `-`). JSON also carries `lane`, `links`, `status`
+  (`text`, `verdict`, `at`), `slot`, `subscription`, `window`, `consecutiveFails`,
+  and the compatibility field `shadow: null`;
 - `stuck` — the cards waiting for a human, with how long they have been waiting;
-- `stale` — active cards (`development`, `local_check`, `ci_pr`) whose Status is
-  missing or older than twice the Watchdog interval (default 15 min → 30 min).
-  Empty until a Status exists, unless `state/watchdog.json` is present;
 - `specs` — under `?full=1` only, the spec text of every card that has one.
 
 The long parts of a card — the summary, every comment, the whole stage
@@ -411,10 +389,7 @@ GET http://127.0.0.1:4878/pipeline/card/<id>/spec
 answers `text/plain; charset=utf-8` with the spec exactly as written — no
 clipping, no folding, no markup — so it opens in a browser as a readable page.
 A card with no spec answers `(the card has no spec)`; an unknown id is 404.
-Auth is the same as reading the board (`/pipeline/data`): open while
-`auth.founders` is empty, otherwise a founder session, localhost-as-owner, or
-`apiToken`. The board page links here from every open card as
-`spec (N lines)`.
+The board page links here from every open card as `spec (N lines)`.
 
 ### Changing a card
 
@@ -428,23 +403,21 @@ the reason in plain words; the store is left exactly as it was.
 | `move` | `to` | one step along the road; anything else is 400. `grilled → ticketed` additionally requires a linked review artifact, if there is one, to be marked answered (`artifactAnswered`); `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
 | `fail` | `kind`: `local` \| `ci` \| `review` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr` |
 | `unstuck` | — | a human returns the card to `development` and clears the streak |
-| `comment` | `author`, `text` (`text` required; `author` required unless a founder is signed in) | one flat comment on the card. A signed-in founder who omits `author` is stored under that founder's name |
+| `comment` | `author`, `text` (both required) | one flat comment on the card |
 | `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. At most 200 characters — longer is 400 naming the limit and the actual length, never a silent clip. The spec is not touched |
 | `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`), `review` (`running`, `round`, `by`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `review: { running: true, round: N, by }` turns the live review badge on (since 2026-08-30 the board sets it itself when it launches a reviewer; the `autoDispatch` rows of `/api/pipeline` carry a `kind` column: develop, review R<n>, fix R<n>, merge) (a new round number restarts its clock), `{ running: false }` turns it off and files the round; the board files it itself when a verdict newer than the badge lands on the PR. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window. A *different* `links.artifact` is a new round of questions and clears `artifactAnswered` |
 | `artifact-answered` | `answers` (count, default 1), `by`, `at` | records that the founders answered on the linked review artifact: sets `artifactAnswered` (the first mark keeps its time and writes one comment; later marks only raise the count). 400 without `links.artifact`. The board's own sweep posts this for answers it can see; an agent posts it when the answers came another way (Telegram, a call) |
 | `delete` | — | removes the card from the pipeline for good, whatever stage it is in; answers `{ "ok": true, "removed": <the card> }`. An unknown id is 404 with the ids currently in the pipeline |
 
-The Watchdog does **not** use `update`. It writes Status on a path of its own:
+The retained Status compatibility endpoint is:
 
 ```
 POST /pipeline/card/<id>/status
 { "text": "Codex is running the local check on lane-2.", "verdict": "moving" }
 ```
 
-`<id>` is in the path (URL-encoded). Auth is the same as the other pipeline
-mutations: founder session, localhost-as-owner, or `Authorization: Bearer
-<apiToken>`. `verdict` must be `moving`, `stalled` or `looping` — anything
-else is `400`. `text` is clipped to 400 characters. The board stores
+`<id>` is in the path (URL-encoded). `verdict` must be `moving`, `stalled` or
+`looping` — anything else is `400`. `text` is clipped to 400 characters. The board stores
 `card.status = { text, verdict, at }` (`at` is the time of this write).
 Posting the same Status twice is a refresh, not a second event.
 
@@ -465,146 +438,23 @@ owner-facing client. Wrong stage, unknown name, already
 assigned, or a missing field → `400`. Auth is the same as the other
 pipeline mutations.
 
-When `auth.founders` is empty or missing, the windows and pipeline endpoints
-stay open — the board listens on `127.0.0.1` only, as before. When the list
-is set, those paths need a founder session, a localhost-as-owner request, or
-(for agents) `apiToken`. See **Auth** below. The probe endpoints use
-`probeToken`, as they always did.
+The windows and pipeline endpoints are open; the board listens on
+`127.0.0.1` only.
 
 ## Auth
 
-Founder sign-in is off until `auth.founders` is a non-empty list in
-`state/autopase-board.json`. With no `auth` block the board is unchanged: every
-path that was open stays open.
-
-```json
-{
-  "auth": {
-    "founders": [
-      { "email": "owner@example.com", "name": "Ada", "owner": true },
-      { "email": "partner@example.com", "name": "Bob", "owner": false }
-    ],
-    "sessionDays": 30,
-    "allowLocalhost": false,
-    "trustProxy": true,
-    "publicUrl": "https://board.example.com",
-    "cookieSecure": true
-  },
-  "apiToken": "a long random secret for agents",
-  "probeToken": "the probe's shared secret"
-}
-```
-
-| field | default | meaning |
-| --- | --- | --- |
-| `auth.founders` | empty | allow-list. Email match is case-insensitive. `owner: true` marks the account localhost-as-owner uses |
-| `auth.sessionDays` | `30` | how long a `wt_session` cookie lasts |
-| `auth.allowLocalhost` | `false` | when `true`, a request from `127.0.0.1` / `::1` with **no** forwarding headers counts as the first `owner: true` founder. Read the warning below before turning it on |
-| `auth.trustProxy` | `false` | when `true` **and** the connection arrives over loopback, `X-Forwarded-For` / `X-Real-IP` name the client for rate limiting and `X-Forwarded-Proto` may set the login-link scheme. Otherwise those headers are ignored |
-| `auth.publicUrl` | empty | absolute `http(s)://host[:port]` base for login links. Set it: without it the `Host` header is used only when it names loopback, and everything else falls back to `http://127.0.0.1:<port>` |
-| `auth.cookieSecure` | `true` | the session cookie carries `Secure`. Browsers still accept it on `http://localhost`; set `false` only for a plain-HTTP deployment |
-| `apiToken` | empty | Bearer token accepted on `/pipeline/*` and `/api/*` when sign-in is on |
-| `probeToken` | empty | unchanged: Bearer token for every `/probe/*` path |
-| `subscriptions` | empty | array of subscription names the owner may assign with `POST /pipeline/assign-subscription` |
-| `telegram` | missing | outbound Telegram notifications; see [`TELEGRAM.md`](./TELEGRAM.md). Missing, or present without `botToken` and without `dryRun: true` → no sends, one log line at start-up |
-| `lavish`, `cloudflare` | missing | the artifact pipeline's blocks — the board ignores them; the publish and deploy CLIs read them. See [`ARTIFACT.md`](./ARTIFACT.md) |
-
-This wave does **not** send email or Telegram. `POST /auth/request` stores a
-one-time token and prints `login link for <email>: <url>` on the server's
-stdout. Real delivery is a later wave.
-
-### Flow
-
-| endpoint | body | what it does |
-| --- | --- | --- |
-| `POST /auth/request` | `{ "email" }` | always answers `{ "ok": true, "sent": "if that address is on the list" }`. If the email is on the list, a 32-byte hex token is stored in `state/auth.json` for 15 minutes, single use, and the link is logged. Unlisted emails get the same answer, store nothing — and take the same code path (token generated, one atomic write, answer sent, log line only afterwards) so the response time does not reveal the list. Two limits, both 5 per 10 minutes: one per connecting socket address, one per requested email → `429` |
-| `GET /auth/link?token=…` | — | valid unused unexpired token → `Set-Cookie: wt_session=…` (`HttpOnly`, `Secure` unless `cookieSecure:false`, `Path=/`, `SameSite=Lax`, `Max-Age` from `sessionDays`) and redirect `302` to `/`. Invalid, used or expired → `400` English text |
-| `POST /auth/logout` | — | drops the session from the store and clears the cookie |
-| `GET /auth/me` | — | `{ "founder": { "email", "name", "owner" }, "via": "session" \| "localhost" }` or `{ "founder": null, "via": null }` |
-
-`state/auth.json` shape:
-
-```json
-{
-  "tokens": [
-    { "token": "hex", "email": "owner@example.com", "createdAt": "…", "expiresAt": "…", "used": false }
-  ],
-  "sessions": [
-    { "id": "hex", "email": "owner@example.com", "createdAt": "…", "expiresAt": "…" }
-  ]
-}
-```
-
-Writes go through the same atomic queue as the rest of the board.
-
-### Enforcement (only when `auth.founders` is non-empty)
-
-- **Page** `GET /` and `GET /board`: session or localhost-as-owner → the board.
-  Otherwise a minimal English sign-in page (email field → `POST /auth/request` →
-  "Check your link."). The sign-in HTML does not contain board data.
-- **Read APIs** `/data`, `/pipeline/data`, `/api/*`: session or localhost-as-owner
-  (and, on `/api/*` and `/pipeline/data`, `apiToken`) → `200`. Otherwise `401`
-  `{ "error": "unauthorized" }`. A forged `wt_session` cookie is `401`.
-- **Mutations** `/card/*`, `/project/select`, `/focus`: session or
-  localhost-as-owner.
-- **Mutations** `/pipeline/*`: session, localhost-as-owner,
-  or `Authorization: Bearer <apiToken>`.
-- **`/probe/*`**: still `probeToken` only, exactly as before. Missing token
-  config → `403`; wrong token → `401` plain text.
-
-The page header shows the signed-in founder's name and a sign-out link when
-sign-in is on and the viewer arrived with a session cookie (not when the viewer
-is localhost-as-owner).
-
-### What the board trusts
-
-Nothing the client sends decides who it is. In detail:
-
-- **`allowLocalhost` is off by default and is not a security boundary.** A
-  request counts as localhost-as-owner only when the socket is loopback on both
-  ends and carries no `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Real-IP` /
-  `Forwarded` header — but a plain TCP forwarder adds no headers at all. A bare
-  `proxy_pass` in nginx, `ssh -L`, `socat`, or a tunnel client hands an outside
-  visitor a loopback connection, and the board cannot tell the difference. Turn
-  `allowLocalhost` on **only** when nothing forwards to this port; otherwise
-  leave it off and sign in with a link like everyone else. The server prints a
-  warning line at start-up while it is on.
-- **Rate limiting counts sockets, not headers.** `X-Forwarded-For` only names
-  the client when `trustProxy` is on *and* the connection came over loopback.
-  The second limit, per requested email, holds even then.
-- **Login links never come from the `Host` header** unless that header names
-  loopback. Set `auth.publicUrl` and the header is ignored entirely, so a
-  request with `Host: evil.example.net` cannot aim a founder's one-time token at
-  someone else's server.
-- **Secrets are compared in constant time** — session id, login token and
-  `apiToken` all go through a SHA-256 + `timingSafeEqual` comparison, and the
-  lookups walk every stored row instead of stopping at the first match.
-- **A malformed cookie is a `401`, not a `500`.** A `wt_session` value with
-  broken percent-encoding is treated as a bad cookie: the visitor gets the
-  sign-in page and can sign in again.
+Founder sign-in: removed 31.08 — git history keeps it; the loopback board is open.
 
 ## Probe
 
-The probe on the owner's machine pushes herdr window data up. The HTTP contract
-the probe already speaks is in
-[`PROBE.md`](./PROBE.md); this section is the board side of the same contract.
+Probe bridge: removed 31.08 — git history keeps it.
 
-Auth: every `/probe/*` path requires `Authorization: Bearer <probeToken>`.
-Missing or wrong token → `401` `unauthorized` (plain English text). If
-`probeToken` is not set in `state/autopase-board.json` → `403`
-`probe access is not configured`.
-
-| endpoint | body | what it does |
-| --- | --- | --- |
-| `POST /probe/snapshot` | the snapshot from [`PROBE.md`](./PROBE.md) | stores it in memory and in `state/probe-snapshot.json` with a `receivedAt` stamp. Entries of `windows` / `tabs` / `panes` / `agents` that are not objects are dropped before storing. Larger than 2 MB → `413` (also for a chunked body with no `Content-Length`: the answer is `413`, not a dropped connection). Broken JSON / wrong shape → `400` |
-
-Config fields on `state/autopase-board.json`:
+The retained `source: "probe"` mode reads the last `state/probe-snapshot.json`
+written by an older deployment or another local mechanism:
 
 | field | default | meaning |
 | --- | --- | --- |
-| `probeToken` | empty | shared secret; must match the probe's `token` |
-| `apiToken` | empty | shared secret agents send as `Authorization: Bearer` on `/pipeline/*` and `/api/*` when `auth.founders` is set |
-| `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the last posted snapshot. Lanes, PRs and CI still come from this host |
+| `source` | `"local"` | `"local"` — windows come from herdr on this machine, as before. `"probe"` — windows, panes and agents come from the stored snapshot. Lanes, PRs and CI still come from this host |
 | `lanes` | `{}` | the fleet registry (docs/FLEET.md): `"host/folder": { "name", "server" }` — a probed lane folder is shown under its fleet name with its server; lanes not listed are shown by folder name, dimmed, and do not count as capacity (`laneCount`, `free`) |
 | `ciSlots` | `{}` | the same registry for CI runners (docs/FLEET.md "CI slots"): `"<runner name>": { "name", "server" }` — the runner is shown under its slot name with its server |
 | `probeStaleSec` | `60` | in `probe` mode, a snapshot older than this (or missing) is stale: the header shows `probe stale since <time>` and `/api/board` lists `{ "source": "probe", "error": "probe stale since …" }` under `problems`. The rest of `/api/board` is unchanged |
@@ -612,41 +462,25 @@ Config fields on `state/autopase-board.json`:
 `WATCHTOWER_STATE_DIR` points the board at another folder instead of `state/`
 (tests, a second instance). Unset — `state/` next to the repo, as before.
 
-### Sample output
+## Sample output
 
 ```
 pipeline: http://127.0.0.1:4878
 generated: 2026-08-26T17:36:54.960Z
-summary: cards 3, stuck 1, done 1, failures 7, stale status 0
+summary: cards 3, stuck 1, done 1, failures 7
 cards[3]{id,title,stage,clock,fails,verdict}:
   cmtadl1k48ian,Ship the pipeline view,done,3h 12m (stopped),local 3 ci 1,moving
   cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
   cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
 stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
-stale: 0 — no active card has a stale Status
-help[5]:
+help[4]:
   one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
   stages: spec, grilled, ticketed, development, local_check, ci_pr, done; stuck — three failures in a row, waiting for a human
   clock is the delivery time; done is terminal and does not count — a finished card shows "(stopped)"
-  stale status: an active card (development, local_check, ci_pr) whose Status is missing or older than twice the Watchdog interval
   ?format=json — the same shape as plain JSON
 ```
 
 ## A paragraph for a watchdog agent's instructions
 
-```markdown
-## How to look at Watchtower
-
-The board is read with one command, no browser and no screenshots:
-`<path to the repo>\bin\wt.cmd`
-(`--card <name>` — one window in full, `--full` — the whole board in full,
-`--json` — JSON, `--help` — what the fields mean).
-Read first: the `summary` line and the `asks` section — those are the cards
-waiting for a human (hand-typed ones included); the question itself is in
-`questions` under the `#number` reference. A non-empty `problems` section means
-part of the board is blind (ssh or gh did not answer) and its empty cells cannot
-be trusted. If the command says the board is not running, start it with
-`bin\watchtower.cmd`; if it says the build is older, close that window and start
-the same `bin\watchtower.cmd` again.
-```
+Watchdog instructions: removed 31.08 — git history keeps them.
