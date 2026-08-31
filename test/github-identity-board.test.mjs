@@ -238,6 +238,41 @@ test('a missing token file holds every gh sweep without a single gh call', async
   }
 });
 
+test('a mismatch holds the live GitHub sources themselves — held, visible, and no gh read runs', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-gh-sources-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, 'intruder-account'));
+    board = await startBoard({
+      port: 15054,
+      config: dir => ({
+        // No facts file: the sweep ticks the real GitHub sources, each of
+        // which must ask the gate before its first gh read.
+        source: 'probe', autoDispatch: false, repo: 'acme/web',
+        github: { account: ACCOUNT, tokenFile: path.join(dir, 'github-token.txt') },
+      }),
+      files: { 'github-token.txt': TOKEN },
+      env: () => ({
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await outputUntil(board,
+      /source pull-requests: held: gh api user answers as "intruder-account"/);
+    await outputUntil(board,
+      /source umbrella-units: held: gh api user answers as "intruder-account"/);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const ghCalls = await calls(callsFile);
+    assert.ok(ghCalls.length >= 1, 'the identity was actually checked');
+    assert.ok(ghCalls.every(c => c.args[0] === 'api' && c.args[1] === 'user'),
+      'no pr list / issue list / run list may reach GitHub as an unverified account');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('without a github block the board works as before and says the identity is not pinned', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-gh-unpinned-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
