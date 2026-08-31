@@ -263,7 +263,7 @@ test('a no-review unit gets no reviewer while its ordinary sibling does', async 
 });
 
 test('a launched review journal repairs a missing board badge', async () => {
-  const at = '2026-08-30T10:00:00.000Z';
+  const at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const ledger = {
     dispatched: {
       '1624:review:abc12345': {
@@ -297,7 +297,7 @@ test('a launched review journal repairs a missing board badge', async () => {
 });
 
 test('stale PR facts never restore a review badge from the journal', async () => {
-  const at = '2026-08-30T10:00:00.000Z';
+  const at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const entry = {
     card: 'old', title: 'REVIEW sprint', unit: 'U1', ticket: 1624,
     branch: 'feat/1624', lane: 'mac/lane-7', host: 'mac', base: 'main',
