@@ -139,9 +139,6 @@ const DEFAULTS = {
   lanes: {},
   // The same for CI runners (FLEET.md), keyed by runner name.
   ciSlots: {},
-  // Shared secret the probe sends as Authorization: Bearer. Empty — every
-  // /probe/* path answers 403 until one is set.
-  probeToken: '',
   // Shared secret agents send as Authorization: Bearer on /pipeline/* when
   // founder sign-in is on. Empty — those paths then need a session or
   // localhost instead. Unused while `auth.founders` is empty.
@@ -330,7 +327,6 @@ function applyConfig(raw) {
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
-  config.probeToken = String(config.probeToken ?? '').trim();
   config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.autoDispatch = src.autoDispatch === true;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
@@ -2459,9 +2455,6 @@ function lanesFor(allLanes, branch) {
 // ------------------------------------------------- probe snapshot (source=probe)
 
 const SNAPSHOT_FILE = path.join(STATE_DIR, 'probe-snapshot.json');
-const SNAPSHOT_MAX = 2 * 1024 * 1024;
-
-class PayloadTooLarge extends Error {}
 
 // Last snapshot the probe posted: { receivedAt, snapshot }. Loaded from disk
 // on the first read so a restart still has windows to draw.
@@ -2484,20 +2477,6 @@ async function loadProbeSnapshot() {
     probeSnapshot = null;
   }
   return probeSnapshot;
-}
-
-async function saveProbeSnapshot(body) {
-  const stored = { receivedAt: new Date().toISOString(), snapshot: normalizeSnapshot(body) };
-  const prev = probeSnapshot;
-  probeSnapshot = stored;
-  probeSnapshotLoaded = true;
-  try {
-    await writeJsonAtomic(SNAPSHOT_FILE, stored);
-  } catch (e) {
-    probeSnapshot = prev;
-    throw new Error(`could not save the probe snapshot to disk: ${String(e?.message || e)}`);
-  }
-  return stored;
 }
 
 function asList(v) {
@@ -3253,83 +3232,6 @@ function renderToonCard(c) {
 // the pipeline endpoints answer in the same shape and reject a bad parameter
 // with the same words.
 
-function probeAuthError(req) {
-  const token = String(config.probeToken ?? '').trim();
-  if (!token) return { code: 403, text: 'probe access is not configured' };
-  const hdr = String(req.headers.authorization ?? '').trim();
-  const m = /^Bearer\s+(.+)$/i.exec(hdr);
-  if (!m || m[1].trim() !== token) return { code: 401, text: 'unauthorized' };
-  return null;
-}
-
-// Reading the body without killing the connection. A body with no
-// Content-Length (chunked) is only known to be too large half way through it,
-// and tearing the socket down there left the probe with a reset connection
-// instead of an answer. So the rest is read and thrown away — up to a sane
-// bound — and the request then fails as 413, which the client can actually
-// read.
-const SNAPSHOT_DRAIN_MAX = 16 * 1024 * 1024;
-
-function readSnapshotBytes(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    let over = false;
-    let discarded = 0;
-    const finish = (fn, arg) => {
-      req.off('data', onData);
-      req.off('end', onEnd);
-      req.off('error', onErr);
-      fn(arg);
-    };
-    const onData = (chunk) => {
-      if (over) {
-        discarded += chunk.length;
-        // Past this point the sender is not going to stop on its own; there is
-        // nothing to be gained by reading further.
-        if (discarded > SNAPSHOT_DRAIN_MAX) finish(reject, new PayloadTooLarge('payload too large'));
-        return;
-      }
-      size += chunk.length;
-      if (size > SNAPSHOT_MAX) {
-        over = true;
-        chunks.length = 0;
-        return;
-      }
-      chunks.push(chunk);
-    };
-    const onEnd = () => {
-      if (over) finish(reject, new PayloadTooLarge('payload too large'));
-      else finish(resolve, Buffer.concat(chunks));
-    };
-    const onErr = (e) => finish(reject, e);
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', onErr);
-  });
-}
-
-async function readSnapshotBody(req) {
-  const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > SNAPSHOT_MAX) {
-    throw new PayloadTooLarge('payload too large');
-  }
-  const body = await readSnapshotBytes(req);
-  if (!body.length) throw new BadRequest('malformed snapshot: body is empty');
-  let parsed;
-  try { parsed = JSON.parse(body.toString('utf8')); }
-  catch { throw new BadRequest('malformed snapshot: body cannot be parsed'); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new BadRequest('malformed snapshot: an object was expected');
-  }
-  for (const key of ['windows', 'tabs', 'panes', 'agents']) {
-    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
-      throw new BadRequest(`malformed snapshot: ${key} must be an array`);
-    }
-  }
-  return parsed;
-}
-
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
 // A project name comes from the herdr snapshot: a folder name, so no control
 // characters, no path separators and nothing longer than a folder can be.
@@ -3384,16 +3286,6 @@ const server = http.createServer(async (req, res) => {
     // reached exactly as before.
     if (await handlePipeline(req, res, url, PORT)) return;
 
-    const probeOnly = url.pathname.startsWith('/probe/');
-    if (probeOnly) {
-      const denied = probeAuthError(req);
-      if (denied) return sendText(res, denied.code, denied.text);
-    }
-    if (req.method === 'POST' && url.pathname === '/probe/snapshot') {
-      const body = await readSnapshotBody(req);
-      const stored = await saveProbeSnapshot(body);
-      return send(res, 200, JSON.stringify({ ok: true, receivedAt: stored.receivedAt }));
-    }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -3569,12 +3461,6 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, '{"error":"no such path"}');
   } catch (e) {
-    if (e instanceof PayloadTooLarge) {
-      // The answer goes out first; the connection is closed after it, so the
-      // client reads 413 rather than a reset.
-      if (!res.headersSent) res.setHeader('Connection', 'close');
-      return sendText(res, 413, e.message);
-    }
     if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
   }
