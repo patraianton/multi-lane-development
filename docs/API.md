@@ -238,7 +238,10 @@ run — `development`, `local_check`, `ci_pr`, `qa`. From `spec`,
 `grilled` or `ticketed` it is a 400: nothing has been built yet, and answering it
 would carry the card into `development` around the grill and the tickets. Any stage passed successfully resets `consecutiveFails` to zero, and so
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
-run of three.
+run of three. A judged lane resets the streak only when its proof is real
+progress: a develop PR or a closed qa-run ticket. A judged fix ("the head
+changed") or review ("a verdict exists" — possibly a NO-GO) does not, so a
+review→fix carousel still reaches `stuck` on the third NO-GO in a row.
 
 ### Who sets the stage — the shadow verdict
 

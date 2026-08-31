@@ -355,7 +355,10 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       laneTable,
       ciTable,
       laneCount: inFleet.length,
-      free: inFleet.filter(l => !l.busy && !isBoundToUnmerged(l)).map(name),
+      // A lane the host itself calls reserved (hzlane RESERVED) is not busy,
+      // but it is not capacity either: 25 launches burned on booked lane-3 on
+      // 30.08 because "free" was decided by busy alone.
+      free: inFleet.filter(l => !l.busy && !/reserved/i.test(String(l.state ?? '')) && !isBoundToUnmerged(l)).map(name),
       busyElsewhere: lanes.filter(l => l.busy && !isBound(l)).map(name),
       ciSlots,
       counts: {
