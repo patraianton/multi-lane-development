@@ -21,12 +21,23 @@ test('the ticket body yields the pinned branch; titles yield the unit label', ()
 test('the ticket body yields its dependencies: every "depends on" line, none is nothing', () => {
   assert.deepEqual(parseUnitDeps('**Branch:** `feat/x`\n**Depends on:** #1527 (needs its contract/tables merged first), #1529 (needs its contract/tables merged first)'),
     [1527, 1529]);
+  assert.deepEqual(parseUnitDeps("Depends on: #1687 (needs #1686's tables — #1686 is parked)"),
+    [1687], 'ticket references inside a parenthetical reason are not dependencies');
   assert.deepEqual(parseUnitDeps('**Depends on:** #1523 (contract first)\n\n- **Dependency added:** also depends on #1521 — the tag revalidation hooks the activation built there.'),
     [1521, 1523]);
   assert.deepEqual(parseUnitDeps('**Dependencies added:** also depends on #1516 (readiness) and #1526 (nightly job).'), [1516, 1526]);
   assert.deepEqual(parseUnitDeps('Branch: feat/salon-u02-paid-reader\nDepends on: none'), []);
   assert.deepEqual(parseUnitDeps('Umbrella #1515 — see #1516 for the contract'), [], 'a reference is not a dependency');
   assert.deepEqual(parseUnitDeps(''), []);
+});
+
+test('dependency parsing excludes explanatory dash-tail prose', () => {
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 — reuse the schema from #1520'), [1521]);
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 - reuse the schema from #1520'), [1521]);
+});
+
+test('dependency parsing excludes nested parenthetical reasons', () => {
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 (outer reason (#1520) still cites #1519)'), [1521]);
 });
 
 test('units bind to lanes by branch or TASK file, to PRs by head branch, and the states follow', () => {

@@ -1115,6 +1115,12 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   for (const hold of failureHolds) {
     if (!holds.some(item => item.failureKey && item.failureKey === hold.failureKey)) holds.push(hold);
   }
+  for (const hold of holds) {
+    for (const dependency of hold.stuckDeps ?? []) {
+      await alarmOwner(`stuck-dependency:${hold.ticket}:${dependency}`,
+        `dependency dead end: #${hold.ticket} waits for #${dependency} (stuck)`);
+    }
+  }
   // A unit the planner has a reason to hold is not waiting "with nothing in the
   // way". One rule for every reason at once — light lane, cooling host, qa-run
   // without a browser, a base error, a red main — and the reason stays on the
