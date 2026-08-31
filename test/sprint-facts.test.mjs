@@ -31,6 +31,15 @@ test('the ticket body yields its dependencies: every "depends on" line, none is 
   assert.deepEqual(parseUnitDeps(''), []);
 });
 
+test('dependency parsing excludes explanatory dash-tail prose', () => {
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 — reuse the schema from #1520'), [1521]);
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 - reuse the schema from #1520'), [1521]);
+});
+
+test('dependency parsing excludes nested parenthetical reasons', () => {
+  assert.deepEqual(parseUnitDeps('Depends on: #1521 (outer reason (#1520) still cites #1519)'), [1521]);
+});
+
 test('units bind to lanes by branch or TASK file, to PRs by head branch, and the states follow', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [
