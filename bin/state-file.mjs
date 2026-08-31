@@ -29,7 +29,19 @@ export async function writeJsonAtomic(file, obj) {
     const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
     try {
       await writeFile(tmp, text);
-      await rename(tmp, file);
+      // On Windows a rename over a file someone has open (an indexer, a
+      // backup scan, a concurrent reader) fails transiently with EPERM/EBUSY.
+      // A lost state write is a lost merge outcome or launch record, so the
+      // rename is retried briefly before the error escapes.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await rename(tmp, file);
+          break;
+        } catch (e) {
+          if (attempt >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e?.code)) throw e;
+          await new Promise(resolve => setTimeout(resolve, 40 * attempt));
+        }
+      }
     } catch (e) {
       await rm(tmp, { force: true }).catch(() => {});
       throw e;
