@@ -1346,8 +1346,10 @@ async function mergeSweep(sprints, facts = null) {
   // costs a fresh pr-ci and a fresh review round. One branch per sweep.
   let updatedThisSweep = false;
   for (const group of plannedMergeGroups) {
-    const held = group.items.some(({ unit }) =>
-      (unit.labels ?? []).some(label => String(label).toLowerCase() === 'hold-merge'));
+    const held = (group.pr.labels ?? [])
+      .some(label => String(label?.name ?? label).toLowerCase() === 'hold-merge')
+      || group.items.some(({ unit }) => (unit.labels ?? [])
+        .some(label => String(label?.name ?? label).toLowerCase() === 'hold-merge'));
     if (held) {
       rows.push(mergeTableRow(group, 'hold-merge — the owner merges by hand'));
       continue;

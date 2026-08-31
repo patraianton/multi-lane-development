@@ -36,7 +36,12 @@ test('canMerge reports the first missing merge condition', () => {
     ['draft', { pr: { draft: true } }, 'draft'],
     ['unknown mergeability', { pr: { mergeable: 'UNKNOWN' } }, 'mergeable'],
     ['conflict', { pr: { mergeable: 'CONFLICTING' } }, 'mergeable'],
-    ['hold label', { unit: { labels: ['Hold-Merge'] } }, 'hold-merge'],
+    ['hold label on the ticket', { unit: { labels: ['Hold-Merge'] } }, 'hold-merge'],
+    ['hold label on the PR', { pr: { labels: [{ name: 'Hold-Merge' }] } }, 'hold-merge'],
+    ['hold label on both', {
+      pr: { labels: ['hold-merge'] },
+      unit: { labels: ['hold-merge'] },
+    }, 'hold-merge'],
   ];
 
   for (const [name, overrides, why] of cases) {
@@ -55,6 +60,10 @@ test('canMerge on a no-review unit needs no verdict, and the other gates still h
     ['a NO-GO on the head is a stop order the label never drops',
       { pr: { verdictOnHead: { round: 1, go: false, head: 'abc12345' } }, unit: { labels: ['no-review'] } }, 'NO-GO'],
     ['hold-merge beats no-review', { pr: noVerdict, unit: { labels: ['no-review', 'hold-merge'] } }, 'hold-merge'],
+    ['a PR hold-merge beats the ticket no-review path', {
+      pr: { ...noVerdict, labels: ['hold-merge'] },
+      unit: { labels: ['no-review'] },
+    }, 'hold-merge'],
     ['draft', { pr: { ...noVerdict, draft: true }, unit: { labels: ['no-review'] } }, 'draft'],
     ['red check', { pr: { ...noVerdict, ci: { color: 'red', headSha: HEAD } }, unit: { labels: ['no-review'] } }, 'check green'],
     ['check on an old head', { pr: { ...noVerdict, ci: { color: 'green', headSha: 'def12345abcdef0123456789abcdef0123456789' } }, unit: { labels: ['no-review'] } }, 'check head'],
