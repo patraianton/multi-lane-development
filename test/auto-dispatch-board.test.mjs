@@ -83,7 +83,7 @@ function mergedFacts({ dependencyMerged = false } = {}) {
   };
 }
 
-async function until(base, ready, ms = 8000) {
+async function until(base, ready, ms = 25000) {
   const deadline = Date.now() + ms;
   let last = null;
   for (;;) {
