@@ -82,15 +82,6 @@ async function calls(file) {
   }
 }
 
-async function outputUntil(board, pattern, ms = 8000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (pattern.test(board.output())) return board.output();
-    if (Date.now() > deadline) throw new Error(`board output did not match ${pattern}:\n${board.output()}`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
 function redMainFacts() {
   return {
     ...facts(),
@@ -119,7 +110,6 @@ test('a red main alarm names the first failed jobs', async () => {
       '}',
     ].join('\n'));
     board = await startBoard({
-      port: 15029,
       config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': redMainFacts() },
       env: dir => ({
@@ -128,7 +118,8 @@ test('a red main alarm names the first failed jobs', async () => {
         WATCHTOWER_GH: fakeGh,
       }),
     });
-    const output = await outputUntil(board, /ALARM main is red.*listing-photos-ui, listing-questionnaire-i18n/);
+    await until(() => /ALARM main is red.*listing-photos-ui, listing-questionnaire-i18n/.test(board.output()));
+    const output = board.output();
     assert.doesNotMatch(output, /photos render|translations render/, 'job names take priority over their failed steps');
   } finally {
     if (board) await board.stop();
@@ -142,7 +133,6 @@ test('a failed red-main details lookup still fires the original alarm', async ()
   try {
     const fakeGh = await executable(toolsDir, 'gh', '#!/usr/bin/env node\nprocess.exit(1);\n');
     board = await startBoard({
-      port: 15036,
       config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': redMainFacts() },
       env: dir => ({
@@ -152,7 +142,8 @@ test('a failed red-main details lookup still fires the original alarm', async ()
       }),
     });
     const original = 'main is red since 2026-08-30T12:00:00.000Z (https://github.com/acme/web/actions/runs/987) — the board holds every lane task based on main';
-    const output = await outputUntil(board, /ALARM main is red since 2026-08-30T12:00:00\.000Z \(https:\/\/github\.com\/acme\/web\/actions\/runs\/987\) — the board holds every lane task based on main/);
+    await until(() => /ALARM main is red since 2026-08-30T12:00:00\.000Z \(https:\/\/github\.com\/acme\/web\/actions\/runs\/987\) — the board holds every lane task based on main/.test(board.output()));
+    const output = board.output();
     assert.match(output, new RegExp(original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.doesNotMatch(output, /failing:/);
   } finally {
