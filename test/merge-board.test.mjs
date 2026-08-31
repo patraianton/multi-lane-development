@@ -650,7 +650,7 @@ test('a shared PR merges without a verdict once every sibling carries no-review'
   }
 });
 
-test('a merge refused as out of date updates the branch, at most once a sweep', async () => {
+test('a merge refused as out of date updates the branch once and closes the dead head\'s budget', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-behind-main-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
@@ -679,36 +679,74 @@ test('a merge refused as out of date updates the branch, at most once a sweep', 
     });
     await createTicketed(board);
 
+    // Issue #16: the successful update replaces the head, so the old head's
+    // budget closes at once — superseded, attempts spent, no further tries.
     const journalFile = path.join(board.dir, 'auto-dispatch.json');
-    const journal = await journalUntil(journalFile,
-      value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merge-failed');
-    assert.equal(journal.dispatched['1624:merge:abc12345'].error,
-      'Pull request is not mergeable: Branch is not up to date with the base branch');
-
-    // The transient row lives for one sweep, so every poll collects what it saw.
-    const states = new Set();
-    const deadline = Date.now() + 8000;
-    for (;;) {
-      const body = (await getJson(board.base, '/api/pipeline?format=json')).body;
-      for (const row of body.autoDispatch ?? []) if (row.kind === 'merge') states.add(row.state);
-      if (states.has('behind main — branch updated')) break;
-      if (Date.now() > deadline) throw new Error(`no behind-main row in ${[...states].join(' | ')}`);
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
+    const journal = await journalUntil(journalFile, value => {
+      const entry = value?.dispatched?.['1624:merge:abc12345'];
+      return entry?.result === 'merge-failed' && /^superseded/.test(entry?.error ?? '');
+    });
+    assert.equal(journal.dispatched['1624:merge:abc12345'].attempts, 3,
+      'the dead head cannot burn the remaining attempts');
 
     assert.match(board.output(), /merge: PR #1632 failed at abc12345 — Pull request is not mergeable/);
     assert.match(board.output(), /merge: PR #1632 is behind main — branch updated/);
 
-    await journalUntil(journalFile, value => value?.dispatched?.['1624:merge:abc12345']?.attempts === 3);
     await new Promise(resolve => setTimeout(resolve, 900));
     const ghCalls = await calls(callsFile);
     const updates = ghCalls.filter(args => args[1] === 'update-branch');
-    assert.deepEqual(updates, Array(3).fill(['pr', 'update-branch', '1632', '--repo', 'acme/web']),
-      'one update a sweep, and the attempts cap ends them — never one update per sweep forever');
-    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 3, 'the attempts cap still holds');
+    assert.deepEqual(updates, [['pr', 'update-branch', '1632', '--repo', 'acme/web']],
+      'one update total — the superseded head never asks again');
+    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 1,
+      'no second merge attempt lands on a head that no longer exists');
+    assert.doesNotMatch(board.output(), /gave up merging PR #1632/,
+      'a superseded budget is not a gave-up alarm');
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a stale merging entry is re-judged from GitHub facts: merged PR → merged, open PR → merge-failed', async () => {
+  const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const freshAt = new Date(Date.now() - 60 * 1000).toISOString();
+  const entry = (pr, head, at, attempts) => ({
+    card: 'cm', title: 'MERGE sprint', unit: 'U1', ticket: 1624, branch: 'feat/1624',
+    lane: null, host: null, base: head.slice(0, 8), kind: 'merge', round: null,
+    head, pr, at, result: 'merging', error: null, attempts,
+  });
+  const rejudgeFacts = facts();
+  rejudgeFacts.prs = [{ ...rejudgeFacts.prs[0], number: 1633, headSha: OTHER }];
+  rejudgeFacts.mergedPrs = [{ number: 1632, branch: 'feat/1624', headSha: HEAD }];
+  const board = await startBoard({
+    port: 15030,
+    config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: {
+      'sprint-facts.json': rejudgeFacts,
+      'auto-dispatch.json': { dispatched: {
+        '1624:merge:abc12345': entry(1632, HEAD, staleAt, 3),
+        '1625:merge:def12345': entry(1633, OTHER, staleAt, 1),
+        '1626:merge:aaa12345': entry(1634, HEAD, freshAt, 1),
+      } },
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '200',
+    }),
+  });
+  try {
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    const journal = await journalUntil(journalFile, value =>
+      value?.dispatched?.['1624:merge:abc12345']?.result === 'merged'
+      && value?.dispatched?.['1625:merge:def12345']?.result === 'merge-failed');
+    assert.equal(journal.dispatched['1625:merge:def12345'].error,
+      'no outcome recorded — re-judged from GitHub facts');
+    assert.equal(journal.dispatched['1625:merge:def12345'].attempts, 1,
+      'the attempt was already counted — re-judging adds none');
+    assert.equal(journal.dispatched['1626:merge:aaa12345'].result, 'merging',
+      'a young merging entry may still be a live gh call — left alone');
+  } finally {
+    await board.stop();
   }
 });
 
@@ -827,12 +865,16 @@ test('a merge step that cannot write its journal says so and the sweep goes on',
     await createTicketed(board);
     const deadline = Date.now() + 8000;
     for (;;) {
-      if ((board.output().match(/merge: sweep failed/g) ?? []).length >= 2) break;
-      if (Date.now() > deadline) throw new Error(`the failed sweep was not logged twice:\n${board.output()}`);
+      // The per-group catch (#14) records the failure as this PR's own line
+      // and the sweep carries on to the next group and the next tick.
+      if ((board.output().match(/merge: PR #1632 failed at abc12345 — no outcome recorded — /g) ?? []).length >= 2) break;
+      if (Date.now() > deadline) throw new Error(`the failed group was not logged twice:\n${board.output()}`);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+    assert.doesNotMatch(board.output(), /merge: sweep failed/,
+      'the exception is contained at the group, not the sweep');
     assert.doesNotMatch(board.output(), /source sprint-units:/,
-      'the merge step is caught at its call site — the rest of the tick is not lost with it');
+      'the merge step is caught — the rest of the tick is not lost with it');
   } finally {
     if (board) await board.stop();
   }

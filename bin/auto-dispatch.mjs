@@ -957,7 +957,10 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
   const seen = new Set(pairs.map(p => dispatchKey(p)));
   const entries = Object.entries(ledger?.dispatched ?? {})
     .filter(([, e]) => e && (
-      (e.kind === 'merge' && e.result === 'merge-failed' && Number(e.attempts) >= 3)
+      // A superseded budget is bookkeeping for a head the board replaced
+      // itself — it shows for a day like any entry, never forever.
+      (e.kind === 'merge' && e.result === 'merge-failed' && Number(e.attempts) >= 3
+        && !String(e.error ?? '').startsWith('superseded'))
       || now - (Date.parse(e.at ?? '') || 0) <= recentMs
     ))
     .sort(([, a], [, b]) => String(b.at).localeCompare(String(a.at)));

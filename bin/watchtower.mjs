@@ -546,7 +546,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   await offBoardSweep(facts);
   // The try/finally below covers only the dispatch step: without this, an
   // exception in the merge step also cancels this tick's dispatch and idle sweeps.
-  const mergeRows = await mergeSweep(sprints).catch(e => {
+  const mergeRows = await mergeSweep(sprints, facts).catch(e => {
     console.log(`merge: sweep failed — ${String(e?.message || e)}`);
     return [];
   });
@@ -1064,9 +1064,16 @@ function mergeEntry(item, group, { at, result, error = null, attempts }) {
   };
 }
 
+// A merge refusal that only proves the snapshot's head is gone (the board's
+// own update-branch, or a fixer pushing mid-merge). Its entries close the old
+// head's budget so later sweeps neither retry nor alarm on a dead head (#16).
+const SUPERSEDED = 'superseded — branch updated, a new head follows';
+const HEAD_MOVED = /head branch was modified/i;
+const MERGING_STALE_MS = 5 * 60 * 1000;
+
 // A single writer owns both launch and merge journal entries. This runs before
 // dispatch planning so the next journal read includes the result of the merge.
-async function mergeSweep(sprints) {
+async function mergeSweep(sprints, facts = null) {
   const at = new Date().toISOString();
   const repo = config.repo;
   const rows = [];
@@ -1074,6 +1081,39 @@ async function mergeSweep(sprints) {
   if (!repo) return rows;
 
   let ledger = await readJsonSoft(DISPATCH_JSON, { dispatched: {} });
+
+  // Issue #14: a crash between 'merging' and its outcome — or a PR merged by
+  // hand while the board sat on it — must never leave 'merging' in the journal
+  // forever (PR #1733 sat there 45 minutes on 30.08). Re-judge stale entries
+  // from the GitHub facts already in hand; the attempt was counted, so
+  // attempts stay.
+  if (facts && !(facts.staleSources ?? []).length) {
+    const nowMs = Date.parse(at);
+    const mergedNumbers = new Set((facts.mergedPrs ?? []).map(pr => Number(pr?.number)));
+    const openNumbers = new Set((facts.prs ?? []).map(pr => Number(pr?.number)));
+    let rejudged = false;
+    const dispatched = { ...(ledger.dispatched ?? {}) };
+    for (const [key, entry] of Object.entries(dispatched)) {
+      const kind = entry?.kind ?? String(key).split(':')[1];
+      if (kind !== 'merge' || entry?.result !== 'merging') continue;
+      if (!(nowMs - (Date.parse(entry.at ?? '') || 0) > MERGING_STALE_MS)) continue;
+      const number = Number(entry.pr);
+      if (mergedNumbers.has(number)) {
+        dispatched[key] = { ...entry, result: 'merged', error: null };
+      } else if (openNumbers.has(number)) {
+        dispatched[key] = { ...entry, result: 'merge-failed', error: 'no outcome recorded — re-judged from GitHub facts' };
+      } else {
+        continue; // neither open nor merged in the snapshot — leave it for fresher facts
+      }
+      console.log(`merge: stale 'merging' entry ${key} re-judged ${dispatched[key].result}`);
+      rejudged = true;
+    }
+    if (rejudged) {
+      ledger = { ...ledger, dispatched };
+      await writeJsonAtomic(DISPATCH_JSON, ledger);
+    }
+  }
+
   const cards = await listPipelineCards();
   const plannedMergeGroups = mergeGroups(sprints, cards);
   // Every merge that lands makes every other ready PR behind, and each update
@@ -1108,8 +1148,13 @@ async function mergeSweep(sprints) {
       // The switch silences it too: a board that merges nothing gives up nothing.
       if (config.autoDispatch) {
         const last = previous.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
-        await alarmOwner(`merge-gaveup:${group.pr.number}:${String(group.pr.headSha).slice(0, 8)}`,
-          `the board gave up merging PR #${group.pr.number} after ${MERGE_ATTEMPTS} attempts: ${last?.error ?? 'no reason recorded'}`);
+        // A superseded budget is the board's own bookkeeping for a head it
+        // replaced itself — the new head merges on its own budget, nothing
+        // was given up (#16).
+        if (!String(last?.error ?? '').startsWith('superseded')) {
+          await alarmOwner(`merge-gaveup:${group.pr.number}:${String(group.pr.headSha).slice(0, 8)}`,
+            `the board gave up merging PR #${group.pr.number} after ${MERGE_ATTEMPTS} attempts: ${last?.error ?? 'no reason recorded'}`);
+        }
       }
       continue;
     }
@@ -1122,17 +1167,18 @@ async function mergeSweep(sprints) {
     }
 
     const nextAttempt = attempts + 1;
-    const writeResult = async (result, error = null) => {
+    const writeResult = async (result, error = null, attemptsOverride = null) => {
       const dispatched = { ...(ledger.dispatched ?? {}) };
       for (let i = 0; i < group.items.length; i++) {
         dispatched[keys[i]] = mergeEntry(group.items[i], group, {
-          at, result, error, attempts: nextAttempt,
+          at, result, error, attempts: attemptsOverride ?? nextAttempt,
         });
       }
       ledger = { ...ledger, dispatched };
       await writeJsonAtomic(DISPATCH_JSON, ledger);
     };
 
+    try {
     await writeResult('merging');
     const fixed = bodyFix(group.pr.body);
     // A PR body runs to tens of thousands of characters; on a command line that
@@ -1154,6 +1200,9 @@ async function mergeSweep(sprints) {
     if (outcome.code === 0) {
       await writeResult('merged');
       console.log(`merge: PR #${group.pr.number} squash-merged at ${group.pr.headSha}`);
+      // Every merge that lands makes every other ready PR behind: re-read the
+      // PR list on the next tick instead of burning attempts on stale heads.
+      prSource.at = 0;
     } else {
       const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
       await writeResult('merge-failed', why);
@@ -1167,12 +1216,31 @@ async function mergeSweep(sprints) {
         console.log(`merge: PR #${group.pr.number} is behind main — ${upd.code === 0
           ? 'branch updated; the check and the review run again'
           : 'update-branch failed: ' + (upd.stderr || upd.out)}`);
+        if (upd.code === 0) {
+          // Issue #16: the head the board just replaced no longer exists.
+          // Close its budget so the sweeps until the snapshot refreshes
+          // neither retry nor raise the gave-up alarm on a dead head.
+          await writeResult('merge-failed', SUPERSEDED, MERGE_ATTEMPTS);
+          prSource.at = 0;
+        }
         // The table says what happened, not what was tried: an update the board
         // could not make must never read there as a repaired branch.
         rows.push(mergeTableRow(group, upd.code === 0
           ? 'behind main — branch updated'
           : 'behind main — update-branch failed'));
+      } else if (HEAD_MOVED.test(why)) {
+        // "Head branch was modified": the PR's true head is already newer
+        // than this snapshot's — same dead head, no update-branch needed.
+        await writeResult('merge-failed', 'superseded — the PR head moved past this snapshot', MERGE_ATTEMPTS);
+        prSource.at = 0;
       }
+    }
+    } catch (e) {
+      // Issue #14: an exception between 'merging' and its outcome must leave a
+      // recorded outcome, never a silent 'merging' the journal keeps forever.
+      const why = `no outcome recorded — ${String(e?.message || e)}`;
+      await writeResult('merge-failed', why).catch(() => {});
+      console.log(`merge: PR #${group.pr.number} failed at ${String(group.pr.headSha).slice(0, 8)} — ${why}`);
     }
   }
   return rows;
