@@ -84,7 +84,9 @@ export function canMerge({ pr, unit } = {}) {
   }
   if (pr?.draft) return { ok: false, why: 'draft' };
   if (pr?.mergeable !== 'MERGEABLE') return { ok: false, why: 'mergeable' };
-  if (labelsOf(unit).includes('hold-merge')) return { ok: false, why: 'hold-merge' };
+  if (labelsOf(unit).includes('hold-merge') || labelsOf(pr).includes('hold-merge')) {
+    return { ok: false, why: 'hold-merge' };
+  }
   return { ok: true, why: '' };
 }
 

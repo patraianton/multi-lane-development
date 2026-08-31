@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { startBoard, postJson, getJson } from './helpers.mjs';
 
 test('ticketed sits between grilled and development; the ticket link gates the way out', async () => {
-  const board = await startBoard({ port: 14991, config: { source: 'probe' } });
+  const board = await startBoard({ config: { source: 'probe' } });
   try {
     // The stage list the page draws: ticketed right after grilled.
     const data = await getJson(board.base, '/pipeline/data');
@@ -94,7 +94,6 @@ test('a state file from before the ticketed stage keeps loading and keeps moving
     }],
   };
   const board = await startBoard({
-    port: 14992,
     config: { source: 'probe' },
     files: { 'pipeline-cards.json': old },
   });

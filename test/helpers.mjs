@@ -3,12 +3,13 @@
 // the live board (4878) is never touched.
 
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const WAIT_TIMEOUT_MS = 30_000;
 
 // Test command fakes are JavaScript so they work on every board host. Windows
 // needs a PATHEXT-visible wrapper; elsewhere the Node shebang is executable.
@@ -36,11 +37,11 @@ export async function executable(dir, name, text) {
   return file;
 }
 
-// Start `node bin/watchtower.mjs` on the given port with a fresh state
+// Start `node bin/watchtower.mjs` on an OS-assigned port with a fresh state
 // directory. `config` becomes state/autopase-board.json — pass a function to
 // receive the directory path when needed. Extra `files` land in the same
-// directory.
-export async function startBoard({ port, config = {}, files = {}, env = {} }) {
+// directory. A non-zero port remains available for focused helper debugging.
+export async function startBoard({ port = 0, config = {}, files = {}, env = {} }) {
   const dir = await mkdtemp(path.join(tmpdir(), 'watchtower-test-'));
   for (const [name, content] of Object.entries(files)) {
     await writeFile(path.join(dir, name),
@@ -59,24 +60,31 @@ export async function startBoard({ port, config = {}, files = {}, env = {} }) {
   let output = '';
   child.stdout.on('data', d => { output += d; });
   child.stderr.on('data', d => { output += d; });
-  const base = `http://127.0.0.1:${port}`;
+  let realPort = 0;
+  let base = '';
   const deadline = Date.now() + 15000;
   for (;;) {
     if (child.exitCode !== null) {
       throw new Error(`the board exited before listening (code ${child.exitCode}):\n${output}`);
     }
-    try {
-      const res = await fetch(`${base}/pipeline/data`);
-      if (res.ok) break;
-    } catch { /* not listening yet */ }
+    const match = output.match(/Watchtower: http:\/\/127\.0\.0\.1:(\d+)/);
+    if (match) {
+      realPort = Number(match[1]);
+      base = `http://127.0.0.1:${realPort}`;
+      try {
+        const res = await fetch(`${base}/pipeline/data`);
+        if (res.ok) break;
+      } catch { /* startup line can arrive just before the socket accepts */ }
+    }
     if (Date.now() > deadline) {
       child.kill();
-      throw new Error(`the board did not start listening on ${port} in 15s:\n${output}`);
+      throw new Error(`the board did not start listening in 15s:\n${output}`);
     }
     await new Promise(r => setTimeout(r, 100));
   }
   return {
     base,
+    port: realPort,
     dir,
     output: () => output,
     async stop() {
@@ -88,6 +96,36 @@ export async function startBoard({ port, config = {}, files = {}, env = {} }) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     },
   };
+}
+
+// Poll either a board endpoint or an async condition. Every suite uses the
+// same generous failure deadline; successful conditions still return as soon
+// as they are ready.
+export async function until(baseOrCheck, ready, { pathName = '/api/pipeline?format=json' } = {}) {
+  const check = typeof baseOrCheck === 'function'
+    ? baseOrCheck
+    : async () => {
+        const body = (await getJson(baseOrCheck, pathName)).body;
+        return ready(body) ? body : null;
+      };
+  const deadline = Date.now() + WAIT_TIMEOUT_MS;
+  let last = null;
+  for (;;) {
+    last = await check();
+    if (last) return last;
+    if (Date.now() > deadline) {
+      throw new Error(`condition was not met in ${WAIT_TIMEOUT_MS}ms: ${JSON.stringify(last)}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+export async function journalUntil(file, ready) {
+  return until(async () => {
+    let value = null;
+    try { value = JSON.parse(await readFile(file, 'utf8')); } catch { /* not written yet */ }
+    return value !== null && ready(value) ? value : null;
+  });
 }
 
 export async function postJson(base, pathName, body) {
