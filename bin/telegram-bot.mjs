@@ -226,6 +226,7 @@ async function tg(cfg, method, payload, { abortMs = 20_000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), abortMs);
   let response;
+  let data;
   try {
     response = await fetch(url, {
       method: 'POST',
@@ -233,20 +234,17 @@ async function tg(cfg, method, payload, { abortMs = 20_000 } = {}) {
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    data = await response.json();
   } catch (error) {
     if (error?.name === 'AbortError') {
       throw new Error(`telegram ${method} timed out after ${abortMs}ms`);
     }
+    if (response) {
+      throw new Error(`telegram ${method}: answer is not JSON (HTTP ${response.status})`);
+    }
     throw new Error(`telegram ${method} failed: ${error.message}`);
   } finally {
     clearTimeout(timer);
-  }
-
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(`telegram ${method}: answer is not JSON (HTTP ${response.status})`);
   }
   if (!data.ok) {
     throw new Error(`telegram ${method} failed: ${data.description || `HTTP ${response.status}`}`);

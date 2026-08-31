@@ -59,6 +59,8 @@
   header .num { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
   header .num b { color: var(--ink); }
   header .flag { color: var(--blocked); font-family: var(--mono); font-size: 12px; }
+  header .swept { color: var(--ink-dim); font-family: var(--mono); font-size: 11px; }
+  header .swept.stale { color: var(--blocked); }
   header .spacer { margin-left: auto; }
 
   .hbtn {
@@ -783,6 +785,7 @@
   <h1>Watchtower <span class="proj" id="project"></span></h1>
   <div class="num" id="pipe-counts"></div>
   <div class="flag" id="board-warn" hidden></div>
+  <div class="swept" id="swept">swept never</div>
   <span class="spacer"></span>
   <button class="hbtn plus" id="pipe-add-toggle" title="add a pipeline card">+ Card</button>
   <button class="hbtn gear" id="settings-toggle" title="settings: the project whose windows feed the facts">⚙</button>
@@ -1863,6 +1866,9 @@ function renderPipeline(d) {
   const moving = cards.filter(c => !['stuck', 'done'].includes(c.stage)).length;
   const ob = d.offBoard && typeof d.offBoard === 'object' ? d.offBoard : {};
   const obList = Array.isArray(ob.findings) ? ob.findings : [];
+  const swept = d.swept && typeof d.swept === 'object' ? d.swept : { age: '-', stuck: false };
+  $('swept').textContent = 'swept ' + swept.age + ' ago';
+  $('swept').classList.toggle('stale', swept.stuck === true);
   $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
     + stuck.length + '</b> stuck · <b>'
     + cards.filter(c => c.stage === 'done').length + '</b> done'

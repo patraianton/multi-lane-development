@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { executable, getJson, postJson, startBoard, until } from './helpers.mjs';
+import { sweepStuck } from '../bin/pipeline.mjs';
 
 const TICKETED_UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const MERGED_UMBRELLA = 'https://github.com/acme/web/issues/2600';
@@ -30,6 +31,14 @@ const FLEET = {
     'lane-6': { host: 'mac', n: 6 },
   },
 };
+
+test('the stuck check requires a busy source with a real old start time', () => {
+  const now = 10_000;
+  const stuckMs = 5_000;
+  assert.equal(sweepStuck({ busy: true, startedAt: 4_000 }, now, stuckMs), true);
+  assert.equal(sweepStuck({ busy: true, startedAt: 0 }, now, stuckMs), false);
+  assert.equal(sweepStuck({ busy: false, startedAt: 4_000 }, now, stuckMs), false);
+});
 
 const TICKETED_FACTS = {
   lanes: [
@@ -125,6 +134,62 @@ async function createTicketed(board, { title, umbrella }) {
   assert.equal((await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' })).status, 200);
   return id;
 }
+
+test('a hung sweep leaves the API alive, ages the heartbeat, and alarms once', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-hung-sweep-tools-'));
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', '#!/usr/bin/env node\nsetTimeout(() => {}, 15000);\n');
+    const facts = {
+      ...TICKETED_FACTS,
+      lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
+      unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
+    };
+    board = await startBoard({
+      config: {
+        source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
+      },
+      files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+
+    const before = await until(board.base, body => body.swept?.at ? body : null);
+    await createTicketed(board, { title: 'HUNG-SWEEP sprint', umbrella: TICKETED_UMBRELLA });
+    try {
+      await until(() => /ALARM the board's sweep has not finished for \d+ min/.test(board.output()));
+    } catch (error) {
+      throw new Error(`${error.message}\nboard output:\n${board.output()}`);
+    }
+
+    const first = await until(board.base, body => body.swept?.stuck ? body : null);
+    assert.ok(Date.parse(first.swept.at) >= Date.parse(before.swept.at));
+    assert.equal(first.swept.stuck, true);
+    assert.ok(first.swept.ageMs >= 20 * 200, 'the completed-sweep age keeps growing');
+    const page = (await getJson(board.base, '/pipeline/data')).body;
+    assert.equal(page.swept.at, first.swept.at, 'the page and agent API use the same heartbeat');
+    assert.ok(Math.abs(page.swept.ageMs - first.swept.ageMs) < 1000);
+    const text = await (await fetch(board.base + '/api/pipeline')).text();
+    assert.match(text, /^swept: .* \(age /m);
+    const html = await (await fetch(board.base + '/')).text();
+    assert.match(html, /classList\.toggle\('stale', swept\.stuck === true\)/,
+      'the header turns the shared heartbeat red at the stuck threshold');
+
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const later = (await getJson(board.base, '/api/pipeline?format=json')).body;
+    assert.equal(later.swept.at, first.swept.at, 'a hung sweep cannot refresh the completed-sweep heartbeat');
+    assert.ok(later.swept.ageMs > first.swept.ageMs, 'the heartbeat age grows while the API keeps answering');
+    assert.equal((board.output().match(/ALARM the board's sweep has not finished/g) ?? []).length, 1,
+      'one stuck episode produces one alarm even though every timer sees it');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
 
 test('off by default: a ticketed sprint only plans its first units', async () => {
   const board = await startBoard({
