@@ -895,7 +895,7 @@ test('an argument the OS refuses is a failed merge, not an exception through the
   }
 });
 
-test('a merge step that cannot write its journal says so and the sweep goes on', async () => {
+test('a journal that cannot be read at all holds the merge step, alarms, and the tick goes on', async () => {
   let board;
   try {
     board = await startBoard({
@@ -908,24 +908,69 @@ test('a merge step that cannot write its journal says so and the sweep goes on',
         WATCHTOWER_GH: process.execPath,
       }),
     });
-    // A journal that cannot be written at all: the merge step throws where the
-    // 30.08 exception did, before any outcome could be recorded.
+    // A journal that cannot be read or written at all (here: it is a
+    // directory). Fail closed: no merge may run blind on a forgotten journal.
     await mkdir(path.join(board.dir, 'auto-dispatch.json'), { recursive: true });
     await createTicketed(board);
     const deadline = Date.now() + 8000;
     for (;;) {
-      // The per-group catch (#14) records the failure as this PR's own line
-      // and the sweep carries on to the next group and the next tick.
-      if ((board.output().match(/merge: PR #1632 failed at abc12345 — no outcome recorded — /g) ?? []).length >= 2) break;
-      if (Date.now() > deadline) throw new Error(`the failed group was not logged twice:\n${board.output()}`);
+      if (/ALARM state\/auto-dispatch\.json exists but cannot be parsed/.test(board.output())) break;
+      if (Date.now() > deadline) throw new Error(`no corrupt-journal alarm:\n${board.output()}`);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.doesNotMatch(board.output(), /merge: PR #1632/,
+      'the merge step holds while the journal is unreadable');
     assert.doesNotMatch(board.output(), /merge: sweep failed/,
-      'the exception is contained at the group, not the sweep');
+      'a held merge step is not a crashed sweep');
     assert.doesNotMatch(board.output(), /source sprint-units:/,
-      'the merge step is caught — the rest of the tick is not lost with it');
+      'the rest of the tick is not lost with it');
   } finally {
     if (board) await board.stop();
+  }
+});
+
+test('a journal that exists but cannot be parsed holds dispatch and merges and alarms the owner', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-corrupt-journal-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    board = await startBoard({
+      port: 15032,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: {
+        'sprint-facts.json': facts(),
+        // One typo in a hand edit must not read as an empty journal: an empty
+        // journal would forget every guard and merge this PR a second time.
+        'auto-dispatch.json': '{ "dispatched": { broken',
+      },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      if (/ALARM state\/auto-dispatch\.json exists but cannot be parsed/.test(board.output())) break;
+      if (Date.now() > deadline) throw new Error(`no corrupt-journal alarm:\n${board.output()}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const ghCalls = await calls(callsFile);
+    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 0,
+      'no merge may run on a journal the board cannot read');
+    const raw = await readFile(path.join(board.dir, 'auto-dispatch.json'), 'utf8');
+    assert.equal(raw, '{ "dispatched": { broken', 'the broken file is left for the owner to repair');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
   }
 });
 

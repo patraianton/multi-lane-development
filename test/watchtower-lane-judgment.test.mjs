@@ -277,6 +277,49 @@ test('a judged-ok fix (the head changed) does not clear the failure streak', asy
   }
 });
 
+test('journal entries whose PR is merged are pruned after a day of grace', async () => {
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const prunedFacts = {
+    ...FACTS,
+    mergedPrs: [{ number: 900, branch: 'feat/done', headSha: 'aaaa111100000000000000000000000000000000' }],
+  };
+  const board = await startBoard({
+    port: 15033,
+    config: { source: 'probe' },
+    files: {
+      'sprint-facts.json': prunedFacts,
+      'auto-dispatch.json': { dispatched: {
+        '1500:review:aaaa1111': {
+          ticket: 1500, kind: 'review', round: 1, branch: 'feat/done', head: 'aaaa111100000000000000000000000000000000',
+          lane: 'alpha/lane-1', host: 'alpha', result: 'launched', judged: 'ok', judgedAt: twoDaysAgo, at: twoDaysAgo,
+        },
+        '1500:merge:aaaa1111': {
+          ticket: 1500, kind: 'merge', pr: 900, branch: 'feat/done', head: 'aaaa111100000000000000000000000000000000',
+          result: 'merged', at: twoDaysAgo, attempts: 1,
+        },
+        '1516:develop:1': {
+          ticket: 1516, kind: 'develop', round: 1, branch: 'feat/1516', lane: 'alpha/lane-1', host: 'alpha',
+          result: 'launched', judged: 'ok', judgedAt: twoDaysAgo, at: twoDaysAgo,
+        },
+      } },
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '250',
+    }),
+  });
+  try {
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    const journal = await journalUntil(journalFile, value =>
+      value?.dispatched && !value.dispatched['1500:review:aaaa1111'] && !value.dispatched['1500:merge:aaaa1111']);
+    assert.deepEqual(Object.keys(journal.dispatched), ['1516:develop:1'],
+      'develop history keeps its own 7-day window; served review/merge entries go');
+    assert.match(board.output(), /journal: pruned 2 entries whose PR is merged/);
+  } finally {
+    await board.stop();
+  }
+});
+
 test('a proved lane clears only the failure streak that predates its free observation', async () => {
   const heldFacts = {
     ...FACTS,
