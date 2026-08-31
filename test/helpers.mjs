@@ -4,26 +4,12 @@
 
 import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const WAIT_TIMEOUT_MS = 30_000;
-
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  if (!port) throw new Error('the OS did not assign a test port');
-  return port;
-}
 
 // Test command fakes are JavaScript so they work on every board host. Windows
 // needs a PATHEXT-visible wrapper; elsewhere the Node shebang is executable.
@@ -67,27 +53,32 @@ export async function startBoard({ port = 0, config = {}, files = {}, env = {} }
   // `env` adds process environment for the board (a function receives the
   // state directory, for variables that must point into it).
   const extraEnv = typeof env === 'function' ? env(dir) : env;
-  const realPort = port || await availablePort();
   const child = spawn(process.execPath, [path.join(ROOT, 'bin', 'watchtower.mjs')], {
-    env: { ...process.env, ...extraEnv, WATCHTOWER_PORT: String(realPort), WATCHTOWER_STATE_DIR: dir },
+    env: { ...process.env, ...extraEnv, WATCHTOWER_PORT: String(port), WATCHTOWER_STATE_DIR: dir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
   child.stdout.on('data', d => { output += d; });
   child.stderr.on('data', d => { output += d; });
-  const base = `http://127.0.0.1:${realPort}`;
+  let realPort = 0;
+  let base = '';
   const deadline = Date.now() + 15000;
   for (;;) {
     if (child.exitCode !== null) {
       throw new Error(`the board exited before listening (code ${child.exitCode}):\n${output}`);
     }
-    try {
-      const res = await fetch(`${base}/pipeline/data`);
-      if (res.ok) break;
-    } catch { /* not listening yet */ }
+    const match = output.match(/Watchtower: http:\/\/127\.0\.0\.1:(\d+)/);
+    if (match) {
+      realPort = Number(match[1]);
+      base = `http://127.0.0.1:${realPort}`;
+      try {
+        const res = await fetch(`${base}/pipeline/data`);
+        if (res.ok) break;
+      } catch { /* startup line can arrive just before the socket accepts */ }
+    }
     if (Date.now() > deadline) {
       child.kill();
-      throw new Error(`the board did not start listening on ${realPort} in 15s:\n${output}`);
+      throw new Error(`the board did not start listening in 15s:\n${output}`);
     }
     await new Promise(r => setTimeout(r, 100));
   }

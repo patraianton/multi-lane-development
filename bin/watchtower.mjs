@@ -3378,7 +3378,7 @@ server.on('error', (e) => {
   throw e;
 });
 server.listen(PORT, '127.0.0.1', () => {
-  const url = `http://127.0.0.1:${PORT}`;
+  const url = `http://127.0.0.1:${server.address().port}`;
   console.log(`Watchtower: ${url}`);
   if (process.argv.includes('--open')) {
     execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});
