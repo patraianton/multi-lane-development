@@ -37,7 +37,8 @@ export function parseUnitDeps(body) {
   const out = new Set();
   for (const line of String(body ?? '').split(/\r?\n/)) {
     if (!/\bdepends?\s+on\b/i.test(line)) continue;
-    for (const m of line.matchAll(/#(\d{3,5})\b/g)) out.add(Number(m[1]));
+    const list = line.replace(/\([^)]*\)/g, '');
+    for (const m of list.matchAll(/#(\d{3,5})\b/g)) out.add(Number(m[1]));
   }
   return [...out].sort((a, b) => a - b);
 }

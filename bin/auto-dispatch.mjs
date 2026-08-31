@@ -524,6 +524,24 @@ function unitCardFor(cards, cardId, ticket) {
     && Number(candidate.ticket) === Number(ticket));
 }
 
+// The dependency rules mirror idle-lanes.startable, but retain the blockers
+// so a rejected unit can explain itself on the dispatch table. A parked unit
+// card is authoritative even when the slower source still describes its PR.
+function dependencyBlockers(unit, cardId, cards) {
+  const qaRun = isQaRun(unit);
+  const blockers = [];
+  for (const dep of unit?.deps ?? []) {
+    if (dep?.met === true) continue;
+    const stuck = unitCardFor(cards, cardId, dep?.ticket)?.stage === 'stuck';
+    const state = stuck ? 'stuck' : String(dep?.state || 'unmet');
+    const openPr = typeof dep?.state === 'string' && dep.state.startsWith('pr');
+    if (stuck || qaRun || dep?.met === null || unit?.depsMerged || !openPr) {
+      blockers.push({ ticket: dep?.ticket, state });
+    }
+  }
+  return blockers;
+}
+
 function failedCheckNames(pr) {
   if (Array.isArray(pr?.ci?.failedNames) && pr.ci.failedNames.length) {
     return pr.ci.failedNames.map(String);
@@ -724,7 +742,19 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     if (!s) continue;
     if (Array.isArray(s.stale) && s.stale.length) continue; // unknown is not free
     const cardRef = { id: card.id, title: String(card.title ?? '') };
-    const waiting = [...(s.units ?? []), ...(s.qaTickets ?? [])]
+    const candidates = [...(s.units ?? []), ...(s.qaTickets ?? [])];
+    for (const u of candidates) {
+      if (takenTicketSet.has(String(u?.ticket))) continue;
+      if (unitCardFor(cards, card.id, u?.ticket)?.stage === 'stuck') continue;
+      const blockers = dependencyBlockers(u, card.id, cards);
+      if (!blockers.length || !startableOnBoard({ ...u, deps: [] }, card.id, cards)) continue;
+      holds.push({
+        card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '',
+        reason: `waits for ${blockers.map(dep => `#${dep.ticket} (${dep.state})`).join(', ')}`,
+        stuckDeps: blockers.filter(dep => dep.state === 'stuck').map(dep => dep.ticket),
+      });
+    }
+    const waiting = candidates
       .filter(u => {
         if (takenTicketSet.has(String(u?.ticket))) return false;
         if (unitCardFor(cards, card.id, u?.ticket)?.stage === 'stuck') return false;
