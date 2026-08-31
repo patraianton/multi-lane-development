@@ -3,7 +3,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { idleLaneFindings, idleLedger, startable, startableOnBoard, idleLine } from '../bin/idle-lanes.mjs';
+import {
+  fixDebtFindings, idleLaneFindings, idleLedger, startable, startableOnBoard, idleLine,
+} from '../bin/idle-lanes.mjs';
 
 const cards = [
   { id: 'cs', title: 'FINANCE-CARDS', stage: 'development', links: { ticket: 'https://github.com/acme/web/issues/1569' } },
@@ -129,4 +131,44 @@ test('the board remembers: a unit whose card left ticketed or carries a PR is ne
   assert.equal(startableOnBoard({ state: 'queued', deps: [], ticket: 9999 }, 'cs', withCards), true, 'no card yet: facts decide');
   assert.equal(startableOnBoard({ qa: true, open: true, deps: [], ticket: 1599 }, 'cs', [{ id: 'q', parent: 'cs', ticket: 1599, stage: 'qa', links: {}, lane: 'mac/lane-6' }]), false, 'a QA card with a lane has started');
   assert.equal(startableOnBoard({ qa: true, open: true, deps: [], ticket: 1599 }, 'cs', [{ id: 'q', parent: 'cs', ticket: 1599, stage: 'merged', links: {}, lane: '' }]), false, 'a QA card outside ticketed has already started');
+});
+
+test('fix debt findings require a fresh open sprint, an active unit card, and an unattempted failure on the open PR head', () => {
+  const head = 'abc1234500000000000000000000000000000000';
+  const unit = {
+    unit: 'U1', ticket: 1575, state: 'pr no-go', open: true, deps: [],
+    pr: {
+      number: 1589, open: true, headSha: head, mergeable: 'MERGEABLE', ci: { color: 'green' },
+      verdictOnHead: { round: 2, go: false, head, at: '2026-08-31T04:44:46.000Z' },
+    },
+  };
+  const debtCards = cards.map(card => card.id === 'u1' ? { ...card, ticket: 1575 } : card);
+  const openSprint = sprint({ umbrellaOpen: true, units: [unit], qaTickets: [], laneTable: [] });
+  const source = new Map([['cs', openSprint]]);
+
+  const findings = fixDebtFindings(debtCards, source, { at: '2026-08-31T05:00:00.000Z' });
+  assert.deepEqual(findings.map(f => [f.key, f.ticket, f.head]), [[`fix-debt:cs:1575:${head.slice(0, 8)}`, 1575, head]]);
+  assert.equal(fixDebtFindings(debtCards, source, { excludeTickets: [1575] }).length, 0, 'a planner hold or dispatch attempt suppresses the watchdog');
+
+  const noFinding = over => fixDebtFindings(debtCards, new Map([['cs', { ...openSprint, ...over }]])).length;
+  assert.equal(noFinding({ stale: ['prs'] }), 0, 'stale data');
+  assert.equal(noFinding({ umbrellaOpen: false }), 0, 'closed sprint');
+  assert.equal(noFinding({ units: [{ ...unit, merged: { number: 1589 } }] }), 0, 'merged unit');
+  assert.equal(noFinding({ units: [{ ...unit, lane: { busy: true } }] }), 0, 'lane busy with unit');
+  assert.equal(noFinding({ units: [{
+    ...unit,
+    pr: { ...unit.pr, ci: { color: 'red', headSha: head }, verdictOnHead: { ...unit.pr.verdictOnHead, go: true } },
+  }] }), 0, 'GO on head wins even when a red check fact lingers');
+  assert.equal(fixDebtFindings(debtCards.map(card => card.id === 'u1' ? { ...card, stage: 'ticketed' } : card), source).length, 0, 'ticketed unit card');
+});
+
+test('fix debt uses the idle ledger and becomes due at 30 minutes', () => {
+  const finding = {
+    key: 'fix-debt:cs:1575:abc12345', card: { id: 'u1', title: 'U1 #1575' },
+    ticket: 1575, head: 'abc1234500000000000000000000000000000000', at: '2026-08-31T05:00:00.000Z',
+  };
+  let result = idleLedger({ seen: {} }, [finding], '2026-08-31T05:00:00.000Z', { graceMs: 30 * 60000, repeatMs: 30 * 60000 });
+  assert.equal(result.alarms.length, 0);
+  result = idleLedger(result.ledger, [finding], '2026-08-31T05:30:00.000Z', { graceMs: 30 * 60000, repeatMs: 30 * 60000 });
+  assert.equal(result.alarms.length, 1);
 });

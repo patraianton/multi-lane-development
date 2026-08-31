@@ -148,6 +148,91 @@ test('a NO-GO fix carries the verdict verbatim and prefers another host', () => 
   assert.match(text, new RegExp(`\\n# VERDICT R1 — verbatim\\n\\n${body.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`));
 });
 
+test('a spent fix head guard yields to a newer NO-GO on the same head', () => {
+  const head = 'abc1234500000000000000000000000000000000';
+  const unit = {
+    unit: 'U2', ticket: 2002, title: 'FIN-U2', branch: 'feat/fin-u2', state: 'pr no-go', deps: [],
+    pr: {
+      number: 2102, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE', verdictRounds: 2,
+      verdictOnHead: {
+        round: 2, go: false, head, at: '2026-08-31T04:44:46.000Z',
+        body: `R2 — NO-GO\nhead ${head}`,
+      },
+    },
+  };
+  const source = new Map([['cs', sprint({ free: ['mac/lane-6'], units: [unit], qaTickets: [] })]]);
+  const ledger = { dispatched: {
+    '2002:fix:abc12345': {
+      ticket: 2002, kind: 'fix', round: 1, head, result: 'launched', judged: 'ok',
+      at: '2026-08-31T04:00:00.000Z', lane: 'lanes-01/lane-1', host: 'lanes-01',
+    },
+  } };
+
+  const [pair] = planFixes({
+    cards, sprints: source, ledger, fleet: FLEET, at: '2026-08-31T05:00:00.000Z',
+  });
+  assert.deepEqual([pair.kind, pair.round, pair.head, pair.lane], ['fix', 2, head, 'mac/lane-6']);
+  assert.deepEqual([pair.retryOf, dispatchKey(pair)], ['2002:fix:abc12345', '2002:fix:2']);
+  const recorded = recordDispatch(ledger, pair, { result: 'launched' }, '2026-08-31T05:00:00.000Z');
+  assert.equal(recorded.dispatched['2002:fix:2'].result, 'launched', 'the new debt gets a durable identity');
+  assert.equal(pair.sections[0].title, 'VERDICT R2 — verbatim');
+});
+
+test('silent fix and review skips become HELD reasons', () => {
+  const at = '2026-08-31T06:00:00.000Z';
+  const head = 'f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6';
+  const noGo = {
+    unit: 'U13', ticket: 2013, title: 'FIN-U13', branch: 'feat/fin-u13', state: 'pr no-go', deps: [],
+    pr: {
+      number: 2113, headSha: head, draft: false, verdictRounds: 1,
+      verdictOnHead: { round: 1, go: false, head, at: '2026-08-31T05:00:00.000Z' },
+      ci: { color: 'green' }, mergeable: 'MERGEABLE',
+    },
+  };
+  const fixHolds = [];
+  planFixes({
+    cards, sprints: new Map([['cs', sprint({ units: [noGo], qaTickets: [] })]]), fleet: FLEET, at,
+    ledger: { dispatched: { '2013:fix:f6f6f6f6': {
+      ticket: 2013, kind: 'fix', head, result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z',
+    } } },
+    holds: fixHolds,
+  });
+
+  const needsReview = {
+    ...noGo,
+    ticket: 2014,
+    pr: { ...noGo.pr, verdictOnHead: null, verdictRounds: 0 },
+  };
+  const reviewHolds = [];
+  planReviews({
+    cards, sprints: new Map([['cs', sprint({ units: [needsReview], qaTickets: [] })]]), fleet: FLEET, at,
+    ledger: { dispatched: { '2014:review:f6f6f6f6': {
+      ticket: 2014, kind: 'review', head, result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z',
+    } } },
+    holds: reviewHolds,
+  });
+
+  const mirrorHolds = [];
+  planReviews({
+    cards, sprints: new Map([['cs', sprint({ units: [needsReview], qaTickets: [] })]]), fleet: FLEET, at,
+    ledger: { dispatched: { '2014:fix:f6f6f6f6': {
+      ticket: 2014, kind: 'fix', head, result: 'launched', at: '2026-08-31T05:59:00.000Z',
+    } } },
+    holds: mirrorHolds,
+  });
+
+  const laneHolds = [];
+  planReviews({
+    cards, sprints: new Map([['cs', sprint({ free: [], units: [needsReview], qaTickets: [] })]]), fleet: FLEET, at,
+    holds: laneHolds,
+  });
+
+  const lines = [...fixHolds, ...reviewHolds, ...mirrorHolds, ...laneHolds].map(launchFailureHoldLine);
+  assert.equal(lines.length, 4);
+  for (const line of lines) assert.match(line, /^auto-dispatch: HELD U13 #20(?:13|14) — /);
+  assert.ok(lines.some(line => line.endsWith('no free lane')));
+});
+
 test('a no-proof fix retries under the next round key and keeps the verdict section round', () => {
   const at = '2026-08-29T12:00:00.000Z';
   const head = 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1';
