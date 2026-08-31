@@ -116,10 +116,6 @@ source is alive. This is worth reading: an empty `lanes` cell with ssh down mean
 `problems` carries one row, `project: no project chosen yet` — open the board and
 pick one.
 
-When an active pipeline card has an existing Status older than 30 minutes,
-`problems` carries the legacy `watchdog` source label with the count and card
-ids. The same count is `stale status` on `GET /api/pipeline`.
-
 ## Clipping of long texts
 
 On a board sweep long texts are clipped and marked with their size
@@ -255,16 +251,14 @@ segment, `done` included, stays in the history and is readable in `clock-by-stag
 ### What is in the answer
 
 Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
-counters: **cards**, **stuck**, **done**, **failures**, **stale status**), then:
+counters: **cards**, **stuck**, **done**, **failures**), then:
 
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
   (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (`moving`, `stalled`,
   `looping`, or `-`). JSON also carries `lane`, `links`, `status`
   (`text`, `verdict`, `at`), `slot`, `subscription`, `window`, `consecutiveFails`,
-  `statusStale`, and the compatibility field `shadow: null`;
+  and the compatibility field `shadow: null`;
 - `stuck` — the cards waiting for a human, with how long they have been waiting;
-- `stale` — active cards (`development`, `local_check`, `ci_pr`) whose existing
-  Status is older than 30 minutes;
 - `specs` — under `?full=1` only, the spec text of every card that has one.
 
 The long parts of a card — the summary, every comment, the whole stage
@@ -473,19 +467,17 @@ written by an older deployment or another local mechanism:
 ```
 pipeline: http://127.0.0.1:4878
 generated: 2026-08-26T17:36:54.960Z
-summary: cards 3, stuck 1, done 1, failures 7, stale status 0
+summary: cards 3, stuck 1, done 1, failures 7
 cards[3]{id,title,stage,clock,fails,verdict}:
   cmtadl1k48ian,Ship the pipeline view,done,3h 12m (stopped),local 3 ci 1,moving
   cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
   cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
 stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
-stale: 0 — no active card has a stale Status
-help[5]:
+help[4]:
   one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
   stages: spec, grilled, ticketed, development, local_check, ci_pr, done; stuck — three failures in a row, waiting for a human
   clock is the delivery time; done is terminal and does not count — a finished card shows "(stopped)"
-  stale status: an active card (development, local_check, ci_pr) whose existing Status is older than 30 minutes
   ?format=json — the same shape as plain JSON
 ```
 

@@ -214,7 +214,7 @@ The board also writes `state/autopase-seen.json` (when each pane was first seen 
 
 ## Deploy on a Linux host
 
-The board is meant to run as a systemd service on a Linux host so the partner can reach cards without the owner's desktop. Local herdr stays on that desktop and is pushed up by the probe ([`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md)).
+The board and herdr run on the same machine in the current setup; no probe executable pushes desktop data to a server. The systemd files remain available for a Linux installation, and probe source mode remains for loading a posted snapshot in tests or compatible deployments.
 
 Layout:
 
@@ -265,7 +265,7 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 Architecture notes:
 
 - [`docs/adr/0001-watchtower-becomes-the-pipeline.md`](docs/adr/0001-watchtower-becomes-the-pipeline.md) — the pipeline is built into Watchtower, not as a second app or on GitHub Issues
-- [`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md) — board on a Linux host; probe pushes local herdr
+- [`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md) — historical remote-host design; the current setup instead keeps the board and herdr on one machine without the removed probe executable
 - [`docs/adr/0004-grill-outcome-becomes-one-github-ticket.md`](docs/adr/0004-grill-outcome-becomes-one-github-ticket.md) — one GitHub ticket after the grill, written by the CTO's GitHub App
 
 ---

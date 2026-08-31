@@ -29,7 +29,7 @@ A pipeline column a card is in: Spec, Grilled, Ticketed, Development, Local chec
 Done — plus Stuck, where a card lands after its third consecutive failure and waits for a
 founder. Ticketed is the CTO writing the GitHub tickets (one per work unit) after the grill;
 the card leaves it for Development only with a ticket link attached.
-_Avoid_: status (reserved for the watchdog's "what is happening right now" line), column (UI term)
+_Avoid_: column (UI term)
 
 **Slot**:
 A dedicated CI server from the pool (three VPS today). The CTO assigns a free slot to a card
@@ -41,14 +41,9 @@ A coding-agent account (Codex or Claude home) that pays for a card's development
 owner assigns one per card by answering the Telegram bot; the card auto-advances to
 Ticketed once assigned.
 
-**Watchdog**:
-The board's built-in checker: every ~15 minutes it gathers evidence for each active card
-(lane log tail, window movement, CI state) and has a cheap LLM write the card's Status and a
-verdict — moving, stalled, or looping.
-
 **Status**:
-The one-line "what is happening right now" on a card, refreshed by the Watchdog. Distinct
-from Stage.
+An optional one-line "what is happening right now" note written through the card status endpoint.
+It may carry a moving, stalled or looping verdict and is distinct from Stage.
 
 **Lane**:
 A remote build slot (lanes-01 / Hetzner / Mac) where code is written or checked. Assigned to a
@@ -68,8 +63,8 @@ annotations on it are the authoritative grill answers, collected by the CTO via 
 _Avoid_: report, preview
 
 **Probe**:
-The small process on the owner's machine that pushes herdr window data to the board and
-delivers queued hooks into agent windows.
+The retained board source mode that reads the last posted herdr snapshot. The executable that
+pushed desktop data and delivered hooks was removed; local source mode reads herdr directly.
 
 **Ticket**:
 A GitHub issue the CTO creates in the product repo after the grill, under the CTO's own
@@ -80,8 +75,8 @@ umbrella (docs/TICKETING.md).
 _Avoid_: issue (when speaking of the pipeline artifact), card (the board entity)
 
 **Founder**:
-A human user of the board (the owner or the partner). Signs in by email; gets tagged in
-Telegram.
+A human user of the board (the owner or the partner). Names their comments on the open loopback
+board and gets tagged in Telegram.
 _Avoid_: user (too generic), admin
 
 ## Working language
