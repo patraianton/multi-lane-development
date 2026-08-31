@@ -447,15 +447,61 @@ function latestAttemptHost(journal, ticket) {
   return last?.host || String(last?.lane ?? '').split('/')[0] || null;
 }
 
+// A lane that keeps killing runs right at startup: three no-proof judgments
+// within an hour, each freed in under eight minutes (a real run takes ~20).
+// mac/lane-6 died like this four times in two hours on 30.08 and nobody heard.
+// Takeovers are not the lane's fault and do not count.
+export function quarantinedLanes(ledger, at = null) {
+  const now = Date.parse(at ?? '') || Date.now();
+  const deaths = new Map();
+  for (const e of Object.values(ledger?.dispatched ?? ledger ?? {})) {
+    if (!e?.lane || e.result !== 'launched' || e.judged !== 'no-proof') continue;
+    if (/taken over/i.test(String(e.judgeReason ?? ''))) continue;
+    const launchedAt = Date.parse(e.at ?? '') || 0;
+    const judgedAt = Date.parse(e.judgedAt ?? '') || 0;
+    if (!judgedAt || now - judgedAt >= 60 * 60 * 1000) continue;
+    if (judgedAt - launchedAt >= 8 * 60 * 1000) continue;
+    deaths.set(e.lane, (deaths.get(e.lane) ?? 0) + 1);
+  }
+  return [...deaths.entries()].filter(([, n]) => n >= 3)
+    .map(([lane, n]) => ({ lane, deaths: n }));
+}
+
 function heldLaneNames(journal, now, holdMs, launchingMs) {
-  return new Set(Object.values(journal ?? {})
+  const held = new Set(Object.values(journal ?? {})
     .filter(e => {
       const age = now - (Date.parse(e?.at ?? '') || 0);
       return (e?.result === 'launched' && !e?.judged && age < holdMs)
-        || (e?.result === 'launching' && age < launchingMs);
+        || (e?.result === 'launching' && age < launchingMs)
+        // A launcher that answered "reserved" (exit 3) keeps answering it:
+        // the lane rests for holdMs instead of eating an scp+ssh every sweep
+        // (25 refusals in 47 minutes on 30.08 while Mac lanes stood free).
+        // "Busy" (exit 2) can free any second — it keeps its same-key retry.
+        || (e?.result === 'held' && Number(e?.heldCode) === 3 && age < holdMs);
     })
     .map(e => e?.lane)
     .filter(Boolean));
+  for (const q of quarantinedLanes(journal, new Date(now).toISOString())) held.add(q.lane);
+  return held;
+}
+
+// The freshest launch on each lane, for spreading work: on 30.08 the planner
+// always took the lowest lane number, so lane-1 worked 62% of the night while
+// mac/lane-7 and lane-8 stood at ~21% — and lanes-01 also runs the CI runners.
+function lastLaunchOnLane(journal) {
+  const last = new Map();
+  for (const e of Object.values(journal ?? {})) {
+    if (!e?.lane) continue;
+    const t = Date.parse(e.at ?? '') || 0;
+    if (t > (last.get(e.lane) ?? 0)) last.set(e.lane, t);
+  }
+  return last;
+}
+
+function laneOrder(journal) {
+  const last = lastLaunchOnLane(journal);
+  return (a, b) => (last.get(a.name) ?? 0) - (last.get(b.name) ?? 0)
+    || laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host);
 }
 
 // sprint.free intentionally omits an idle lane still bound to an unmerged
@@ -613,7 +659,7 @@ export function planFixes({
         if (lane.noBuilds && build) continue;
         lanes.push(lane);
       }
-      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+      lanes.sort(laneOrder(journal));
       const lastHost = retry?.avoidHost ?? latestAttemptHost(journal, unit.ticket);
       const lane = retry?.type === 'launch-failed'
         ? lanes[0]
@@ -698,7 +744,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (heldLanes.has(l.name)) continue;
       lanes.push(l);
     }
-    lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+    lanes.sort(laneOrder(journal));
     const retryLanes = [...lanes];
     const regularNames = new Set(free);
     for (const name of laneNamesFor(s, true)) {
@@ -707,7 +753,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (!lane || lane.reserved || heldLanes.has(lane.name)) continue;
       retryLanes.push(lane);
     }
-    retryLanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+    retryLanes.sort(laneOrder(journal));
     for (const u of waiting) {
       if (takenTicketSet.has(String(u.ticket))) continue;
       const hold = reason => holds.push({ card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '', reason });
@@ -870,7 +916,7 @@ export function planReviews({
         if (failureState?.blockedHosts.has(lane.host)) continue;
         lanes.push(lane);
       }
-      lanes.sort((a, b) => laneNo(a.lane) - laneNo(b.lane) || a.host.localeCompare(b.host));
+      lanes.sort(laneOrder(journal));
       const authorLane = lastWriterLane(journal, unit.ticket);
       const eligible = candidate => candidate.name !== authorLane;
       const lane = (retry?.type === 'no-proof' && retry.avoidHost
@@ -933,6 +979,7 @@ export function recordDispatch(ledger, pair, outcome, at) {
     ...(pair.retryOf ? { retryOf: pair.retryOf } : {}),
     at: new Date(now).toISOString(), result: outcome.result, error: outcome.error ?? null,
     ...(outcome.launchFailure ? { launchFailure: true } : {}),
+    ...(outcome.heldCode ? { heldCode: outcome.heldCode } : {}),
   };
   return { dispatched };
 }
@@ -1154,7 +1201,7 @@ export async function runLaunch(plan, exec) {
         bundleMissing = /\bMISSING\b/.test(out);
         break;
       case 'launch':
-        if (r.code === 2 || r.code === 3) return { result: 'held', error: `launcher refused: ${out.trim().slice(0, 120)}`, ran };
+        if (r.code === 2 || r.code === 3) return { result: 'held', heldCode: r.code, error: `launcher refused: ${out.trim().slice(0, 120)}`, ran };
         if (r.code !== 0) return { result: 'failed', launchFailure: true, error: `launch failed (exit ${r.code}): ${out.trim().slice(0, 160)}`, ran };
         break;
       case 'comment':

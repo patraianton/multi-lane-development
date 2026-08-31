@@ -36,7 +36,7 @@ import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs'
 import { idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
   planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
-  launchFailureHolds, launchFailureHoldLine,
+  launchFailureHolds, launchFailureHoldLine, quarantinedLanes,
 } from './auto-dispatch.mjs';
 import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
@@ -874,6 +874,13 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   // This is crash recovery, not a new dispatch, so it remains safe while the
   // missing-owner gate blocks every new scheduler action below.
   await reconcileReviewBadges(cards, sprints, ledger);
+  // The planner already refuses a lane that keeps killing runs at startup;
+  // the owner hears why once a day, or the cause on the host stays invisible
+  // (mac/lane-6 died four times in two hours on 30.08 and nobody looked).
+  for (const q of quarantinedLanes(ledger, at)) {
+    await alarmOwner(`lane-quarantine:${q.lane}:${at.slice(0, 10)}`,
+      `lane ${q.lane} killed ${q.deaths} runs at startup within an hour — quarantined for new launches; look at the host`);
+  }
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
   const reviews = planReviews({ cards, sprints, ledger, fleet, at });
   const develop = planDispatchFull(cards, sprints, {

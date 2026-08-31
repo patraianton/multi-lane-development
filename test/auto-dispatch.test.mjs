@@ -10,7 +10,7 @@ import {
   planDispatch, planDispatchFull, planReviews, planFixes, sortDispatchQueue,
   baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
   taskText, specDirFor, launchPlan, runLaunch, commentLine, dispatchKey, taskFileName,
-  launchFailureHoldLine, RETRY_MS, LAUNCHING_HOLD_MS,
+  launchFailureHoldLine, quarantinedLanes, RETRY_MS, LAUNCHING_HOLD_MS,
 } from '../bin/auto-dispatch.mjs';
 import { judgeLanes } from '../bin/lane-judge.mjs';
 
@@ -450,6 +450,69 @@ test('a review is not planned while a fix of the same head is running', () => {
   assert.equal(dispatchKey(review), '2012:review:e8e8e8e8');
 });
 
+test('a launcher refusal rests the lane; work is spread to the least-recently-launched lane', () => {
+  const at = '2026-08-31T06:00:00.000Z';
+  const head = 'c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9';
+  const unit = {
+    unit: 'U13', ticket: 2013, title: 'FIN-U13', branch: 'feat/fin-u13', state: 'pr open', deps: [],
+    pr: { number: 2113, headSha: head, draft: false, verdictOnHead: null, verdictRounds: 0, ci: { color: 'green' } },
+  };
+  const s = sprint({ free: ['lanes-01/lane-1', 'mac/lane-6', 'mac/lane-7'], units: [unit], qaTickets: [] });
+
+  // The launcher said "reserved" (exit 3) three minutes ago: the lane rests
+  // for LANE_HOLD_MS instead of eating an scp+ssh every sweep.
+  const refused = { dispatched: {
+    '2099:develop:1': {
+      ticket: 2099, kind: 'develop', round: 1, host: 'lanes-01', lane: 'lanes-01/lane-1',
+      result: 'held', heldCode: 3, error: 'launcher refused: lane-1 забронирована под VX-SMOKE', at: '2026-08-31T05:57:00.000Z',
+    },
+  } };
+  const [pair] = planReviews({ cards, sprints: new Map([['cs', s]]), ledger: refused, fleet: FLEET, at });
+  assert.notEqual(pair.lane, 'lanes-01/lane-1', 'the refused lane rests');
+
+  // Eleven minutes later the hold has expired and lane-1 serves again —
+  // unless another lane has been idle longer: work goes to the
+  // least-recently-launched lane first.
+  const later = '2026-08-31T06:09:00.000Z';
+  const [spread] = planReviews({ cards, sprints: new Map([['cs', s]]), ledger: refused, fleet: FLEET, at: later });
+  assert.equal(spread.lane, 'mac/lane-6', 'a lane never launched on outranks a recently-touched one');
+});
+
+test('three fast no-proof deaths on one lane within an hour quarantine it; takeovers do not count', () => {
+  const death = (key, lane, minute) => [key, {
+    ticket: 2000 + minute, kind: 'develop', round: 1, host: lane.split('/')[0], lane,
+    result: 'launched', judged: 'no-proof', judgeReason: 'no open or merged PR after ' + lane + ' freed',
+    at: `2026-08-31T05:${String(minute).padStart(2, '0')}:00.000Z`,
+    judgedAt: `2026-08-31T05:${String(minute + 4).padStart(2, '0')}:00.000Z`,
+  }];
+  const ledger = { dispatched: Object.fromEntries([
+    death('2001:develop:1', 'mac/lane-6', 1),
+    death('2002:develop:1', 'mac/lane-6', 10),
+    death('2003:develop:1', 'mac/lane-6', 20),
+    death('2004:develop:1', 'mac/lane-7', 30),
+  ]) };
+  const at = '2026-08-31T05:40:00.000Z';
+  assert.deepEqual(quarantinedLanes(ledger, at), [{ lane: 'mac/lane-6', deaths: 3 }]);
+
+  // The planner refuses the quarantined lane and serves the healthy one.
+  const head = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4';
+  const unit = {
+    unit: 'U14', ticket: 2014, title: 'FIN-U14', branch: 'feat/fin-u14', state: 'pr open', deps: [],
+    pr: { number: 2114, headSha: head, draft: false, verdictOnHead: null, verdictRounds: 0, ci: { color: 'green' } },
+  };
+  const s = sprint({ free: ['mac/lane-6', 'mac/lane-7'], units: [unit], qaTickets: [] });
+  const [pair] = planReviews({ cards, sprints: new Map([['cs', s]]), ledger, fleet: FLEET, at });
+  assert.equal(pair.lane, 'mac/lane-7');
+
+  // A takeover is not the lane's fault.
+  const taken = { dispatched: Object.fromEntries([
+    death('2001:develop:1', 'mac/lane-6', 1),
+    death('2002:develop:1', 'mac/lane-6', 10),
+    death('2003:develop:1', 'mac/lane-6', 20),
+  ].map(([key, entry]) => [key, { ...entry, judgeReason: 'no PR after mac/lane-6 was taken over by feat/vx' }])) };
+  assert.deepEqual(quarantinedLanes(taken, at), []);
+});
+
 test('a light lane (no builds) is never chosen for a unit that needs a build', () => {
   const s = sprint({ free: ['lanes-01/lane-3'] });
   const { pairs, holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET });
@@ -494,9 +557,10 @@ test('the journal uses develop round keys and review head keys; launched is fina
   // The probe still says lane-6 is free: the lane is held, U3b is not resent, QA takes lane-7.
   let again = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, ledger, at: '2026-08-29T12:01:00.000Z' });
   assert.deepEqual(again.map(p => [p.unit.unit, p.lane]), [['QA', 'mac/lane-7']]);
-  // An hour later lane-6 is free again by the probe; U3b still never goes twice.
+  // An hour later lane-6 is free again by the probe; U3b still never goes
+  // twice — and untouched lane-7 outranks lane-6, which launched an hour ago.
   again = planDispatch(cards, new Map([['cs', s]]), { fleet: FLEET, ledger, at: '2026-08-29T13:00:00.000Z' });
-  assert.deepEqual(again.map(p => [p.unit.unit, p.lane]), [['QA', 'mac/lane-6']]);
+  assert.deepEqual(again.map(p => [p.unit.unit, p.lane]), [['QA', 'mac/lane-7']]);
   // Old entries are dropped.
   const pruned = recordDispatch(ledger, pairs[1], { result: 'launched' }, '2026-09-30T12:00:00.000Z');
   assert.deepEqual(Object.keys(pruned.dispatched), ['1599:develop:1']);
@@ -590,7 +654,9 @@ test('a failed host is excluded until RETRY_MS and becomes eligible at the bound
   const [retry] = planDispatch(cards, source, { fleet: FLEET, ledger: failed, at: boundary });
   assert.deepEqual(
     [retry.lane, retry.round, retry.retryOf, dispatchKey(retry)],
-    ['lanes-01/lane-1', 2, '1583:develop:1', '1583:develop:2'],
+    // lane-2 outranks lane-1 at the boundary: work spreads to the
+    // least-recently-launched lane first, and lane-1 failed ten minutes ago.
+    ['lanes-01/lane-2', 2, '1583:develop:1', '1583:develop:2'],
   );
 
   const reviewHead = 'd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3';
