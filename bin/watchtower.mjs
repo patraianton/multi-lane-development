@@ -28,7 +28,7 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import {
-  configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
+  configurePipeline, handlePipeline, setPipelineBoard, pipelineStaleProblems,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
   failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
@@ -2708,8 +2708,6 @@ async function collect() {
 
   const programs = programsSource.value ?? new Map();
   const prs = prSource.value ?? [];
-  const mergedPrs = mergedPrSource.value ?? [];
-  const unitIssues = unitIssuesSource.value ?? new Map();
   const umbrellas = umbrellaSource.value ?? new Map();
   const laneHosts = lanesSource.value ?? [];
   const allLanes = laneHosts.flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok })));
@@ -2763,19 +2761,6 @@ async function collect() {
       if (via) cardPrs.push({ ...pr, via });
     }
     cardPrs.sort((a, b) => b.number - a.number);
-    // Merged PRs of this window: the same strong bindings, plus the numbers the
-    // window named itself (weak — good enough as evidence of delivered work,
-    // never used alone to move a card forward).
-    const cardMerged = [];
-    for (const pr of mergedPrs) {
-      const via = strongVia(pr);
-      if (via) cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via, strong: true });
-      else if (mentioned.has(pr.number)) {
-        cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via: 'named by the window', strong: false });
-      }
-    }
-    cardMerged.sort((a, b) => b.number - a.number);
-
     // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
     // else from a number the window named.
     let program = null;
@@ -2855,10 +2840,6 @@ async function collect() {
       askReasons,
       column,
       tabCount,
-      _shadow: {
-        merged: cardMerged,
-        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []).filter(i => i.state !== 'CLOSED') : [],
-      },
     });
   }
 
@@ -2875,36 +2856,6 @@ async function collect() {
     c.prs.sort((a, b) => b.number - a.number);
     delete c.mentioned;
   }
-
-  // Facts for the pipeline's shadow verdicts (step 1: the board only says what
-  // it WOULD do — no transition is written anywhere). A source that is dead or
-  // older than ten minutes makes every verdict "facts incomplete": unknown is
-  // never read as empty.
-  const FRESH_MS = 10 * 60 * 1000;
-  const staleSources = [lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
-    .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
-    .map(s => s.name);
-  const shadowFacts = new Map();
-  for (const c of cards) {
-    if (c.manual) continue;
-    const factsForCard = {
-      openPrs: c.prs.map(pr => ({
-        number: pr.number,
-        ci: pr.ci?.color ?? 'none',
-        strong: pr.via !== 'named by the window',
-        createdAt: pr.createdAt ?? null,
-      })),
-      merged: c._shadow.merged,
-      openUnitIssues: c._shadow.openUnitIssues.map(i => ({ number: i.number, createdAt: i.createdAt })),
-      umbrella: c.umbrella?.number ?? null,
-      laneBusy: c.lanes.length > 0,
-      working: c.status === 'working',
-    };
-    shadowFacts.set(c.name, factsForCard);
-    if (c.window && c.window !== c.name) shadowFacts.set(c.window, factsForCard);
-    delete c._shadow;
-  }
-  setShadowFacts({ facts: shadowFacts, staleSources, at: now });
 
   // Nudge the 30-second sprint sweep without resetting its own clock.
   sprintSource.tick();

@@ -554,10 +554,6 @@
   .pcard .status.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
   .pcard .status.stalled::before { background: var(--done); }
   .pcard .status.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
-  .pcard .row.shadow {
-    padding: 1px 2px; color: var(--ink-dim); font-size: 10.5px; font-style: italic;
-  }
-  .pcard .row.shadow.differs { color: var(--done); }
   .pcard .artifact-row { padding: 0 8px 7px 9px; }
   .pcard .artifact-bell {
     display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 7px 8px;
@@ -809,8 +805,8 @@
   <div class="pboard" id="pboard"></div>
 </div>
 
-<!-- The gear: the project whose herdr windows feed the facts (window names
-     on cards, the shadow verdict). The pipeline itself needs no project. -->
+<!-- The gear: the project whose herdr windows feed the facts and window names
+     on cards. The pipeline itself needs no project. -->
 <div class="sheet" id="settings">
   <div class="box" style="position: relative">
     <button class="hbtn close" id="settings-close">close</button>
@@ -1600,17 +1596,6 @@ function pcard(c) {
   const statusHtml = statusLine(c);
   if (statusHtml) signals.push(statusHtml);
 
-  // Shadow verdict: what the board WOULD set from observable facts. Written
-  // nowhere — this line is the whole output while the rule is on probation.
-  if (c.shadow) {
-    const s = c.shadow;
-    const head = s.would
-      ? (s.same ? 'auto agrees' : 'auto would set: ' + (STAGE_TITLE[s.would] ?? s.would))
-      : 'auto holds';
-    signals.push('<div class="row shadow' + (s.would && !s.same ? ' differs' : '') + '"'
-      + ' title="shadow mode: the board writes no transition yet">'
-      + esc(head + ' — ' + (s.reasons ?? []).join('; ')) + '</div>');
-  }
   if (signals.length) bits.push('<div class="signals">' + signals.join('') + '</div>');
 
   // Attachments live in a flexing chip rail: current links and plain metadata

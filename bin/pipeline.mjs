@@ -1089,20 +1089,6 @@ async function pageData() {
   };
 }
 
-// ---------------------------------------------------------------- shadow
-//
-// Step 1 of "the board decides the stage itself": for every window card (a card
-// with a window) the board computes what stage it WOULD set from observable
-// facts — open PRs, merged PRs, open unit tickets of the umbrella, lanes — and
-// writes it NOWHERE. The verdict is shown on the card and in the JSON, so the
-// rule can be checked against reality before any automatic transition exists.
-// Facts arrive from watchtower.mjs after every sweep of the windows board.
-//
-// Unknown is never read as empty: a dead or stale source voids every verdict.
-// A card also needs an umbrella so its sprint scope can be read from issues.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'merged', 'done']);
-let shadowMap = new Map(); // card id -> { would, same, reasons, at }
-
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
 // umbrella issue, its unit tickets bound to lanes and PRs by facts.
 // watchtower.mjs recomputes them after every sweep of the live sources.
@@ -1135,8 +1121,7 @@ export async function setCardReadyAt(id, readyAt) {
 }
 
 function cardExtras(c, all = []) {
-  const extra = {};
-  if (shadowMap.has(c.id)) extra.shadow = shadowMap.get(c.id);
+  const extra = { shadow: null };
   if (sprintMap.has(c.id)) extra.sprint = sprintMap.get(c.id);
   if (c.parent) {
     const parent = all.find(p => p.id === c.parent);
@@ -1427,51 +1412,6 @@ export async function syncSprintUnits(sprints) {
   return { spawned: result.spawned, moved: result.moved };
 }
 
-export function setShadowFacts({ facts, staleSources, at }) {
-  const cards = state?.cards ?? [];
-  const next = new Map();
-  for (const card of cards) {
-    if (!card.window || !AUTO_ELIGIBLE.has(card.stage)) continue;
-    next.set(card.id, shadowVerdict(card, facts.get(card.window), staleSources ?? [], at));
-  }
-  shadowMap = next;
-}
-
-function shadowVerdict(card, f, staleSources, at) {
-  const v = { would: null, same: false, reasons: [], at: at ?? null };
-  if (staleSources.length) {
-    v.reasons.push(`facts incomplete: ${staleSources.join(', ')}`);
-    return v;
-  }
-  if (!f) {
-    v.reasons.push('window is not on the windows board');
-    return v;
-  }
-  if (f.openPrs.length) {
-    v.would = 'ci_pr';
-    v.reasons.push(`open PRs: ${f.openPrs.map(p => '#' + p.number).join(' ')}`);
-    const red = f.openPrs.filter(p => p.ci === 'red').map(p => '#' + p.number);
-    if (red.length) v.reasons.push(`CI red on ${red.join(' ')}`);
-  } else if (f.laneBusy) {
-    v.would = 'development';
-    v.reasons.push('a lane of this window is busy');
-  } else if (f.working) {
-    v.would = 'development';
-    v.reasons.push('the agent is working and no PR is open');
-  } else if (!f.umbrella) {
-    v.reasons.push('sprint scope not visible: no umbrella issue');
-  } else if (f.openUnitIssues.length) {
-    v.reasons.push(`scope not empty: open unit tickets ${f.openUnitIssues.map(i => '#' + i.number).join(' ')}`);
-  } else if (!f.merged.length) {
-    v.reasons.push('no merged PRs bound to this window — nothing to finish');
-  } else {
-    v.would = 'done';
-    v.reasons.push(`scope empty, ${f.merged.length} merged PR(s), lanes free`);
-  }
-  v.same = v.would === card.stage;
-  return v;
-}
-
 // --------------------------------------------------------------- agent view
 
 // One card in six fields — the sweep an agent does over the whole pipeline.
@@ -1520,7 +1460,7 @@ function agentRow(card, now, meta) {
     window: card.window || '',
     consecutiveFails: card.consecutiveFails,
     statusStale: isStaleStatus(card, meta, now),
-    shadow: shadowMap.get(card.id) ?? null,
+    shadow: null,
   };
 }
 
