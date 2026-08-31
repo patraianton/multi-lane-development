@@ -776,11 +776,19 @@ export async function failCard(id, reason) {
 // the cumulative per-kind counters or the history that explains earlier runs.
 // A causal cutoff keeps a newer failure (for example red CI on the fixer's new
 // head, recorded before the same sweep judges the head-change proof).
-export async function succeedCard(id, { throughAt } = {}) {
+// Only proof of real progress ends the streak: a develop PR or a closed
+// qa-run ticket. A judged fix ("the head changed") or review ("a verdict
+// exists" — possibly a NO-GO) says nothing about quality; counting those
+// would let a review→fix carousel reset the streak every round and the
+// 3-in-a-row Stuck breaker would never fire (issue #18, unit #1686: 14 review
+// rounds, never stuck). A genuine fix earns its reset through the current-head
+// GO instead (resetFails in the unit sweep).
+export async function succeedCard(id, { throughAt, kind = null } = {}) {
   const cutoff = Date.parse(throughAt ?? '');
   return commit(st => {
     const card = need(st.cards, id);
     if (card.stage === 'stuck') return card;
+    if (kind === 'fix' || kind === 'review') return card;
     if (Number.isFinite(cutoff)) {
       const latestFailure = [...(card.stageHistory ?? [])].reverse().find(entry => entry.reason);
       const failedAt = Date.parse(latestFailure?.enteredAt ?? '');

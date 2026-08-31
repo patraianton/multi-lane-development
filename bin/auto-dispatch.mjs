@@ -199,6 +199,21 @@ function entryForHead(journal, ticket, kind, head) {
   return matches.at(-1)?.entry ?? null;
 }
 
+// A live, not-yet-judged launch of `kind` on this very head (issue #17). The
+// fix planner consults the reviewer's entries and the review planner the
+// fixer's: while one of them is working on a head, launching the other on the
+// same head wastes both rounds — the fixer moves the head under the reviewer
+// and the verdict lands on a dead head. Matched by entry head, not by key:
+// no-proof retries are keyed by round number.
+function liveEntryOnHead(journal, ticket, kind, head, now, launchingMs) {
+  return entriesFor(journal, ticket, kind).some(x =>
+    sameHead(x.head, head)
+    && x.entry.judged == null
+    && (x.entry.result === 'launched'
+      || (x.entry.result === 'launching'
+        && now - (Date.parse(x.entry.at ?? '') || 0) < launchingMs)));
+}
+
 function latestEntryForKind(journal, ticket, kind) {
   const matches = entriesFor(journal, ticket, kind);
   matches.sort((a, b) => {
@@ -522,7 +537,7 @@ function fixNeed(unit, fixEntries) {
 export function planFixes({
   cards = [], sprints = new Map(), ledger = null, fleet = null, at = null,
   needsBuild = null, retryMs = RETRY_MS, holdMs = LANE_HOLD_MS,
-  launchingMs = LAUNCHING_HOLD_MS, taken = [], takenTickets = [],
+  launchingMs = LAUNCHING_HOLD_MS, taken = [], takenTickets = [], holds = null,
 } = {}) {
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
@@ -570,6 +585,19 @@ export function planFixes({
         };
       }
       if (!need) continue;
+
+      // Issue #17: while the board's own reviewer is still reading this very
+      // head, a fixer would move it and the verdict would land on a dead head
+      // — both rounds wasted. A verdict already on this head means the review
+      // is over, so an honest fix after an honest NO-GO never waits.
+      if (!sameHead(pr?.verdictOnHead?.head, head)
+        && liveEntryOnHead(journal, unit.ticket, 'review', head, now, launchingMs)) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `review of head ${shortSha(head)} is running — the fix waits for its verdict`,
+        });
+        continue;
+      }
 
       // no-proof is explicitly re-queued as another round; every other live
       // launch on this head is the ticket's head-key guard.
@@ -621,9 +649,10 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
   const journal = ledger?.dispatched ?? {};
   const higherPriority = new Set(takenLanes ?? []);
   const higherPriorityTickets = new Set([...(takenTickets ?? [])].map(ticket => String(ticket)));
+  const holds = [];
   const fixes = planFixes({
     cards, sprints, ledger, fleet, at, needsBuild, retryMs, holdMs, launchingMs,
-    taken: higherPriority, takenTickets: higherPriorityTickets,
+    taken: higherPriority, takenTickets: higherPriorityTickets, holds,
   });
   const fixLanes = new Set(fixes.map(pair => pair.lane));
   const developSprints = new Map();
@@ -631,7 +660,6 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     developSprints.set(id, { ...sprint, free: (sprint?.free ?? []).filter(name => !fixLanes.has(name)) });
   }
   const pairs = [];
-  const holds = [];
   const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
   // While main's own check is red, a lane starting from main only rediscovers
   // it: on 2026-08-30 eight runs came back with the same QUESTION. Unknown or
@@ -830,6 +858,10 @@ export function planReviews({
       const previous = entryForHead(journal, unit.ticket, 'review', head);
       if (entryBlocksDispatch(headGuard, now, launchingMs)) continue;
       if (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs)) continue;
+      // Issue #17 mirror: while a fixer is working on this head the branch is
+      // about to move — reviewing the doomed head wastes the reviewer's round.
+      // The fixer's entry keeps its old head, so the new head reviews freely.
+      if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) continue;
 
       const lanes = [];
       for (const name of laneNamesFor(sprint, Boolean(retry?.expandLanes))) {

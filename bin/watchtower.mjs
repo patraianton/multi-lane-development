@@ -629,7 +629,7 @@ async function judgeDispatchedLanes(facts) {
     try {
       if (judgment.judged === 'ok') {
         const throughAt = judged.journal.dispatched?.[judgment.key]?.firstSeenFree ?? null;
-        await succeedCard(unit.id, { throughAt });
+        await succeedCard(unit.id, { throughAt, kind: judgment.kind });
       } else {
         await failCard(unit.id, judgment.reason);
         if (judgment.kind === 'review') {

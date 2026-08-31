@@ -372,6 +372,84 @@ test('a NO-GO fix on H1 leads to review R2 on changed head H2', () => {
   );
 });
 
+test('a fix waits while a review of the same head is running; a NO-GO releases it at once', () => {
+  const at = '2026-08-31T06:00:00.000Z';
+  const head = 'f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5';
+  const unit = {
+    unit: 'U11', ticket: 2011, title: 'FIN-U11', branch: 'feat/fin-u11', state: 'pr red', deps: [],
+    pr: {
+      number: 2111, headSha: head, draft: false, verdictOnHead: null, verdictRounds: 0,
+      ci: { color: 'red', failedNames: ['lint'] }, mergeable: 'MERGEABLE',
+    },
+  };
+  const s = sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unit], qaTickets: [] });
+  const liveReview = { dispatched: {
+    '2011:review:f5f5f5f5': {
+      ticket: 2011, kind: 'review', round: 1, head, host: 'lanes-01', lane: 'lanes-01/lane-2',
+      result: 'launched', at: '2026-08-31T05:58:00.000Z',
+    },
+  } };
+
+  // (а) red check + live unjudged review of the same head → the fix is held.
+  const holds = [];
+  const heldPairs = planFixes({
+    cards, sprints: new Map([['cs', s]]), ledger: liveReview, fleet: FLEET, at, holds,
+  });
+  assert.equal(heldPairs.length, 0);
+  assert.ok(holds.some(h => h.ticket === 2011 && /review of head f5f5f5f5 is running/.test(h.reason)));
+
+  // (б) a NO-GO verdict on the same head means the review is over — the fix goes.
+  const noGo = {
+    ...unit,
+    pr: { ...unit.pr, verdictOnHead: { round: 1, go: false, head, body: `R1 — NO-GO\nhead ${head}` }, verdictRounds: 1 },
+  };
+  const goSprint = sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [noGo], qaTickets: [] });
+  const [fix] = planFixes({
+    cards, sprints: new Map([['cs', goSprint]]), ledger: liveReview, fleet: FLEET, at,
+  });
+  assert.equal(dispatchKey(fix), '2011:fix:f5f5f5f5');
+
+  // (г) a judged review entry does not block the fix.
+  const judgedReview = { dispatched: {
+    '2011:review:f5f5f5f5': {
+      ...liveReview.dispatched['2011:review:f5f5f5f5'],
+      judged: 'ok', judgedAt: '2026-08-31T05:59:00.000Z',
+    },
+  } };
+  const afterJudged = planFixes({
+    cards, sprints: new Map([['cs', s]]), ledger: judgedReview, fleet: FLEET, at,
+  });
+  assert.equal(afterJudged.length, 1, 'a judged review releases the fix');
+});
+
+test('a review is not planned while a fix of the same head is running', () => {
+  const at = '2026-08-31T06:00:00.000Z';
+  const h1 = 'e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7';
+  const h2 = 'e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8';
+  const unit = {
+    unit: 'U12', ticket: 2012, title: 'FIN-U12', branch: 'feat/fin-u12', state: 'pr open', deps: [],
+    pr: { number: 2112, headSha: h1, draft: false, verdictOnHead: null, verdictRounds: 0, ci: { color: 'green' } },
+  };
+  const s = sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unit], qaTickets: [] });
+  const liveFix = { dispatched: {
+    '2012:fix:e7e7e7e7': {
+      ticket: 2012, kind: 'fix', round: 1, head: h1, host: 'lanes-01', lane: 'lanes-01/lane-2',
+      result: 'launched', at: '2026-08-31T05:58:00.000Z',
+    },
+  } };
+  const held = planReviews({ cards, sprints: new Map([['cs', s]]), ledger: liveFix, fleet: FLEET, at });
+  assert.equal(held.length, 0, 'the head is about to move — no review on it');
+
+  // The fixer pushed h2: its entry keeps h1, so the new head reviews freely.
+  const moved = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'],
+    units: [{ ...unit, pr: { ...unit.pr, headSha: h2 } }],
+    qaTickets: [],
+  });
+  const [review] = planReviews({ cards, sprints: new Map([['cs', moved]]), ledger: liveFix, fleet: FLEET, at });
+  assert.equal(dispatchKey(review), '2012:review:e8e8e8e8');
+});
+
 test('a light lane (no builds) is never chosen for a unit that needs a build', () => {
   const s = sprint({ free: ['lanes-01/lane-3'] });
   const { pairs, holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET });

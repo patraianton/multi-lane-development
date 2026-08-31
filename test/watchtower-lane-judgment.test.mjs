@@ -182,6 +182,101 @@ test('three freed develop lanes without proof fail once per round and notify Stu
   }
 });
 
+test('a judged-ok fix (the head changed) does not clear the failure streak', async () => {
+  const heldFacts = {
+    ...FACTS,
+    sourceAt: {
+      lanes: FACTS_AT,
+      prs: '2020-01-01T00:00:00Z',
+      mergedPrs: '2020-01-01T00:00:00Z',
+      tickets: '2020-01-01T00:00:00Z',
+    },
+  };
+  const board = await startBoard({
+    port: 15029,
+    config: { source: 'probe' },
+    files: { 'sprint-facts.json': heldFacts },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '250',
+    }),
+  });
+
+  try {
+    const created = await postJson(board.base, '/pipeline/card/create', { title: 'Carousel sprint', spec: 'the spec' });
+    const parent = created.body.card.id;
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'grilled' });
+    await postJson(board.base, '/pipeline/card/update', { id: parent, links: { ticket: UMBRELLA } });
+    await postJson(board.base, '/pipeline/card/move', { id: parent, to: 'ticketed' });
+    const unit = await until(async () => {
+      const data = (await getJson(board.base, '/pipeline/data')).body;
+      return data.cards.find(card => card.parent === parent && card.ticket === 1516) ?? null;
+    });
+
+    await postJson(board.base, '/pipeline/card/move', { id: unit.id, to: 'development' });
+    const failed = await postJson(board.base, '/pipeline/card/fail', {
+      id: unit.id, kind: 'review', reason: 'R1 — NO-GO',
+    });
+    assert.equal(failed.body.card.consecutiveFails, 1);
+
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    const oldHead = 'abc1234567890000000000000000000000000000';
+    const journal = { dispatched: {} };
+    journal.dispatched['1516:fix:abc12345'] = {
+      card: parent,
+      title: 'Carousel sprint',
+      unit: 'U1',
+      ticket: 1516,
+      branch: 'feat/1516',
+      lane: 'alpha/lane-1',
+      host: 'alpha',
+      kind: 'fix',
+      round: 1,
+      head: oldHead,
+      at: '2026-08-30T08:00:00Z',
+      result: 'launched',
+    };
+    await writeFile(journalFile, JSON.stringify(journal, null, 2));
+    await until(async () => {
+      try {
+        const current = JSON.parse(await readFile(journalFile, 'utf8'));
+        return current.dispatched['1516:fix:abc12345']?.firstSeenFree ? current : null;
+      } catch { return null; }
+    });
+
+    // The fixer pushed a new head: the fix's proof is real, the judgment is ok.
+    const provedFacts = {
+      ...FACTS,
+      prs: [{
+        number: 1600,
+        branch: 'feat/1516',
+        headSha: 'def9876543210000000000000000000000000000',
+        url: 'https://github.com/acme/web/pull/1600',
+        ci: { color: 'green', text: 'CI green (1)' },
+      }],
+    };
+    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(provedFacts, null, 2));
+
+    await until(async () => {
+      const current = JSON.parse(await readFile(journalFile, 'utf8'));
+      return current.dispatched['1516:fix:abc12345']?.judged === 'ok' ? current : null;
+    });
+    // Judged ok says only "the head changed" — the streak survives; the next
+    // two failures make three in a row and the card goes stuck.
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const data = (await getJson(board.base, '/pipeline/data')).body;
+    const afterFix = data.cards.find(card => card.id === unit.id);
+    assert.equal(afterFix.consecutiveFails, 1, 'a judged-ok fix must not reset the streak');
+
+    await postJson(board.base, '/pipeline/card/fail', { id: unit.id, kind: 'review', reason: 'R2 — NO-GO' });
+    const third = await postJson(board.base, '/pipeline/card/fail', { id: unit.id, kind: 'review', reason: 'R3 — NO-GO' });
+    assert.equal(third.body.card.stage, 'stuck', 'three NO-GOs across ok fixes reach Stuck');
+    assert.equal(third.body.card.consecutiveFails, 3);
+  } finally {
+    await board.stop();
+  }
+});
+
 test('a proved lane clears only the failure streak that predates its free observation', async () => {
   const heldFacts = {
     ...FACTS,

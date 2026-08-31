@@ -46,6 +46,11 @@ U2b #1685 on hostinger/lane-4 by lane number (`state/edge-cases.md`).
 Queue order when lanes are few: **review, fix, develop**; sprints top to bottom as the owner orders the cards,
 units in umbrella order. A QA finding is a ticket, so it is develop.
 
+One live lane per PR head: while the board's own review of a head is running, a fix on that head waits (its
+hold names the reason) — otherwise the fixer moves the head under the reviewer and the verdict lands on a dead
+head. A NO-GO on the head releases the fix at once. Mirrored: while a fix of a head is running, that head is
+not sent to review; the new head reviews freely once it appears.
+
 Branch = the ticket's `Branch:` line, else `feat/<ticket number>`. Base = `origin/main`, or the head of the one
 dependency's open PR. An existing branch is continued from.
 
@@ -96,7 +101,9 @@ One counter per card, `consecutiveFails`: +1 on `NO-GO`, on a red check, and on 
 free again — or that other work has taken over — without its proof. A lane is taken over when, twenty minutes
 after the launch, it is busy on someone else's `TASK-<n>` or, where the lane cannot say, on a branch that is
 neither the unit's, nor its base, nor a trunk. The task re-enters the queue as the next round, another host
-first. The third failure in a row → `stuck`. A comment on the ticket whose first line starts with `QUESTION` → `stuck` at once.
+first. The third failure in a row → `stuck`. The streak is broken only by real progress — a develop PR, a
+closed qa-run ticket, a current-head GO; a judged fix ("the head changed") or review ("a verdict exists")
+does not break it, so a review→fix carousel stops itself on the third NO-GO. A comment on the ticket whose first line starts with `QUESTION` → `stuck` at once.
 `stuck` → one Telegram line to the owner. To return the card:
 
 ```
