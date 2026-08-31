@@ -281,7 +281,7 @@ test('without the label the same verdict-free facts still wait for the verdict',
   }
 });
 
-test('hold-merge produces only the owner table line, even while other merge facts are missing', async () => {
+test('a PR-side hold-merge produces only the owner table line and skips every pre-merge action', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-held-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
@@ -292,8 +292,9 @@ test('hold-merge produces only the owner table line, even while other merge fact
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     const heldFacts = facts();
-    // no-review beside it changes nothing: hold-merge always wins.
-    heldFacts.unitIssues[1600][0].labels = ['hold-merge', 'no-review'];
+    // The ticket's no-review path changes nothing: the PR-side hold always wins.
+    heldFacts.unitIssues[1600][0].labels = ['no-review'];
+    heldFacts.prs[0].labels = ['hold-merge'];
     heldFacts.prs[0].ci = { color: 'red', text: 'CI red (1)', headSha: HEAD };
     heldFacts.prs[0].mergeable = 'UNKNOWN';
     const previousFailure = {
