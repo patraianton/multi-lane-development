@@ -28,7 +28,7 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import {
-  configurePipeline, handlePipeline, setPipelineBoard, setShadowFacts, pipelineStaleProblems,
+  configurePipeline, handlePipeline, setPipelineBoard,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
   failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
@@ -54,10 +54,6 @@ import {
   notifyOwner,
   notifyDone,
 } from './telegram-bot.mjs';
-import {
-  configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
-  accessDecision, signInPage, withJsonBody,
-} from './auth.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
@@ -139,13 +135,6 @@ const DEFAULTS = {
   lanes: {},
   // The same for CI runners (FLEET.md), keyed by runner name.
   ciSlots: {},
-  // Shared secret the probe sends as Authorization: Bearer. Empty — every
-  // /probe/* path answers 403 until one is set.
-  probeToken: '',
-  // Shared secret agents send as Authorization: Bearer on /pipeline/* when
-  // founder sign-in is on. Empty — those paths then need a session or
-  // localhost instead. Unused while `auth.founders` is empty.
-  apiToken: '',
   // Where window data comes from: "local" talks to herdr on this machine
   // (the original board); "probe" uses the last snapshot the probe posted.
   source: 'local',
@@ -330,8 +319,6 @@ function applyConfig(raw) {
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
-  config.probeToken = String(config.probeToken ?? '').trim();
-  config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.autoDispatch = src.autoDispatch === true;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
@@ -339,9 +326,6 @@ function applyConfig(raw) {
   onGithubIdentityConfig(config.github);
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
-  // Missing, broken or empty founders list → null, and the board stays open.
-  config.auth = parseAuth(src);
-  reportAuthWarnings(config.auth);
   config.subscriptions = parseSubscriptions(src.subscriptions);
   const telegramOn = wireTelegram(src.telegram);
   config.telegramOn = telegramOn;
@@ -416,17 +400,6 @@ function wireTelegram(raw) {
   }
   noteTelegram(dryRun ? 'telegram notifications: dry-run' : 'telegram notifications: on');
   return true;
-}
-
-// Risky sign-in settings are said out loud once, and again whenever they change,
-// so the operator sees them in `journalctl -u watchtower`.
-let lastAuthWarning = '';
-function reportAuthWarnings(auth) {
-  const lines = authWarnings(auth);
-  const key = lines.join('\n');
-  if (key === lastAuthWarning) return;
-  lastAuthWarning = key;
-  for (const line of lines) console.warn(`auth warning: ${line}`);
 }
 
 const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
@@ -2459,9 +2432,6 @@ function lanesFor(allLanes, branch) {
 // ------------------------------------------------- probe snapshot (source=probe)
 
 const SNAPSHOT_FILE = path.join(STATE_DIR, 'probe-snapshot.json');
-const SNAPSHOT_MAX = 2 * 1024 * 1024;
-
-class PayloadTooLarge extends Error {}
 
 // Last snapshot the probe posted: { receivedAt, snapshot }. Loaded from disk
 // on the first read so a restart still has windows to draw.
@@ -2484,20 +2454,6 @@ async function loadProbeSnapshot() {
     probeSnapshot = null;
   }
   return probeSnapshot;
-}
-
-async function saveProbeSnapshot(body) {
-  const stored = { receivedAt: new Date().toISOString(), snapshot: normalizeSnapshot(body) };
-  const prev = probeSnapshot;
-  probeSnapshot = stored;
-  probeSnapshotLoaded = true;
-  try {
-    await writeJsonAtomic(SNAPSHOT_FILE, stored);
-  } catch (e) {
-    probeSnapshot = prev;
-    throw new Error(`could not save the probe snapshot to disk: ${String(e?.message || e)}`);
-  }
-  return stored;
 }
 
 function asList(v) {
@@ -2752,8 +2708,6 @@ async function collect() {
 
   const programs = programsSource.value ?? new Map();
   const prs = prSource.value ?? [];
-  const mergedPrs = mergedPrSource.value ?? [];
-  const unitIssues = unitIssuesSource.value ?? new Map();
   const umbrellas = umbrellaSource.value ?? new Map();
   const laneHosts = lanesSource.value ?? [];
   const allLanes = laneHosts.flatMap(h => (h.lanes ?? []).map(l => ({ ...l, hostOk: h.ok })));
@@ -2807,19 +2761,6 @@ async function collect() {
       if (via) cardPrs.push({ ...pr, via });
     }
     cardPrs.sort((a, b) => b.number - a.number);
-    // Merged PRs of this window: the same strong bindings, plus the numbers the
-    // window named itself (weak — good enough as evidence of delivered work,
-    // never used alone to move a card forward).
-    const cardMerged = [];
-    for (const pr of mergedPrs) {
-      const via = strongVia(pr);
-      if (via) cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via, strong: true });
-      else if (mentioned.has(pr.number)) {
-        cardMerged.push({ number: pr.number, mergedAt: pr.mergedAt, via: 'named by the window', strong: false });
-      }
-    }
-    cardMerged.sort((a, b) => b.number - a.number);
-
     // Umbrella issue: from the PROGRAM-STATE.md of a program with the same name,
     // else from a number the window named.
     let program = null;
@@ -2899,10 +2840,6 @@ async function collect() {
       askReasons,
       column,
       tabCount,
-      _shadow: {
-        merged: cardMerged,
-        openUnitIssues: umbrellaNo ? (unitIssues.get(umbrellaNo) ?? []).filter(i => i.state !== 'CLOSED') : [],
-      },
     });
   }
 
@@ -2919,36 +2856,6 @@ async function collect() {
     c.prs.sort((a, b) => b.number - a.number);
     delete c.mentioned;
   }
-
-  // Facts for the pipeline's shadow verdicts (step 1: the board only says what
-  // it WOULD do — no transition is written anywhere). A source that is dead or
-  // older than ten minutes makes every verdict "facts incomplete": unknown is
-  // never read as empty.
-  const FRESH_MS = 10 * 60 * 1000;
-  const staleSources = [lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]
-    .filter(s => !s.ok || !s.at || (Date.now() - s.at) > FRESH_MS)
-    .map(s => s.name);
-  const shadowFacts = new Map();
-  for (const c of cards) {
-    if (c.manual) continue;
-    const factsForCard = {
-      openPrs: c.prs.map(pr => ({
-        number: pr.number,
-        ci: pr.ci?.color ?? 'none',
-        strong: pr.via !== 'named by the window',
-        createdAt: pr.createdAt ?? null,
-      })),
-      merged: c._shadow.merged,
-      openUnitIssues: c._shadow.openUnitIssues.map(i => ({ number: i.number, createdAt: i.createdAt })),
-      umbrella: c.umbrella?.number ?? null,
-      laneBusy: c.lanes.length > 0,
-      working: c.status === 'working',
-    };
-    shadowFacts.set(c.name, factsForCard);
-    if (c.window && c.window !== c.name) shadowFacts.set(c.window, factsForCard);
-    delete c._shadow;
-  }
-  setShadowFacts({ facts: shadowFacts, staleSources, at: now });
 
   // Nudge the 30-second sprint sweep without resetting its own clock.
   sprintSource.tick();
@@ -3041,7 +2948,7 @@ async function collect() {
 
 // --------------------------------------------- the agent view (/api/board)
 //
-// An endpoint for a watchdog agent: the same board without a picture and without
+// An endpoint for an agent: the same board without a picture and without
 // a browser. Its shape is pinned separately from /data: the page lives on /data
 // and its fields change together with the layout, while the agent reads
 // /api/board, so editing the page does not break it.
@@ -3253,83 +3160,6 @@ function renderToonCard(c) {
 // the pipeline endpoints answer in the same shape and reject a bad parameter
 // with the same words.
 
-function probeAuthError(req) {
-  const token = String(config.probeToken ?? '').trim();
-  if (!token) return { code: 403, text: 'probe access is not configured' };
-  const hdr = String(req.headers.authorization ?? '').trim();
-  const m = /^Bearer\s+(.+)$/i.exec(hdr);
-  if (!m || m[1].trim() !== token) return { code: 401, text: 'unauthorized' };
-  return null;
-}
-
-// Reading the body without killing the connection. A body with no
-// Content-Length (chunked) is only known to be too large half way through it,
-// and tearing the socket down there left the probe with a reset connection
-// instead of an answer. So the rest is read and thrown away — up to a sane
-// bound — and the request then fails as 413, which the client can actually
-// read.
-const SNAPSHOT_DRAIN_MAX = 16 * 1024 * 1024;
-
-function readSnapshotBytes(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    let over = false;
-    let discarded = 0;
-    const finish = (fn, arg) => {
-      req.off('data', onData);
-      req.off('end', onEnd);
-      req.off('error', onErr);
-      fn(arg);
-    };
-    const onData = (chunk) => {
-      if (over) {
-        discarded += chunk.length;
-        // Past this point the sender is not going to stop on its own; there is
-        // nothing to be gained by reading further.
-        if (discarded > SNAPSHOT_DRAIN_MAX) finish(reject, new PayloadTooLarge('payload too large'));
-        return;
-      }
-      size += chunk.length;
-      if (size > SNAPSHOT_MAX) {
-        over = true;
-        chunks.length = 0;
-        return;
-      }
-      chunks.push(chunk);
-    };
-    const onEnd = () => {
-      if (over) finish(reject, new PayloadTooLarge('payload too large'));
-      else finish(resolve, Buffer.concat(chunks));
-    };
-    const onErr = (e) => finish(reject, e);
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', onErr);
-  });
-}
-
-async function readSnapshotBody(req) {
-  const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > SNAPSHOT_MAX) {
-    throw new PayloadTooLarge('payload too large');
-  }
-  const body = await readSnapshotBytes(req);
-  if (!body.length) throw new BadRequest('malformed snapshot: body is empty');
-  let parsed;
-  try { parsed = JSON.parse(body.toString('utf8')); }
-  catch { throw new BadRequest('malformed snapshot: body cannot be parsed'); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new BadRequest('malformed snapshot: an object was expected');
-  }
-  for (const key of ['windows', 'tabs', 'panes', 'agents']) {
-    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
-      throw new BadRequest(`malformed snapshot: ${key} must be an array`);
-    }
-  }
-  return parsed;
-}
-
 const TAB_RX = /^w[0-9A-Za-z]*:t[0-9A-Za-z]+$/;
 // A project name comes from the herdr snapshot: a folder name, so no control
 // characters, no path separators and nothing longer than a folder can be.
@@ -3355,45 +3185,11 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
-    if (await handleAuth(req, res, url, { port: PORT, config })) return;
-
-    // Sign-in is off (no auth.founders) — the rest of the board is reached
-    // exactly as before. When it is on, a session, localhost-as-owner or
-    // (on agent paths) apiToken is required before anything else runs.
-    if (authEnabled(config)) {
-      const viewer = await resolveViewer(req, config);
-      const decision = accessDecision(req, url, viewer);
-      if (decision === 'signin') {
-        return send(res, 200, signInPage(), 'text/html; charset=utf-8');
-      }
-      if (decision === 'deny') {
-        return send(res, 401, JSON.stringify({ error: 'unauthorized' }));
-      }
-      // A signed-in founder commenting without an author: fill it in here so
-      // pipeline.mjs can keep requiring one. Agents (apiToken) still send their
-      // own author.
-      if (viewer.founder && req.method === 'POST' && url.pathname === '/pipeline/card/comment') {
-        const body = await readBody(req);
-        if (!String(body.author ?? '').trim()) body.author = viewer.founder.name;
-        req = withJsonBody(req, body);
-      }
-    }
-
     // The pipeline owns everything under /pipeline/… and /api/pipeline. It is
     // asked first and answers only its own paths, so the windows view below is
     // reached exactly as before.
     if (await handlePipeline(req, res, url, PORT)) return;
 
-    const probeOnly = url.pathname.startsWith('/probe/');
-    if (probeOnly) {
-      const denied = probeAuthError(req);
-      if (denied) return sendText(res, denied.code, denied.text);
-    }
-    if (req.method === 'POST' && url.pathname === '/probe/snapshot') {
-      const body = await readSnapshotBody(req);
-      const stored = await saveProbeSnapshot(body);
-      return send(res, 200, JSON.stringify({ ok: true, receivedAt: stored.receivedAt }));
-    }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/board')) {
       return send(res, 200, await readFile(PAGE_FILE), 'text/html; charset=utf-8');
     }
@@ -3402,7 +3198,7 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
-    // The board for a watchdog agent: no page, no pictures, short text. Built by
+    // The board for an agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
     // timers, so this costs no extra ssh or gh call.
     if (req.method === 'GET' && url.pathname === '/api/board') {
@@ -3417,24 +3213,6 @@ const server = http.createServer(async (req, res) => {
           + 'help: check that herdr answers — herdr api snapshot');
       }
       const view = buildAgentBoard(payload, p.full);
-      try {
-        const stale = await pipelineStaleProblems();
-        if (stale.count) {
-          const n = stale.count;
-          const ids = stale.ids.join(', ');
-          view.problems.push({
-            source: 'watchdog',
-            error: n === 1
-              ? `1 active card has a stale Status (older than ${stale.staleAfterMin}m): ${ids}`
-              : `${n} active cards have a stale Status (older than ${stale.staleAfterMin}m): ${ids}`,
-          });
-        }
-      } catch (e) {
-        view.problems.push({
-          source: 'watchdog',
-          error: `could not read pipeline Status: ${String(e?.message || e)}`,
-        });
-      }
       if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
       return sendText(res, 200, renderToonBoard(view));
     }
@@ -3569,12 +3347,6 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 404, '{"error":"no such path"}');
   } catch (e) {
-    if (e instanceof PayloadTooLarge) {
-      // The answer goes out first; the connection is closed after it, so the
-      // client reads 413 rather than a reset.
-      if (!res.headersSent) res.setHeader('Connection', 'close');
-      return sendText(res, 413, e.message);
-    }
     if (e instanceof BadRequest) return send(res, 400, JSON.stringify({ error: e.message }));
     send(res, 500, JSON.stringify({ error: String(e?.message || e) }));
   }
@@ -3582,7 +3354,6 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
-configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
 // The start-of-life identity check (then hourly inside the gate): a wrong or

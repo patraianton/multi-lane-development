@@ -93,15 +93,9 @@ const STUCK_AFTER = 3;
 // tickets, which no move is allowed to do.
 const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr']);
 
-// What the watchdog may write into a card's status line (Wave G writes it; the
-// value is validated here so a wrong word never reaches the board).
+// The optional verdict carried by a card's status line. The value is validated
+// here so a wrong word never reaches the board.
 const VERDICTS = ['moving', 'stalled', 'looping'];
-
-// Stages the Watchdog scores. A missing or old Status on one of these is a
-// signal: the checker is meant to refresh every intervalMin minutes.
-const ACTIVE_STATUS_STAGES = new Set(['development', 'local_check', 'ci_pr']);
-const DEFAULT_WATCHDOG_INTERVAL_MIN = 15;
-const STALE_MULTIPLIER = 2;
 
 // ------------------------------------------------------------------- limits
 
@@ -467,13 +461,10 @@ export function fmtDur(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-// ---------------------------------------------------------------- status / stale
+// -------------------------------------------------------------------- status
 //
-// Status is "what is happening right now", written by the Watchdog. It is not
-// the Stage. A Status is stale when an active card has none, or the one it
-// has is older than twice the Watchdog's interval (default 15 min → 30 min).
-// Without a watchdog.json the missing-Status case is silent: the surface
-// shows nothing until a Status exists.
+// Status is optional card data: a short line, verdict and write time. It is not
+// the Stage and no background process is assumed to refresh it.
 
 function hasStatus(card) {
   const s = card?.status;
@@ -484,57 +475,6 @@ function hasStatus(card) {
 function statusAgeMs(card, now = Date.now()) {
   const t = Date.parse(card?.status?.at);
   return Number.isFinite(t) ? Math.max(0, now - t) : null;
-}
-
-async function loadWatchdogMeta() {
-  const intervalMin = DEFAULT_WATCHDOG_INTERVAL_MIN;
-  const empty = {
-    configured: false,
-    intervalMin,
-    staleAfterMs: intervalMin * STALE_MULTIPLIER * 60 * 1000,
-  };
-  if (!FILE) return empty;
-  const raw = await readJsonSoft(path.join(path.dirname(FILE), 'watchdog.json'), null);
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
-  let next = intervalMin;
-  const n = Number(raw.intervalMin);
-  if (Number.isFinite(n) && n >= 1) next = n;
-  return {
-    configured: Boolean(String(raw.boardUrl ?? '').trim()),
-    intervalMin: next,
-    staleAfterMs: next * STALE_MULTIPLIER * 60 * 1000,
-  };
-}
-
-function isStaleStatus(card, meta, now = Date.now()) {
-  if (!ACTIVE_STATUS_STAGES.has(card.stage)) return false;
-  if (!hasStatus(card)) return Boolean(meta?.configured);
-  const age = statusAgeMs(card, now);
-  if (age == null) return true;
-  return age > (meta?.staleAfterMs ?? emptyStaleAfterMs());
-}
-
-function emptyStaleAfterMs() {
-  return DEFAULT_WATCHDOG_INTERVAL_MIN * STALE_MULTIPLIER * 60 * 1000;
-}
-
-function staleList(cards, meta, now) {
-  return cards.filter(c => isStaleStatus(c, meta, now));
-}
-
-// Used by the windows agent view (/api/board problems) so a stale Status is
-// visible next to ssh/gh failures, without that view owning pipeline rules.
-export async function pipelineStaleProblems() {
-  const st = await load();
-  const meta = await loadWatchdogMeta();
-  const now = Date.now();
-  const cards = staleList(st.cards, meta, now);
-  return {
-    count: cards.length,
-    intervalMin: meta.intervalMin,
-    staleAfterMin: meta.intervalMin * STALE_MULTIPLIER,
-    ids: cards.map(c => c.id),
-  };
 }
 
 // ------------------------------------------------------------------- actions
@@ -933,7 +873,7 @@ async function updateCard(body) {
   });
 }
 
-// The Watchdog's contract: POST /pipeline/card/<id>/status { text, verdict }.
+// Plain status write: POST /pipeline/card/<id>/status { text, verdict }.
 // Id is in the path, not the body. Verdict is required and must be one of the
 // three words; text is clipped to LIMIT.status. This is a refresh, not a
 // second event — posting the same Status twice only updates `at`.
@@ -1070,7 +1010,6 @@ export async function sweepArtifactAnswers(probe) {
 // second without a request per second.
 async function pageData() {
   const st = await load();
-  const meta = await loadWatchdogMeta();
   return {
     stages: STAGES,
     stuckAfter: STUCK_AFTER,
@@ -1080,28 +1019,12 @@ async function pageData() {
     // button and never shows "waiting for a subscription": the assign endpoint
     // has no names to offer there anyway.
     usesSubscriptions: BOARD.subscriptions.length > 0,
-    watchdogIntervalMin: meta.intervalMin,
-    watchdogConfigured: meta.configured,
     offBoard: OFF_BOARD,
     idleLanes: IDLE_LANES,
     autoDispatch: AUTO_DISPATCH,
     cards: st.cards.map(c => cardExtras(c, st.cards)),
   };
 }
-
-// ---------------------------------------------------------------- shadow
-//
-// Step 1 of "the board decides the stage itself": for every window card (a card
-// with a window) the board computes what stage it WOULD set from observable
-// facts — open PRs, merged PRs, open unit tickets of the umbrella, lanes — and
-// writes it NOWHERE. The verdict is shown on the card and in the JSON, so the
-// rule can be checked against reality before any automatic transition exists.
-// Facts arrive from watchtower.mjs after every sweep of the windows board.
-//
-// Unknown is never read as empty: a dead or stale source voids every verdict.
-// A card also needs an umbrella so its sprint scope can be read from issues.
-const AUTO_ELIGIBLE = new Set(['development', 'local_check', 'ci_pr', 'merged', 'done']);
-let shadowMap = new Map(); // card id -> { would, same, reasons, at }
 
 // Sprint facts (bin/sprint-facts.mjs): for a card whose ticket link is an
 // umbrella issue, its unit tickets bound to lanes and PRs by facts.
@@ -1135,8 +1058,7 @@ export async function setCardReadyAt(id, readyAt) {
 }
 
 function cardExtras(c, all = []) {
-  const extra = {};
-  if (shadowMap.has(c.id)) extra.shadow = shadowMap.get(c.id);
+  const extra = { shadow: null };
   if (sprintMap.has(c.id)) extra.sprint = sprintMap.get(c.id);
   if (c.parent) {
     const parent = all.find(p => p.id === c.parent);
@@ -1427,51 +1349,6 @@ export async function syncSprintUnits(sprints) {
   return { spawned: result.spawned, moved: result.moved };
 }
 
-export function setShadowFacts({ facts, staleSources, at }) {
-  const cards = state?.cards ?? [];
-  const next = new Map();
-  for (const card of cards) {
-    if (!card.window || !AUTO_ELIGIBLE.has(card.stage)) continue;
-    next.set(card.id, shadowVerdict(card, facts.get(card.window), staleSources ?? [], at));
-  }
-  shadowMap = next;
-}
-
-function shadowVerdict(card, f, staleSources, at) {
-  const v = { would: null, same: false, reasons: [], at: at ?? null };
-  if (staleSources.length) {
-    v.reasons.push(`facts incomplete: ${staleSources.join(', ')}`);
-    return v;
-  }
-  if (!f) {
-    v.reasons.push('window is not on the windows board');
-    return v;
-  }
-  if (f.openPrs.length) {
-    v.would = 'ci_pr';
-    v.reasons.push(`open PRs: ${f.openPrs.map(p => '#' + p.number).join(' ')}`);
-    const red = f.openPrs.filter(p => p.ci === 'red').map(p => '#' + p.number);
-    if (red.length) v.reasons.push(`CI red on ${red.join(' ')}`);
-  } else if (f.laneBusy) {
-    v.would = 'development';
-    v.reasons.push('a lane of this window is busy');
-  } else if (f.working) {
-    v.would = 'development';
-    v.reasons.push('the agent is working and no PR is open');
-  } else if (!f.umbrella) {
-    v.reasons.push('sprint scope not visible: no umbrella issue');
-  } else if (f.openUnitIssues.length) {
-    v.reasons.push(`scope not empty: open unit tickets ${f.openUnitIssues.map(i => '#' + i.number).join(' ')}`);
-  } else if (!f.merged.length) {
-    v.reasons.push('no merged PRs bound to this window — nothing to finish');
-  } else {
-    v.would = 'done';
-    v.reasons.push(`scope empty, ${f.merged.length} merged PR(s), lanes free`);
-  }
-  v.same = v.would === card.stage;
-  return v;
-}
-
 // --------------------------------------------------------------- agent view
 
 // One card in six fields — the sweep an agent does over the whole pipeline.
@@ -1488,7 +1365,7 @@ function failCell(card) {
   return card.consecutiveFails ? `${all} (${card.consecutiveFails} in a row)` : all;
 }
 
-function agentRow(card, now, meta) {
+function agentRow(card, now) {
   const cl = clocks(card, now);
   const present = hasStatus(card);
   return {
@@ -1519,17 +1396,14 @@ function agentRow(card, now, meta) {
     subscription: card.subscription || '',
     window: card.window || '',
     consecutiveFails: card.consecutiveFails,
-    statusStale: isStaleStatus(card, meta, now),
-    shadow: shadowMap.get(card.id) ?? null,
+    shadow: null,
   };
 }
 
 async function buildAgentPipeline(cards, full, port) {
   const now = Date.now();
-  const meta = await loadWatchdogMeta();
-  const rows = cards.map(c => agentRow(c, now, meta));
+  const rows = cards.map(c => agentRow(c, now));
   const stuck = cards.filter(c => c.stage === 'stuck');
-  const stale = staleList(cards, meta, now);
   const view = {
     pipeline: `http://127.0.0.1:${port}`,
     generated: new Date(now).toISOString(),
@@ -1540,7 +1414,6 @@ async function buildAgentPipeline(cards, full, port) {
       done: cards.filter(c => c.stage === 'done').length,
       failures: cards.reduce((n, c) =>
         n + c.counters.localFails + c.counters.ciFails + c.counters.reviewFails, 0),
-      staleStatus: stale.length,
       units: cards.filter(c => c.parent).length,
       offBoard: OFF_BOARD.findings.length,
       idleLanes: IDLE_LANES.findings.length,
@@ -1553,14 +1426,6 @@ async function buildAgentPipeline(cards, full, port) {
       title: clipText(c.title, full),
       fails: failCell(c),
       waiting: fmtDur(clocks(c, now).byStage.stuck ?? 0),
-    })),
-    stale: stale.map(c => ({
-      id: c.id,
-      title: clipText(c.title, full),
-      age: (() => {
-        const age = statusAgeMs(c, now);
-        return age == null ? 'no time' : fmtDur(age);
-      })(),
     })),
     offBoard: OFF_BOARD.findings.map(f => ({
       kind: f.kind, ref: f.ref, title: clipText(f.title || '-', full), reason: f.reason, fix: f.fix,
@@ -1589,14 +1454,11 @@ function renderToonPipeline(v) {
   const out = [
     `pipeline: ${v.pipeline}`,
     `generated: ${v.generated}`,
-    `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done},`
-      + ` failures ${s.failures}, stale status ${s.staleStatus}`,
+    `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done}, failures ${s.failures}`,
     toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
       'no cards in the pipeline'),
     toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
       'no card is stuck'),
-    toonTable('stale', v.stale, ['id', 'title', 'age'],
-      'no active card has a stale Status'),
     toonTable('off-board', v.offBoard, ['kind', 'ref', 'title', 'reason', 'fix'],
       v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
     toonTable('idle-lanes', v.idleLanes, ['card', 'free', 'queued', 'since'],
@@ -1619,8 +1481,6 @@ function renderToonPipeline(v) {
     + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
-  help.push('stale status: an active card (development, local_check, ci_pr) whose Status is'
-    + ' missing or older than twice the Watchdog interval');
   help.push('off-board: what is being built without a card — open PRs no card carries, tickets'
     + ' in work that name no umbrella, busy lanes on unknown branches; the ledger of such cases'
     + ' is /pipeline/edge-cases (plain text)');
@@ -1652,10 +1512,8 @@ export function specLineCount(spec) {
 async function buildAgentCard(card, withSpec = false) {
   const now = Date.now();
   const cl = clocks(card, now);
-  const meta = await loadWatchdogMeta();
   const age = statusAgeMs(card, now);
   const ageWord = age == null ? 'no time' : `${fmtDur(age)} ago`;
-  const stale = isStaleStatus(card, meta, now);
   const view = {
     id: card.id,
     title: card.title,
@@ -1703,8 +1561,8 @@ async function buildAgentCard(card, withSpec = false) {
     })),
     status: hasStatus(card)
       ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
-        + `${stale ? ', stale' : ''})`
-      : (stale ? 'stale — watchdog has not written one yet' : '-'),
+        + ')'
+      : '-',
     summary: card.summary || '-',
     specLines: specLineCount(card.spec),
     // Agents read specs through this endpoint, so the way to the text must be
@@ -1875,7 +1733,7 @@ export async function handlePipeline(req, res, url, port) {
     return true;
   }
 
-  // Watchdog Status write: POST /pipeline/card/<id>/status { text, verdict }.
+  // Plain status write: POST /pipeline/card/<id>/status { text, verdict }.
   // Checked before the action table so an id that happens to match an action
   // name cannot steal this path.
   if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')
