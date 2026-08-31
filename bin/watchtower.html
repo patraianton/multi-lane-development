@@ -986,10 +986,13 @@ function toggleDispatchFold() { folds.dispatch = !folds.dispatch; saveFolds(); i
 function toggleJournalFold() { folds.journal = !folds.journal; saveFolds(); renderJournal(); }
 
 const JOURNAL_FILTERS = { all: '', merge: 'merge', alarm: 'alarm', dispatch: 'dispatch', errors: 'error' };
+const JOURNAL_TIMEOUT_MS = 2500;
 let journalFilter = 'all';
 let journalLines = [];
 let journalError = '';
 let journalSeen = '';
+let journalRequestId = 0;
+let journalController = null;
 
 function renderJournal() {
   const seen = JSON.stringify([folds.journal, journalFilter, journalLines, journalError]);
@@ -1019,18 +1022,28 @@ function renderJournal() {
 }
 
 async function refreshJournal() {
+  const requestId = ++journalRequestId;
+  if (journalController) journalController.abort();
+  const controller = new AbortController();
+  journalController = controller;
+  const timeout = setTimeout(() => controller.abort(new Error('request timed out')), JOURNAL_TIMEOUT_MS);
   try {
     const word = JOURNAL_FILTERS[journalFilter] || '';
     const path = '/api/log?lines=200' + (word ? '&filter=' + encodeURIComponent(word) : '');
-    const response = await fetch(path, { cache: 'no-store' });
+    const response = await fetch(path, { cache: 'no-store', signal: controller.signal });
     const data = await response.json();
     if (!response.ok || data.error) throw new Error(data.error || 'request failed');
+    if (requestId !== journalRequestId) return;
     journalLines = Array.isArray(data.lines) ? data.lines : [];
     journalError = '';
   } catch (e) {
+    if (requestId !== journalRequestId) return;
     journalError = 'the journal did not answer: ' + (e && e.message ? e.message : e);
+  } finally {
+    clearTimeout(timeout);
+    if (journalController === controller) journalController = null;
+    if (requestId === journalRequestId) renderJournal();
   }
-  renderJournal();
 }
 // Each sprint owns its table order. Refreshes rebuild the band, so sorting
 // lives outside the DOM and survives the three-second redraw cycle.
@@ -2048,7 +2061,7 @@ function wirePipeline(data) {
 
 async function pipePoll() {
   if (pipeTimer) { clearTimeout(pipeTimer); pipeTimer = null; }
-  const journalRequest = refreshJournal();
+  void refreshJournal();
   try {
     const r = await fetch('/pipeline/data', { cache: 'no-store' });
     const d = await r.json();
@@ -2065,7 +2078,6 @@ async function pipePoll() {
   } catch (e) {
     showError('the pipeline did not answer: ' + (e && e.message ? e.message : e));
   } finally {
-    await journalRequest;
     pipeTimer = setTimeout(pipePoll, 3000);
   }
 }
