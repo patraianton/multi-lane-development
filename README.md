@@ -8,7 +8,7 @@ The page is the **pipeline**: persistent **cards** in the board's own state. A f
 
 A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
 
-This repository grew from the windows board through waves A–G (pipeline store, remote board, sign-in, Telegram, execution stages, Watchdog). The contracts live under [`docs/`](docs/). This README describes the code and those contracts as they stand. It does not claim a production run or a production test.
+This repository grew from the windows board through several waves. Older contracts live under [`docs/history/`](docs/history/). This README describes the code and current contracts as they stand. It does not claim a production run or a production test.
 
 ---
 
@@ -42,7 +42,7 @@ A successful step along the road resets `consecutiveFails` to zero. So does a hu
 
 Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
 
-**Status** is a different field: a one-line "what is happening right now", written by the Watchdog, with a verdict `moving` / `stalled` / `looping`. It is not the stage.
+**Status** is a different field: a one-line "what is happening right now", with a verdict `moving` / `stalled` / `looping`. It is not the stage.
 
 How a card is created, moved, failed, commented, and updated: [`docs/API.md`](docs/API.md).
 
@@ -58,12 +58,11 @@ Each piece is a small Node process with no extra packages. Local-check defaults 
 | **Probe** | `bin/probe.mjs` | Runs on the owner's machine, next to herdr. Every `intervalSec` seconds it POSTs a herdr snapshot to the board. Lanes, PRs and CI are not in this payload — the board host reads those itself. |
 | **Telegram sender** | `bin/telegram-bot.mjs` | The board sends artifact-ready and done doorbells to the founders' group, plus stuck, idle-lane and ready-for-acceptance alarms to the owner. It never polls Telegram. |
 | **Local-check** | `bin/local-check.mjs` | For a card in `local_check`: on the same lane, run the project's local test command, poll the log for `LOCAL_CHECK_EXIT=N`. Pass → move to `ci_pr`. Fail → `POST /pipeline/card/fail` `{ "kind": "local" }`. |
-| **Watchdog** | `bin/watchdog.mjs` | A separate process from the board. Every `intervalMin` minutes (default 15) it scores each **active** card (`development`, `local_check`, `ci_pr`): lane log tail, CI via `gh` if the card has a PR link, then a cheap language-model command writes Status and a verdict. It never moves a card and never talks to herdr. |
 | **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
 
 The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
 
-Contracts: [`docs/PROBE.md`](docs/PROBE.md), [`docs/TELEGRAM.md`](docs/TELEGRAM.md), [`docs/EXECUTION.md`](docs/EXECUTION.md), [`docs/WATCHDOG.md`](docs/WATCHDOG.md).
+Contracts: [`docs/PROBE.md`](docs/PROBE.md), [`docs/TELEGRAM.md`](docs/TELEGRAM.md), [`docs/EXECUTION.md`](docs/EXECUTION.md).
 
 ---
 
@@ -81,12 +80,11 @@ Another port: set `WATCHTOWER_PORT` before starting (the older `AUTOPASE_BOARD_P
 
 If `ssh` or `gh` are not on the default path, point at them with `WATCHTOWER_SSH` and `WATCHTOWER_GH`. A second instance, or tests, can keep their own files with `WATCHTOWER_STATE_DIR` instead of `state/`.
 
-The probe, Watchdog, and the execution helpers are separate commands. They need their own config files under `state/` (not in git). The Telegram sender is imported by the board. Dry-run first:
+The probe and execution helpers are separate commands. They need their own config files under `state/` (not in git). The Telegram sender is imported by the board. Dry-run first:
 
 ```
 node bin/probe.mjs --once --dry-run
 node bin/local-check.mjs --once <card-id> --dry-run
-node bin/watchdog.mjs --once --dry-run
 node bin/telegram-bot.mjs --selftest
 ```
 
@@ -242,7 +240,7 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
 - `subscriptions` — names the owner may assign with `POST /pipeline/assign-subscription`.
 - `telegram` — send-only notifications. `chatId` is the founders' group and `ownerChatId` is the owner's private chat. Missing, or present without `botToken` → no sends, one log line at start-up.
 
-Other processes have their own files next to that one, also not in git: `state/probe.json`, `state/local-check.json`, `state/watchdog.json`.
+Other processes have their own files next to that one, also not in git: `state/probe.json`, `state/local-check.json`.
 
 The board also writes `state/autopase-seen.json` (when each pane was first seen in its current state — herdr does not keep that), `state/autopase-cards.json` (hidden and hand-typed window cards), `state/pipeline-cards.json`, `state/auth.json`, and `state/probe-snapshot.json`.
 
@@ -282,7 +280,6 @@ Units in `deploy/`:
 | Unit | Command | Installed by `setup.sh`? |
 | --- | --- | --- |
 | `watchtower.service` | `node bin/watchtower.mjs` | Yes |
-| `watchtower-watchdog.service` | `node bin/watchdog.mjs run` | No — enable by hand after `state/watchdog.json` exists (without it the process exits 1 and systemd would restart it in a loop) |
 
 Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
@@ -292,15 +289,14 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 | File | Contents |
 | --- | --- |
-| [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Watchdog, Status, lane, spec, grill, Artifact, probe, ticket, founder |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Waves A–G |
+| [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Status, lane, spec, grill, Artifact, probe, ticket, founder |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Earlier roadmap |
 | [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, auth, probe endpoints |
 | [`docs/history/GRILL.md`](docs/history/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
 | [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
 | [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle and snapshot shape |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Send-only Telegram notifications and config |
 | [`docs/EXECUTION.md`](docs/EXECUTION.md) | Local-check and failure loops |
-| [`docs/WATCHDOG.md`](docs/WATCHDOG.md) | Watchdog sweep, Status contract, stale Status |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Linux install |
 | [`docs/herdr-api.md`](docs/herdr-api.md) | What herdr provides and what it accepts back |
 
