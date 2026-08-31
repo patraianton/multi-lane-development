@@ -2,9 +2,8 @@
 //
 // A thin wrapper over GET /api/board and GET /api/pipeline of the running
 // Watchtower server: it has no logic of its own, the whole answer is composed
-// by the server (bin/watchtower.mjs). It exists so a watchdog agent can read
-// the board and the pipeline with one command, without a browser and without
-// screenshots.
+// by the server (bin/watchtower.mjs). It lets an agent read the board and the
+// pipeline with one command, without a browser or screenshots.
 //
 // Run: node bin\wt.mjs [pipeline | --pipeline | card <id>] [--json] [--full]
 //                       [--spec] [--card <name>]   (or bin\wt.cmd)
@@ -81,7 +80,7 @@ What is in the pipeline answer:
                         done, or stuck
                 clock   delivery time; a done card shows "(stopped)"
                 fails   local / ci / review counts, or "-"
-                verdict the watchdog's word: moving, stalled, looping, or "-"
+                verdict moving, stalled, looping, or "-"
   stuck       cards waiting for a human after three failures in a row
   specs       under --full only, the spec text of every card that has one
 

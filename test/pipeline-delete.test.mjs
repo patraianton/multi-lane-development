@@ -9,7 +9,7 @@ import path from 'node:path';
 import { startBoard, postJson, getJson } from './helpers.mjs';
 
 test('create two cards, delete one — the other is untouched', async () => {
-  const board = await startBoard({ port: 14981, config: { source: 'probe' } });
+  const board = await startBoard({ config: { source: 'probe' } });
   try {
     const first = await postJson(board.base, '/pipeline/card/create',
       { title: 'first card', spec: 'spec one' });

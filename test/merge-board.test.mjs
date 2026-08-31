@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executable, getJson, postJson, startBoard } from './helpers.mjs';
+import { executable, getJson, journalUntil, postJson, startBoard, until } from './helpers.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 const OTHER = 'def12345abcdef0123456789abcdef0123456789';
@@ -74,28 +74,6 @@ async function createTicketed(board) {
   return id;
 }
 
-async function until(base, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    last = (await getJson(base, '/api/pipeline?format=json')).body;
-    if (ready(last)) return last;
-    if (Date.now() > deadline) throw new Error(`merge fixture did not settle in ${ms}ms: ${JSON.stringify(last?.autoDispatch ?? [])}`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
-async function journalUntil(file, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    let value = null;
-    try { value = JSON.parse(await readFile(file, 'utf8')); } catch { /* not written yet */ }
-    if (ready(value)) return value;
-    if (Date.now() > deadline) throw new Error(`merge journal did not settle in ${ms}ms`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
 async function calls(file) {
   try {
     return (await readFile(file, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
@@ -115,7 +93,6 @@ test('green CI and GO on the current head invokes one squash merge and journals 
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15001,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
@@ -177,7 +154,6 @@ test('a GO naming another head does not call gh or create a merge journal key', 
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15002,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts(OTHER.slice(0, 8)) },
       env: dir => ({
@@ -219,7 +195,6 @@ test('a no-review label merges one green check without any verdict', async () =>
     noReviewFacts.prs[0].verdictRounds = 0;
     noReviewFacts.unitIssues[1600][0].labels = ['no-review'];
     board = await startBoard({
-      port: 15024,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': noReviewFacts },
       env: dir => ({
@@ -260,7 +235,6 @@ test('without the label the same verdict-free facts still wait for the verdict',
     gatedFacts.prs[0].verdictOnHead = null;
     gatedFacts.prs[0].verdictRounds = 0;
     board = await startBoard({
-      port: 15025,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': gatedFacts },
       env: dir => ({
@@ -281,7 +255,7 @@ test('without the label the same verdict-free facts still wait for the verdict',
   }
 });
 
-test('hold-merge produces only the owner table line, even while other merge facts are missing', async () => {
+test('a PR-side hold-merge produces only the owner table line and skips every pre-merge action', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-held-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
@@ -292,8 +266,9 @@ test('hold-merge produces only the owner table line, even while other merge fact
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     const heldFacts = facts();
-    // no-review beside it changes nothing: hold-merge always wins.
-    heldFacts.unitIssues[1600][0].labels = ['hold-merge', 'no-review'];
+    // The ticket's no-review path changes nothing: the PR-side hold always wins.
+    heldFacts.unitIssues[1600][0].labels = ['no-review'];
+    heldFacts.prs[0].labels = ['hold-merge'];
     heldFacts.prs[0].ci = { color: 'red', text: 'CI red (1)', headSha: HEAD };
     heldFacts.prs[0].mergeable = 'UNKNOWN';
     const previousFailure = {
@@ -307,7 +282,6 @@ test('hold-merge produces only the owner table line, even while other merge fact
       },
     };
     board = await startBoard({
-      port: 15004,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': heldFacts, 'auto-dispatch.json': previousFailure },
       env: dir => ({
@@ -348,7 +322,6 @@ test('a failed merge records stderr and stops after three attempts', async () =>
     const failingFacts = facts();
     failingFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
-      port: 15005,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': failingFacts },
       env: dir => ({
@@ -393,7 +366,6 @@ test('autoDispatch off prints would merge without a GitHub mutation or journal w
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15006,
       config: { source: 'probe', autoDispatch: false, repo: 'acme/web' },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
@@ -433,7 +405,6 @@ test('a merged fact wins over an overlapping stale open-PR fact', async () => {
       mergedAt: '2026-08-30T10:00:01.000Z',
     }];
     board = await startBoard({
-      port: 15007,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': overlappingFacts },
       env: dir => ({
@@ -464,7 +435,6 @@ test('merge automation does not begin before the sprint is ticketed', async () =
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15008,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
@@ -508,7 +478,6 @@ test('a hold on a pre-ticket sibling blocks their shared active PR', async () =>
     }];
     sharedFacts.umbrellaStates[1700] = 'OPEN';
     board = await startBoard({
-      port: 15009,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': sharedFacts },
       env: dir => ({
@@ -564,7 +533,6 @@ test('one sibling without no-review keeps the verdict gate on their shared PR', 
     }];
     mixedFacts.umbrellaStates[1700] = 'OPEN';
     board = await startBoard({
-      port: 15027,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': mixedFacts },
       env: dir => ({
@@ -619,7 +587,6 @@ test('a shared PR merges without a verdict once every sibling carries no-review'
     }];
     labelledFacts.umbrellaStates[1700] = 'OPEN';
     board = await startBoard({
-      port: 15028,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': labelledFacts },
       env: dir => ({
@@ -668,7 +635,6 @@ test('a merge refused as out of date updates the branch once and closes the dead
     const behindFacts = facts();
     behindFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
-      port: 15019,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': behindFacts },
       env: dir => ({
@@ -726,7 +692,6 @@ test('after its own update-branch the board carries the GO to the new head', asy
     const behindFacts = facts();
     behindFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
-      port: 15031,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': behindFacts },
       env: dir => ({
@@ -776,7 +741,6 @@ test('an all-no-review PR with an existing GO does not carry that GO after updat
     behindFacts.prs[0].body = 'Ticket: #1624';
     behindFacts.unitIssues[1600][0].labels = ['no-review'];
     board = await startBoard({
-      port: 15032,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': behindFacts },
       env: dir => ({
@@ -813,7 +777,6 @@ test('a stale merging entry is re-judged from GitHub facts: merged PR → merged
   rejudgeFacts.prs = [{ ...rejudgeFacts.prs[0], number: 1633, headSha: OTHER }];
   rejudgeFacts.mergedPrs = [{ number: 1632, branch: 'feat/1624', headSha: HEAD }];
   const board = await startBoard({
-    port: 15030,
     config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
     files: {
       'sprint-facts.json': rejudgeFacts,
@@ -861,7 +824,6 @@ test('an active stale merging entry is re-judged now and retried only on the nex
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15033,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: {
         'sprint-facts.json': facts(),
@@ -921,7 +883,6 @@ test('a concurrent hand field survives a merge outcome while board-owned fields 
     const mergeFacts = facts();
     mergeFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
-      port: 15034,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': mergeFacts },
       env: dir => ({
@@ -966,7 +927,6 @@ test('an update-branch the board could not make says so, and is tried again', as
     const behindFacts = facts();
     behindFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
-      port: 15020,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': behindFacts },
       env: dir => ({
@@ -1017,7 +977,6 @@ test('an argument the OS refuses is a failed merge, not an exception through the
     // 61 KB body on 30.08.
     nullByteFacts.prs[0].title = `Board merge fixture ${String.fromCharCode(0)} #3`;
     board = await startBoard({
-      port: 15021,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': nullByteFacts },
       env: dir => ({
@@ -1044,7 +1003,6 @@ test('a journal that cannot be read at all holds the merge step, alarms, and the
   let board;
   try {
     board = await startBoard({
-      port: 15022,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({
@@ -1086,7 +1044,6 @@ test('a journal that exists but cannot be parsed holds dispatch and merges and a
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
     ].join('\n'));
     board = await startBoard({
-      port: 15032,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: {
         'sprint-facts.json': facts(),
@@ -1125,7 +1082,6 @@ test('a sweep that throws leaves one line in the log', async () => {
     const brokenFacts = facts();
     brokenFacts.unitIssues[1600] = 5; // not a list of tickets: the sweep throws
     board = await startBoard({
-      port: 15023,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': brokenFacts },
       env: dir => ({

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getJson, postJson, startBoard } from './helpers.mjs';
+import { postJson, startBoard, until as waitUntil } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const TELEGRAM = {
@@ -46,16 +46,7 @@ function readyFacts(extraQa = []) {
   };
 }
 
-async function until(base, predicate, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  for (;;) {
-    last = (await getJson(base, '/pipeline/data')).body;
-    if (predicate(last)) return last;
-    if (Date.now() > deadline) throw new Error(`condition not reached: ${JSON.stringify(last)}`);
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-}
+const until = (base, ready) => waitUntil(base, ready, { pathName: '/pipeline/data' });
 
 function count(text, needle) {
   return text.split(needle).length - 1;
@@ -63,7 +54,6 @@ function count(text, needle) {
 
 test('the watchtower persists one readyAt notification and clears it for a later QA ticket', async () => {
   const board = await startBoard({
-    port: 14976,
     config: { source: 'probe', telegram: TELEGRAM },
     files: { 'sprint-facts.json': readyFacts() },
     env: dir => ({
