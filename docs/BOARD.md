@@ -144,11 +144,29 @@ from the board.
 autoDispatch: true                      — the switch; false = the board only says what it would do
 telegram: { botToken, chatId, ownerChatId }   — the group and the owner's private chat; no ownerChatId = no dispatch
 check: "bash ../ci-local-and-stamp.sh"  — the default full local check written into task files
+github: { account, tokenFile }          — the pinned GitHub identity (see below); absent = the gh keyring account
 repo, project, specsDir, hosts, lanes, ciSlots — as before (FLEET.md)
 ```
 
-No new setting and no new state file. Main's health is read from GitHub once a minute and never stored;
-`autoDispatch` remains the only switch.
+Main's health is read from GitHub once a minute and never stored; `autoDispatch` remains the only switch.
+
+### The board GitHub identity
+
+On 31.08 the keyring's "active" gh account turned out to be a banned one, and every GitHub sweep died
+silently for hours. The `github` block makes that impossible:
+
+- `account` — the login the board must act as; `tokenFile` — an absolute path to a file holding that
+  account's token (get it once with `gh auth token -u <account> > state/github-token.txt`; `state/` is
+  not in git). Every `gh` the board spawns then runs with `GH_TOKEN` from that file — inside gh the
+  token wins over the keyring — re-read from disk at most once every 30 s, never printed anywhere.
+- **Fail closed.** The token file missing or empty, or `gh api user` answering with a different login
+  (checked at start and then once an hour), holds every gh sweep — sources, merges, dispatch — and
+  alarms the owner once a day. Nothing ever falls back silently to whatever account the keyring holds.
+- **To replace the token**: write the new token into the same file (`gh auth token -u <account> >
+  state/github-token.txt`). The board picks it up within 30 s; no restart needed. To change the
+  account, edit both fields in the settings — the identity is re-verified at once.
+- **No block at all** — the keyring account is used exactly as before (other installs keep working),
+  and the board says `github identity is not pinned` once at start.
 
 `state/fleet-launch.json`: per host `kitchen`, `launch` (`hzlane {n} "{prompt}"` / `maclane {n} "{prompt}"`),
 optional `shell`, `check`, `browser: true` (the Mac — QA walks); per lane `host`, `n`, optional `noBuilds`,
@@ -167,7 +185,8 @@ threads (`/usr/local/bin/hzlane` on codex-dev and hostinger, `~/.local/bin/macla
 - GitHub auto-merge is off in the product repo; branch protection on `main` — set and changed by hand by the
   owner — requires the `pr-ci` check AND that branches are up to date before merging (`strict`), administrators
   included, so no dispatcher — the board, a hand, another window — can merge a branch that has not been rebuilt on
-  the current `main`. The board's `gh` is the machine's default login.
+  the current `main`. The board's `gh` acts as the identity pinned in the settings (§9); without a `github`
+  block it is the machine's default login.
 
 ## 11. Switch-on checklist
 
