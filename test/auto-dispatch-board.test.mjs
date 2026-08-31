@@ -477,11 +477,12 @@ test('the idle watch still alarms when the planner produced neither a pair nor a
   });
   try {
     const cardId = await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
+    await until(board.base, body => (body.idleLanes ?? []).some(row => row.queued === 'U1 #1516'));
     const old = new Date(Date.now() - 5 * 60_000).toISOString();
     await writeFile(path.join(board.dir, 'idle-lanes.json'), JSON.stringify({
       seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
     }, null, 2));
-    await until(board.base, () => /idle lanes: ALARM[^\n]*U1 #1516/.test(board.output()));
+    await until(() => /idle lanes: ALARM[^\n]*U1 #1516/.test(board.output()));
   } finally {
     await board.stop();
   }
@@ -552,5 +553,50 @@ test('main red holds develop, announces once, and resumes', async () => {
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a dependency on a stuck unit is visible and alarms the owner once', async () => {
+  const umbrella = 'https://github.com/acme/web/issues/1685';
+  const facts = {
+    ...TICKETED_FACTS,
+    unitIssues: {
+      1685: [
+        { number: 1686, title: 'TABLES-U1: parked tables', url: 'https://github.com/acme/web/issues/1686', state: 'OPEN', branch: '', labels: [] },
+        { number: 1687, title: 'TABLES-U2: consumer', url: 'https://github.com/acme/web/issues/1687', state: 'OPEN', branch: '', labels: [], deps: [1686] },
+      ],
+    },
+    umbrellaStates: { 1685: 'OPEN' },
+  };
+  const board = await startBoard({
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+    }),
+  });
+  try {
+    const parent = await createTicketed(board, { title: 'AUTO-TABLES sprint', umbrella });
+    const synced = await until(board.base, body => body.cards.filter(card => card.parent === parent).length === 2);
+    const dependency = synced.cards.find(card => card.parent === parent && card.ticket === 1686);
+    assert.ok(dependency);
+    assert.equal((await postJson(board.base, '/pipeline/card/move', { id: dependency.id, to: 'development' })).status, 200);
+    for (let round = 1; round <= 3; round++) {
+      const failed = await postJson(board.base, '/pipeline/card/fail', {
+        id: dependency.id, kind: 'review', reason: `R${round} — NO-GO`,
+      });
+      assert.equal(failed.status, 200);
+    }
+
+    const api = await until(board.base, body => (body.autoDispatch ?? []).some(row =>
+      row.unit === 'U2 #1687' && row.state === 'held: waits for #1686 (stuck)'));
+    assert.equal(api.cards.find(card => card.id === dependency.id).stage, 'stuck');
+    await new Promise(resolve => setTimeout(resolve, 900));
+    const alarm = /ALARM dependency dead end: #1687 waits for #1686 \(stuck\)/g;
+    assert.equal((board.output().match(alarm) ?? []).length, 1, 'alarmOwner deduplicates repeated sweeps');
+  } finally {
+    await board.stop();
   }
 });
