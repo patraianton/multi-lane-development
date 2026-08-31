@@ -33,11 +33,30 @@ export function parseUnitBranch(body) {
 // "depends on" — "**Depends on:** #1523 (reason), #1524 (reason)", a later
 // "**Dependency added:** also depends on #1521 — …" — yields the tickets it
 // names; "depends on: none" yields nothing.
+function withoutParentheticalText(text) {
+  let depth = 0;
+  let result = '';
+  for (const char of text) {
+    if (char === '(') {
+      depth += 1;
+    } else if (char === ')' && depth > 0) {
+      depth -= 1;
+    } else if (depth === 0) {
+      result += char;
+    }
+  }
+  return result;
+}
+
 export function parseUnitDeps(body) {
   const out = new Set();
   for (const line of String(body ?? '').split(/\r?\n/)) {
-    if (!/\bdepends?\s+on\b/i.test(line)) continue;
-    const list = line.replace(/\([^)]*\)/g, '');
+    const unparenthesized = withoutParentheticalText(line);
+    const marker = /\bdepends?\s+on\b/i.exec(unparenthesized);
+    if (!marker) continue;
+    let list = unparenthesized.slice(marker.index + marker[0].length);
+    const dashTail = /—|[ \t]+-[ \t]+/.exec(list);
+    if (dashTail) list = list.slice(0, dashTail.index);
     for (const m of list.matchAll(/#(\d{3,5})\b/g)) out.add(Number(m[1]));
   }
   return [...out].sort((a, b) => a - b);
