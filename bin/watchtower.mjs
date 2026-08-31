@@ -54,10 +54,6 @@ import {
   notifyOwner,
   notifyDone,
 } from './telegram-bot.mjs';
-import {
-  configureAuth, parseAuth, authEnabled, authWarnings, resolveViewer, handleAuth,
-  accessDecision, signInPage, withJsonBody,
-} from './auth.mjs';
 
 // WATCHTOWER_PORT is the current name; AUTOPASE_BOARD_PORT is still read as a
 // fallback so older installs keep starting on their usual port.
@@ -139,10 +135,6 @@ const DEFAULTS = {
   lanes: {},
   // The same for CI runners (FLEET.md), keyed by runner name.
   ciSlots: {},
-  // Shared secret agents send as Authorization: Bearer on /pipeline/* when
-  // founder sign-in is on. Empty — those paths then need a session or
-  // localhost instead. Unused while `auth.founders` is empty.
-  apiToken: '',
   // Where window data comes from: "local" talks to herdr on this machine
   // (the original board); "probe" uses the last snapshot the probe posted.
   source: 'local',
@@ -327,7 +319,6 @@ function applyConfig(raw) {
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
-  config.apiToken = String(src.apiToken ?? config.apiToken ?? '').trim();
   config.autoDispatch = src.autoDispatch === true;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
@@ -335,9 +326,6 @@ function applyConfig(raw) {
   onGithubIdentityConfig(config.github);
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
-  // Missing, broken or empty founders list → null, and the board stays open.
-  config.auth = parseAuth(src);
-  reportAuthWarnings(config.auth);
   config.subscriptions = parseSubscriptions(src.subscriptions);
   const telegramOn = wireTelegram(src.telegram);
   config.telegramOn = telegramOn;
@@ -412,17 +400,6 @@ function wireTelegram(raw) {
   }
   noteTelegram(dryRun ? 'telegram notifications: dry-run' : 'telegram notifications: on');
   return true;
-}
-
-// Risky sign-in settings are said out loud once, and again whenever they change,
-// so the operator sees them in `journalctl -u watchtower`.
-let lastAuthWarning = '';
-function reportAuthWarnings(auth) {
-  const lines = authWarnings(auth);
-  const key = lines.join('\n');
-  if (key === lastAuthWarning) return;
-  lastAuthWarning = key;
-  for (const line of lines) console.warn(`auth warning: ${line}`);
 }
 
 const cfgSource = makeSource('config', 30000, async () => applyConfig(await readJsonSoft(CONFIG_FILE, {})));
@@ -3257,30 +3234,6 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
-    if (await handleAuth(req, res, url, { port: PORT, config })) return;
-
-    // Sign-in is off (no auth.founders) — the rest of the board is reached
-    // exactly as before. When it is on, a session, localhost-as-owner or
-    // (on agent paths) apiToken is required before anything else runs.
-    if (authEnabled(config)) {
-      const viewer = await resolveViewer(req, config);
-      const decision = accessDecision(req, url, viewer);
-      if (decision === 'signin') {
-        return send(res, 200, signInPage(), 'text/html; charset=utf-8');
-      }
-      if (decision === 'deny') {
-        return send(res, 401, JSON.stringify({ error: 'unauthorized' }));
-      }
-      // A signed-in founder commenting without an author: fill it in here so
-      // pipeline.mjs can keep requiring one. Agents (apiToken) still send their
-      // own author.
-      if (viewer.founder && req.method === 'POST' && url.pathname === '/pipeline/card/comment') {
-        const body = await readBody(req);
-        if (!String(body.author ?? '').trim()) body.author = viewer.founder.name;
-        req = withJsonBody(req, body);
-      }
-    }
-
     // The pipeline owns everything under /pipeline/… and /api/pipeline. It is
     // asked first and answers only its own paths, so the windows view below is
     // reached exactly as before.
@@ -3468,7 +3421,6 @@ const server = http.createServer(async (req, res) => {
 
 await mkdir(STATE_DIR, { recursive: true });
 configurePipeline(STATE_DIR);
-configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
 // The start-of-life identity check (then hourly inside the gate): a wrong or
