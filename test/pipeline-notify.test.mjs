@@ -134,7 +134,6 @@ test('autoDispatch stays off without an owner chat and mirrors timestamped logs'
     umbrellaStates: { 1515: 'OPEN' },
   };
   const board = await startBoard({
-    port: 14995,
     config: { source: 'probe', autoDispatch: true, repo: 'acme/web' },
     files: { 'sprint-facts.json': facts },
     env: dir => ({
@@ -185,7 +184,6 @@ test('autoDispatch stays off without an owner chat and mirrors timestamped logs'
 
 test('links.artifact first set on a grilled card sends the doorbell once', async () => {
   const board = await startBoard({
-    port: 14996,
     config: { source: 'probe', telegram: TELEGRAM },
   });
   try {
@@ -237,7 +235,6 @@ test('links.artifact first set on a grilled card sends the doorbell once', async
 
 test('links.artifact first set on a merged card sends the doorbell', async () => {
   const board = await startBoard({
-    port: 15014,
     config: { source: 'probe', telegram: TELEGRAM },
   });
   try {
@@ -268,7 +265,7 @@ test('links.artifact first set on a merged card sends the doorbell', async () =>
 });
 
 test('no telegram config means the update still works and nothing is sent', async () => {
-  const board = await startBoard({ port: 14997, config: { source: 'probe' } });
+  const board = await startBoard({ config: { source: 'probe' } });
   try {
     const { body } = await postJson(board.base, '/pipeline/card/create', { title: 'Quiet card' });
     const id = body.card.id;

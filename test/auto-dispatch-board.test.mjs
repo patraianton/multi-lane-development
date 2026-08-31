@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executable, startBoard, postJson, getJson } from './helpers.mjs';
+import { executable, getJson, postJson, startBoard, until } from './helpers.mjs';
 
 const TICKETED_UMBRELLA = 'https://github.com/acme/web/issues/1515';
 const MERGED_UMBRELLA = 'https://github.com/acme/web/issues/2600';
@@ -83,18 +83,6 @@ function mergedFacts({ dependencyMerged = false } = {}) {
   };
 }
 
-async function until(base, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    const data = await getJson(base, '/api/pipeline?format=json');
-    last = data.body;
-    if (ready(last)) return last;
-    if (Date.now() > deadline) throw new Error(`board condition was not met in ${ms}ms: ${JSON.stringify(last?.autoDispatch ?? [])}`);
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-}
-
 async function dataUntil(base, ready, ms = 8000) {
   const deadline = Date.now() + ms;
   let last = null;
@@ -140,7 +128,6 @@ async function createTicketed(board, { title, umbrella }) {
 
 test('off by default: a ticketed sprint only plans its first units', async () => {
   const board = await startBoard({
-    port: 14985,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': TICKETED_FACTS, 'fleet-launch.json': FLEET },
     env: dir => ({
@@ -171,7 +158,6 @@ test('off by default: a ticketed sprint only plans its first units', async () =>
 
 test('a merged sprint dispatches QA; qa-run waits for merged dependencies and uses a browser host from main', async () => {
   const board = await startBoard({
-    port: 14986,
     config: { source: 'probe', autoDispatch: false },
     files: { 'sprint-facts.json': mergedFacts(), 'fleet-launch.json': FLEET },
     env: dir => ({
@@ -227,7 +213,6 @@ test('autoDispatch:true writes launching first, then a rules-backed task and kin
       unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
     };
     board = await startBoard({
-      port: 14987,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', check: 'npm run config-check',
         telegram: OWNER_TELEGRAM,
@@ -321,7 +306,6 @@ import('node:fs').then(({ existsSync }) => {
       unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
     };
     board = await startBoard({
-      port: 14989,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         hosts: { hostA: { target: 'mock-a' }, hostB: { target: 'mock-b' } },
@@ -411,7 +395,6 @@ test('a missing committed RULES.md holds the sweep before any launch is journall
       lanes: { 'lane-6': FLEET.lanes['lane-6'] },
     };
     board = await startBoard({
-      port: 14988,
       config: {
         source: 'probe', autoDispatch: true, telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'unused' } },
@@ -448,7 +431,6 @@ test('a held unit is not an idle lane', async () => {
     unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
   };
   const board = await startBoard({
-    port: 15016,
     config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
     files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
     env: dir => ({
@@ -483,7 +465,6 @@ test('the idle watch still alarms when the planner produced neither a pair nor a
     unitIssues: { 1515: [TICKETED_FACTS.unitIssues[1515][0]] },
   };
   const board = await startBoard({
-    port: 15017,
     config: { source: 'probe' },
     files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
     env: dir => ({
@@ -537,7 +518,6 @@ test('main red holds develop, announces once, and resumes', async () => {
       mainCi,
     };
     board = await startBoard({
-      port: 15018,
       config: {
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         hosts: { mac: { target: 'mock-mac' } },

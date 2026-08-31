@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executable, getJson, postJson, startBoard } from './helpers.mjs';
+import { executable, journalUntil, postJson, startBoard, until } from './helpers.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 const UMBRELLA = 'https://github.com/acme/web/issues/1600';
@@ -89,33 +89,11 @@ async function createTicketed(board) {
   return id;
 }
 
-async function until(base, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    last = (await getJson(base, '/api/pipeline?format=json')).body;
-    if (ready(last)) return last;
-    if (Date.now() > deadline) throw new Error(`fixture did not settle in ${ms}ms: ${JSON.stringify(last?.autoDispatch ?? [])}`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
 async function outputUntil(board, rx, ms = 8000) {
   const deadline = Date.now() + ms;
   for (;;) {
     if (rx.test(board.output())) return;
     if (Date.now() > deadline) throw new Error(`no ${rx} in output:\n${board.output()}`);
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-}
-
-async function journalUntil(file, ready, ms = 8000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    let value = null;
-    try { value = JSON.parse(await readFile(file, 'utf8')); } catch { /* not written yet */ }
-    if (ready(value)) return value;
-    if (Date.now() > deadline) throw new Error(`journal did not settle in ${ms}ms`);
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
@@ -135,7 +113,6 @@ test('a pinned identity puts the token from tokenFile into every gh call', async
   try {
     const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, ACCOUNT));
     board = await startBoard({
-      port: 15050,
       config: dir => ({
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         github: { account: ACCOUNT, tokenFile: path.join(dir, 'github-token.txt') },
@@ -174,7 +151,6 @@ test('a login mismatch alarms the owner and holds the merge of ready facts', asy
   try {
     const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, 'intruder-account'));
     board = await startBoard({
-      port: 15051,
       config: dir => ({
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         github: { account: ACCOUNT, tokenFile: path.join(dir, 'github-token.txt') },
@@ -213,7 +189,6 @@ test('a missing token file holds every gh sweep without a single gh call', async
   try {
     const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, ACCOUNT));
     board = await startBoard({
-      port: 15052,
       config: dir => ({
         source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM,
         github: { account: ACCOUNT, tokenFile: path.join(dir, 'no-such-token.txt') },
@@ -245,7 +220,6 @@ test('a mismatch holds the live GitHub sources themselves — held, visible, and
   try {
     const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, 'intruder-account'));
     board = await startBoard({
-      port: 15054,
       config: dir => ({
         // No facts file: the sweep ticks the real GitHub sources, each of
         // which must ask the gate before its first gh read.
@@ -280,7 +254,6 @@ test('without a github block the board works as before and says the identity is 
   try {
     const fakeGh = await executable(toolsDir, 'gh', fakeGhScript(callsFile, ACCOUNT));
     board = await startBoard({
-      port: 15053,
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
       files: { 'sprint-facts.json': facts() },
       env: dir => ({

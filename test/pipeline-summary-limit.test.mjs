@@ -12,7 +12,7 @@ const AT_LIMIT = 'a'.repeat(200);
 const OVER_LIMIT = 'b'.repeat(201);
 
 test('POST /pipeline/card/summary: 200 characters pass, 201 are rejected', async () => {
-  const board = await startBoard({ port: 14982, config: { source: 'probe' } });
+  const board = await startBoard({ config: { source: 'probe' } });
   try {
     const created = await postJson(board.base, '/pipeline/card/create',
       { title: 'summary cap card', spec: 'the spec' });
@@ -49,7 +49,7 @@ test('POST /pipeline/card/summary: 200 characters pass, 201 are rejected', async
 });
 
 test('POST /pipeline/card/create: the same cap guards the summary at birth', async () => {
-  const board = await startBoard({ port: 14983, config: { source: 'probe' } });
+  const board = await startBoard({ config: { source: 'probe' } });
   try {
     const over = await postJson(board.base, '/pipeline/card/create',
       { title: 'over-long at birth', spec: 'spec', summary: OVER_LIMIT });
@@ -74,7 +74,6 @@ test('a summary stored before the cap survives load and unrelated writes as writ
   // Written when the limit was 1200 — legal at the time, over the cap now.
   const legacy = 'c'.repeat(500);
   const board = await startBoard({
-    port: 14984,
     config: { source: 'probe' },
     files: {
       'pipeline-cards.json': { cards: [
