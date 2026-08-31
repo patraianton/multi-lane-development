@@ -17,7 +17,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { readFile, mkdir, stat, readdir, open, appendFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { format } from 'node:util';
@@ -157,6 +157,12 @@ const DEFAULTS = {
   autoDispatch: false,
   // Full local gate written into every task file unless a fleet host overrides it.
   check: 'bash ../ci-local-and-stamp.sh',
+  // The GitHub identity the board acts as. Absent — gh runs on whatever
+  // account the keyring holds, as before, and the board says so once at start.
+  // Present — { account, tokenFile }: every gh call gets GH_TOKEN from
+  // tokenFile, and a missing token or a login mismatch holds every gh sweep
+  // (sources, merges, dispatch) instead of silently acting as someone else.
+  github: null,
 };
 
 const HERDR_CANDIDATES = [
@@ -235,7 +241,7 @@ function commandInvocation(bin, args, options) {
 }
 
 function execExternal(bin, args, options, callback) {
-  const call = commandInvocation(bin, args, options);
+  const call = commandInvocation(bin, args, githubEnv(bin, options));
   execFile(call.bin, call.args, call.options, callback);
 }
 
@@ -329,6 +335,8 @@ function applyConfig(raw) {
   config.autoDispatch = src.autoDispatch === true;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
+  config.github = parseGithubIdentity(src.github);
+  onGithubIdentityConfig(config.github);
   config.lanes = parseLaneRegistry(src.lanes);
   config.ciSlots = parseLaneRegistry(src.ciSlots);
   // Missing, broken or empty founders list → null, and the board stays open.
@@ -856,6 +864,127 @@ function execCmd(bin, args, timeout = 60000) {
   });
 }
 const bins = { ssh: SSH, scp: SCP, gh: GH };
+
+// ------------------------------------------------- the board's GitHub identity
+//
+// On 31.08 the keyring's "active" gh account turned out to be a banned one and
+// every GitHub sweep died silently for hours. When the settings pin an identity
+// ({ "github": { "account", "tokenFile" } }), every gh the board spawns runs
+// with GH_TOKEN from tokenFile — inside gh the token wins over the keyring —
+// and the sweeps hold (fail closed) until `gh api user` answers with exactly
+// that login: checked at start and then once an hour, one owner alarm a day.
+// Without the block the keyring is used as before, said out loud once.
+const GH_TOKEN_TTL_MS = 30_000;
+const GH_IDENTITY_OK_MS = 60 * 60 * 1000;
+const GH_IDENTITY_RETRY_MS = 60 * 1000;
+let ghTokenCache = { at: 0, file: '', token: '', error: null };
+let ghIdentity = { at: 0, ok: false, login: null, reason: 'the github identity is not verified yet' };
+let ghIdentityCheck = null;
+let ghPinKey = null;
+let ghUnpinnedSaid = false;
+
+function parseGithubIdentity(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    account: String(raw.account ?? '').trim(),
+    tokenFile: String(raw.tokenFile ?? '').trim(),
+  };
+}
+
+// A changed pin (account or token file) drops both caches, so the next gh
+// sweep verifies the new identity instead of trusting the old answer.
+function onGithubIdentityConfig(pin) {
+  const key = pin ? `${pin.account}\n${pin.tokenFile}` : '';
+  if (key !== ghPinKey) {
+    ghPinKey = key;
+    ghTokenCache = { at: 0, file: '', token: '', error: null };
+    ghIdentity = { at: 0, ok: false, login: null, reason: 'the github identity is not verified yet' };
+  }
+  if (!pin && !ghUnpinnedSaid) {
+    ghUnpinnedSaid = true;
+    console.log('github identity is not pinned — gh runs on the keyring account ("github" in state/autopase-board.json to pin one)');
+  }
+}
+
+// The token itself: read from disk at most once every 30 seconds, so replacing
+// the file lands within a sweep or two. It is NEVER logged and never appears
+// in an alarm — only the file path does.
+function githubToken() {
+  const pin = config.github;
+  if (!pin) return { token: '', error: null };
+  if (ghTokenCache.file === pin.tokenFile && Date.now() - ghTokenCache.at < GH_TOKEN_TTL_MS) {
+    return ghTokenCache;
+  }
+  let token = '';
+  try { token = readFileSync(pin.tokenFile, 'utf8').trim(); } catch { token = ''; }
+  const error = token ? null : `the github token file is missing or empty (${pin.tokenFile || 'github.tokenFile is not set'})`;
+  ghTokenCache = { at: Date.now(), file: pin.tokenFile, token, error };
+  return ghTokenCache;
+}
+
+// Every gh child gets the pinned token in its environment; ssh, scp, git and
+// herdr children are left alone. No token — no override: the gate below is
+// what refuses to act, so nothing ever falls back to the keyring silently.
+function githubEnv(bin, options) {
+  if (bin !== GH || !config.github) return options;
+  const { token } = githubToken();
+  if (!token) return options;
+  return { ...options, env: { ...process.env, ...(options.env ?? {}), GH_TOKEN: token } };
+}
+
+async function verifyGithubIdentity(pin) {
+  const out = await runText(GH, ['api', 'user', '--jq', '.login'], 30000);
+  const login = String(out ?? '').trim().split(/\r?\n/)[0];
+  if (out === null || !login) {
+    // No answer is a network fact, not proof of a wrong account: an earlier
+    // confirmed identity stands until the hourly check can answer again. An
+    // identity never confirmed stays held — fail closed.
+    ghIdentity = ghIdentity.ok
+      ? { ...ghIdentity, at: Date.now() }
+      : { at: Date.now(), ok: false, login: null, reason: 'gh api user did not answer — the pinned github identity cannot be verified' };
+    return;
+  }
+  if (login === pin.account) {
+    if (!ghIdentity.ok) console.log(`github identity: gh acts as ${login} (pinned)`);
+    ghIdentity = { at: Date.now(), ok: true, login, reason: null };
+  } else {
+    ghIdentity = {
+      at: Date.now(), ok: false, login,
+      reason: `gh api user answers as "${login}" while the settings pin "${pin.account}"`,
+    };
+  }
+}
+
+// The single gate every gh sweep asks before acting. Null — go ahead (either
+// the identity is pinned and confirmed, or nothing is pinned at all). A string
+// — the reason to hold, already alarmed to the owner once today.
+async function githubGate() {
+  const pin = config.github;
+  if (!pin) return null;
+  let reason;
+  if (!pin.account || !pin.tokenFile) {
+    reason = 'the github block needs both account and tokenFile';
+  } else {
+    const { error } = githubToken();
+    if (error) {
+      reason = error;
+    } else {
+      const age = Date.now() - ghIdentity.at;
+      const fresh = ghIdentity.at > 0 && age < (ghIdentity.ok ? GH_IDENTITY_OK_MS : GH_IDENTITY_RETRY_MS);
+      if (!fresh) {
+        ghIdentityCheck ??= verifyGithubIdentity(pin).finally(() => { ghIdentityCheck = null; });
+        await ghIdentityCheck;
+      }
+      reason = ghIdentity.ok ? null : ghIdentity.reason;
+    }
+  }
+  if (reason) {
+    await alarmOwner(`github-identity:${new Date().toISOString().slice(0, 10)}`,
+      `github identity: ${reason} — the board holds every gh sweep (sources, merges, dispatch) until this is fixed`);
+  }
+  return reason;
+}
+
 async function dispatchOne(pair, { fleet, repo, at, rules }) {
   // The ticket comes verbatim from GitHub; rules come from this board's HEAD.
   let ticket = null;
@@ -948,6 +1077,9 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   const cards = await listPipelineCards();
   const ledger = await readJournalStrict();
   if (!ledger) { if (beforeLaunch) await beforeLaunch(attemptedTickets); return attemptedTickets; }
+  // Fail closed: no ticket read, no launch, no comment as an unverified
+  // GitHub account — the same hold as an unreadable journal.
+  if (await githubGate()) { if (beforeLaunch) await beforeLaunch(attemptedTickets); return attemptedTickets; }
   // A successful launch is durable before the card write. If the process or
   // disk failed between them, the next sweep restores the board-owned badge.
   // This is crash recovery, not a new dispatch, so it remains safe while the
@@ -1167,6 +1299,8 @@ async function mergeSweep(sprints, facts = null) {
   const rows = [];
   if (autoDispatchNeedsOwner()) return rows;
   if (!repo) return rows;
+  // Fail closed: no merge may run as an unverified GitHub account.
+  if (await githubGate()) return rows;
 
   let ledger = await readJournalStrict();
   if (!ledger) return rows;
@@ -1655,9 +1789,14 @@ function ciColor(rollup) {
   return { color: 'green', text: `CI green (${ok})`, failedNames };
 }
 
+// Every GitHub source asks the identity gate first: a pinned identity that
+// cannot be confirmed makes the source fail visibly (problems on the page,
+// stale sources hold the unit cards) instead of reading as someone else.
 const prSource = makeSource('pull-requests', 60000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
     '--json', 'number,title,body,headRefName,headRefOid,isDraft,mergeable,labels,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
@@ -1695,6 +1834,8 @@ export function prVerdict(comments) {
 const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['api', `repos/${repo}/actions/runners?per_page=100`,
     '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
   if (out === null) throw new Error('gh api actions/runners did not answer');
@@ -1711,6 +1852,8 @@ const MAIN_CI_CONCLUSIONS = new Set(['success', 'failure']);
 const mainCiSource = makeSource('main-ci', 60000, async () => {
   const repo = config.repo;
   if (!repo) return null;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['run', 'list', '--repo', repo, '--branch', 'main',
     '--workflow', 'pr-ci.yml', '--limit', '5',
     '--json', 'conclusion,headSha,url,createdAt'], 60000);
@@ -1727,6 +1870,8 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
   const repo = config.repo;
   const byPr = new Map();
   if (!repo) return byPr;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const live = (prSource.value ?? []).filter(p => p.headSha && p.ci?.color === 'run').slice(0, 8);
   for (const pr of live) {
     const runsOut = await runText(GH, ['api', `repos/${repo}/actions/runs?head_sha=${pr.headSha}&per_page=5`,
@@ -1755,6 +1900,8 @@ const ciJobsSource = makeSource('ci-jobs', 60000, async () => {
 const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   const repo = config.repo;
   if (!repo) return [];
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
     '--json', 'number,title,body,headRefName,headRefOid,url,createdAt,mergedAt,comments'], 90000);
   if (out === null) throw new Error('gh pr list --state merged did not answer');
@@ -1793,6 +1940,8 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
   if (!repo) return byUmbrella;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   // Closed units are read too: a sprint card shows a finished unit as done,
   // not as vanished. Consumers that want the open scope filter on `state`.
   const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
@@ -1850,6 +1999,8 @@ const umbrellaSource = makeSource('umbrella', 120000, async () => {
   const out = new Map();
   const repo = config.repo;
   if (!repo) return out;
+  const gate = await githubGate();
+  if (gate) throw new Error(`held: ${gate}`);
   const listOut = await runText(GH, ['issue', 'list', '--repo', repo, '--label', 'umbrella',
     '--state', 'open', '--limit', '40', '--json', 'number,title,url,updatedAt'], 90000);
   if (listOut === null) throw new Error('gh issue list did not answer');
@@ -3409,6 +3560,9 @@ configurePipeline(STATE_DIR);
 configureAuth(STATE_DIR);
 await loadProbeSnapshot();
 await cfgSource.tick();
+// The start-of-life identity check (then hourly inside the gate): a wrong or
+// missing token alarms the owner now, before the first sweep quietly holds.
+void githubGate();
 if (config.autoDispatch && !config.telegramOwnerChatId) {
   dispatchNote('auto-dispatch: off — telegram.ownerChatId missing');
 } else {
