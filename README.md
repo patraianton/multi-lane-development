@@ -50,14 +50,13 @@ How a card is created, moved, failed, commented, and updated: [`docs/API.md`](do
 
 ## Moving parts
 
-Each piece is a small Node process with no extra packages. Local-check defaults to dry-run: it only sshes or POSTs when you pass `--run`.
+Each piece is a small Node process with no extra packages.
 
 | Piece | Process | What it does |
 | --- | --- | --- |
 | **Board server** | `bin/watchtower.mjs` | Serves the page, `/api/*`, pipeline mutations, and probe endpoints. Listens on `127.0.0.1:4878`. |
 | **Probe** | `bin/probe.mjs` | Runs on the owner's machine, next to herdr. Every `intervalSec` seconds it POSTs a herdr snapshot to the board. Lanes, PRs and CI are not in this payload — the board host reads those itself. |
 | **Telegram sender** | `bin/telegram-bot.mjs` | The board sends artifact-ready and done doorbells to the founders' group, plus stuck, idle-lane and ready-for-acceptance alarms to the owner. It never polls Telegram. |
-| **Local-check** | `bin/local-check.mjs` | For a card in `local_check`: on the same lane, run the project's local test command, poll the log for `LOCAL_CHECK_EXIT=N`. Pass → move to `ci_pr`. Fail → `POST /pipeline/card/fail` `{ "kind": "local" }`. |
 | **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
 
 The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
@@ -80,11 +79,10 @@ Another port: set `WATCHTOWER_PORT` before starting (the older `AUTOPASE_BOARD_P
 
 If `ssh` or `gh` are not on the default path, point at them with `WATCHTOWER_SSH` and `WATCHTOWER_GH`. A second instance, or tests, can keep their own files with `WATCHTOWER_STATE_DIR` instead of `state/`.
 
-The probe and execution helpers are separate commands. They need their own config files under `state/` (not in git). The Telegram sender is imported by the board. Dry-run first:
+The probe is a separate command with its own config file under `state/` (not in git). The Telegram sender is imported by the board. Dry-run first:
 
 ```
 node bin/probe.mjs --once --dry-run
-node bin/local-check.mjs --once <card-id> --dry-run
 node bin/telegram-bot.mjs --selftest
 ```
 
@@ -240,7 +238,7 @@ Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `st
 - `subscriptions` — names the owner may assign with `POST /pipeline/assign-subscription`.
 - `telegram` — send-only notifications. `chatId` is the founders' group and `ownerChatId` is the owner's private chat. Missing, or present without `botToken` → no sends, one log line at start-up.
 
-Other processes have their own files next to that one, also not in git: `state/probe.json`, `state/local-check.json`.
+The probe has its own file next to that one, also not in git: `state/probe.json`.
 
 The board also writes `state/autopase-seen.json` (when each pane was first seen in its current state — herdr does not keep that), `state/autopase-cards.json` (hidden and hand-typed window cards), `state/pipeline-cards.json`, `state/auth.json`, and `state/probe-snapshot.json`.
 
@@ -296,7 +294,6 @@ Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 | [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
 | [`docs/PROBE.md`](docs/PROBE.md) | Probe cycle and snapshot shape |
 | [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Send-only Telegram notifications and config |
-| [`docs/EXECUTION.md`](docs/EXECUTION.md) | Local-check and failure loops |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Linux install |
 | [`docs/herdr-api.md`](docs/herdr-api.md) | What herdr provides and what it accepts back |
 
