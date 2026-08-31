@@ -82,6 +82,76 @@ async function calls(file) {
   }
 }
 
+function redMainFacts() {
+  return {
+    ...facts(),
+    mainCi: {
+      databaseId: 987,
+      headSha: HEAD,
+      url: 'https://github.com/acme/web/actions/runs/987',
+      createdAt: '2026-08-30T12:00:00.000Z',
+      red: true,
+    },
+  };
+}
+
+test('a red main alarm names the first failed jobs', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-red-main-tools-'));
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      'const a = process.argv.slice(2);',
+      "if (a[0] === 'api' && a[1] === 'repos/acme/web/actions/runs/987/jobs?per_page=100') {",
+      "  process.stdout.write(JSON.stringify([",
+      "    { name: 'listing-photos-ui', failedSteps: ['photos render'] },",
+      "    { name: 'listing-questionnaire-i18n', failedSteps: ['translations render'] },",
+      "  ]));",
+      '}',
+    ].join('\n'));
+    board = await startBoard({
+      config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': redMainFacts() },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await until(() => /ALARM main is red.*listing-photos-ui, listing-questionnaire-i18n/.test(board.output()));
+    const output = board.output();
+    assert.doesNotMatch(output, /photos render|translations render/, 'job names take priority over their failed steps');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed red-main details lookup still fires the original alarm', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-red-main-failed-tools-'));
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', '#!/usr/bin/env node\nprocess.exit(1);\n');
+    board = await startBoard({
+      config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': redMainFacts() },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    const original = 'main is red since 2026-08-30T12:00:00.000Z (https://github.com/acme/web/actions/runs/987) — the board holds every lane task based on main';
+    await until(() => /ALARM main is red since 2026-08-30T12:00:00\.000Z \(https:\/\/github\.com\/acme\/web\/actions\/runs\/987\) — the board holds every lane task based on main/.test(board.output()));
+    const output = board.output();
+    assert.match(output, new RegExp(original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(output, /failing:/);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('green CI and GO on the current head invokes one squash merge and journals that head', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower merge tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');

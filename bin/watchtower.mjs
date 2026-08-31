@@ -724,6 +724,22 @@ async function alarmOwner(key, line) {
 // the owner hears about. Unknown (the source failed) is never a transition;
 // null at start, so a board restarted while main is red still announces it.
 let mainWasRed = null;
+async function mainCiFailureNames(mainCi) {
+  const repo = config.repo;
+  const runId = mainCi?.databaseId;
+  if (!repo || !runId) return [];
+  const out = await runText(GH, ['api', `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`,
+    '--jq', '[.jobs[] | select(.conclusion == "failure") | {name, failedSteps: [.steps[]? | select(.conclusion == "failure") | .name]}]'], 5000);
+  if (out === null) return [];
+  let jobs;
+  try { jobs = JSON.parse(out); } catch { return []; }
+  if (!Array.isArray(jobs)) return [];
+  const names = jobs.flatMap(job => job?.name ? [job.name] : (job?.failedSteps ?? []))
+    .map(name => String(name).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return [...new Set(names)].slice(0, 4);
+}
+
 async function mainCiWatch(mainCi) {
   if (!mainCi) return;
   const red = mainCi.red === true;
@@ -731,9 +747,15 @@ async function mainCiWatch(mainCi) {
   if (!first && red === mainWasRed) return;
   mainWasRed = red;
   if (first && !red) return; // a board that starts on a green main says nothing
-  await alarmOwner(`main:${red ? 'red' : 'green'}:${mainCi.headSha}`, red
-    ? `main is red since ${mainCi.createdAt} (${mainCi.url}) — the board holds every lane task based on main`
-    : `main is green again at ${String(mainCi.headSha).slice(0, 8)} — dispatch resumes`);
+  let line;
+  if (red) {
+    const failedNames = await mainCiFailureNames(mainCi);
+    line = `main is red since ${mainCi.createdAt} (${mainCi.url}) — the board holds every lane task based on main`;
+    if (failedNames.length) line += ` — failing: ${failedNames.join(', ')}`;
+  } else {
+    line = `main is green again at ${String(mainCi.headSha).slice(0, 8)} — dispatch resumes`;
+  }
+  await alarmOwner(`main:${red ? 'red' : 'green'}:${mainCi.headSha}`, line);
 }
 
 async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
@@ -1862,7 +1884,7 @@ const mainCiSource = makeSource('main-ci', 60000, async () => {
   if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['run', 'list', '--repo', repo, '--branch', 'main',
     '--workflow', 'pr-ci.yml', '--limit', '5',
-    '--json', 'conclusion,headSha,url,createdAt'], 60000);
+    '--json', 'databaseId,conclusion,headSha,url,createdAt'], 60000);
   if (out === null) throw new Error('gh run list did not answer');
   const run = JSON.parse(out)
     .find(r => MAIN_CI_CONCLUSIONS.has(String(r?.conclusion ?? '').toLowerCase())) ?? null;

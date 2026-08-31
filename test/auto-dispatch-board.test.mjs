@@ -459,6 +459,8 @@ test('a held unit is not an idle lane', async () => {
 });
 
 test('the idle watch still alarms when the planner produced neither a pair nor a reason', async () => {
+  const cardId = 'idle-watch-sprint';
+  const old = new Date(Date.now() - 5 * 60_000).toISOString();
   const facts = {
     ...TICKETED_FACTS,
     lanes: [{ host: 'mac', lane: 'lane-6', busy: false, since: null, branch: 'main' }],
@@ -466,7 +468,20 @@ test('the idle watch still alarms when the planner produced neither a pair nor a
   };
   const board = await startBoard({
     config: { source: 'probe' },
-    files: { 'sprint-facts.json': facts, 'fleet-launch.json': FLEET },
+    files: {
+      'sprint-facts.json': facts,
+      'fleet-launch.json': FLEET,
+      'pipeline-cards.json': { cards: [{
+        id: cardId,
+        title: 'AUTO-SALON sprint',
+        spec: 'the spec',
+        stage: 'ticketed',
+        links: { ticket: TICKETED_UMBRELLA },
+      }] },
+      'idle-lanes.json': {
+        seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
+      },
+    },
     env: dir => ({
       WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
       WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
@@ -476,12 +491,6 @@ test('the idle watch still alarms when the planner produced neither a pair nor a
     }),
   });
   try {
-    const cardId = await createTicketed(board, { title: 'AUTO-SALON sprint', umbrella: TICKETED_UMBRELLA });
-    await until(board.base, body => (body.idleLanes ?? []).some(row => row.queued === 'U1 #1516'));
-    const old = new Date(Date.now() - 5 * 60_000).toISOString();
-    await writeFile(path.join(board.dir, 'idle-lanes.json'), JSON.stringify({
-      seen: { [`idle:${cardId}`]: { first: old, last: old, alarmedAt: null } },
-    }, null, 2));
     await until(() => /idle lanes: ALARM[^\n]*U1 #1516/.test(board.output()));
   } finally {
     await board.stop();
