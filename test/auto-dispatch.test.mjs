@@ -349,7 +349,7 @@ test('a NO-GO fix on H1 leads to review R2 on changed head H2', () => {
     tickets: { at: '2026-08-29T12:00:30.000Z', items: [{ number: unit.ticket, state: 'OPEN' }] },
     now: '2026-08-29T12:01:00.000Z',
   });
-  assert.equal(firstFree.journal.dispatched[dispatchKey(fix)].judged, undefined, 'free is observed before absence or proof is judged');
+  assert.equal(firstFree.journal.dispatched[dispatchKey(fix)].judged, null, 'free is observed before absence or proof is judged');
   const judged = judgeLanes({
     journal: firstFree.journal,
     lanes: { at: '2026-08-29T12:01:30.000Z', items: [{ host: fix.host, lane: fix.laneName, busy: false }] },
@@ -564,6 +564,36 @@ test('the journal uses develop round keys and review head keys; launched is fina
   // Old entries are dropped.
   const pruned = recordDispatch(ledger, pairs[1], { result: 'launched' }, '2026-09-30T12:00:00.000Z');
   assert.deepEqual(Object.keys(pruned.dispatched), ['1599:develop:1']);
+});
+
+test('recording an outcome preserves fresh hand fields and clears stale judgment fields', () => {
+  const at = '2026-08-29T12:00:00.000Z';
+  const [pair] = planDispatch(cards, new Map([['cs', sprint()]]), { fleet: FLEET, at });
+  const key = dispatchKey(pair);
+  const launching = recordDispatch({ dispatched: {} }, pair, { result: 'launching' }, at);
+  const concurrentlyEdited = {
+    dispatched: {
+      ...launching.dispatched,
+      [key]: {
+        ...launching.dispatched[key],
+        note: 'keep this hand note',
+        judged: 'no-proof',
+        judgedAt: '2026-08-29T12:00:00.500Z',
+        judgeReason: 'stale judgment on the launch intent',
+        error: 'stale error',
+      },
+    },
+  };
+
+  const launched = recordDispatch(concurrentlyEdited, pair, { result: 'launched' }, '2026-08-29T12:00:01.000Z');
+  assert.equal(launched.dispatched[key].note, 'keep this hand note');
+  assert.deepEqual({
+    result: launched.dispatched[key].result,
+    error: launched.dispatched[key].error,
+    judged: launched.dispatched[key].judged,
+    judgedAt: launched.dispatched[key].judgedAt,
+    judgeReason: launched.dispatched[key].judgeReason,
+  }, { result: 'launched', error: null, judged: null, judgedAt: null, judgeReason: null });
 });
 
 test('a failed launch retries on another host next sweep with a new round key and retryOf', () => {

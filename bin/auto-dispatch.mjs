@@ -968,7 +968,7 @@ export function recordDispatch(ledger, pair, outcome, at) {
   // A successful launch is final for its key. Every retry has its own key, so
   // a delayed duplicate write can never turn a launched attempt back to failed.
   if (dispatched[key]?.result === 'launched') return { dispatched };
-  dispatched[key] = {
+  const boardFields = {
     card: pair.card.id, title: pair.card.title, unit: pair.unit.unit, ticket: pair.unit.ticket,
     branch: pair.unit.branch, lane: pair.lane, host: pair.host ?? null, base: baseLine(pair.base),
     kind: kindOf(pair), round: roundOf(pair), head: pair.head ?? null,
@@ -978,9 +978,16 @@ export function recordDispatch(ledger, pair, outcome, at) {
     })),
     ...(pair.retryOf ? { retryOf: pair.retryOf } : {}),
     at: new Date(now).toISOString(), result: outcome.result, error: outcome.error ?? null,
-    ...(outcome.launchFailure ? { launchFailure: true } : {}),
-    ...(outcome.heldCode ? { heldCode: outcome.heldCode } : {}),
+    // These describe this launch outcome. A judgment or launch failure left
+    // on the same key by an older intent must not leak into the new write.
+    judged: null, judgedAt: null, judgeReason: null,
+    launchFailure: outcome.launchFailure ? true : null,
+    heldCode: outcome.heldCode ?? null,
   };
+  // The journal passed here was re-read under updateJournal's write lock. Keep
+  // hand-added fields on its same-key entry, while the board's fields above
+  // remain authoritative for this outcome.
+  dispatched[key] = { ...(dispatched[key] ?? {}), ...boardFields };
   return { dispatched };
 }
 

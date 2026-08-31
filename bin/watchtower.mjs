@@ -619,16 +619,23 @@ async function judgeDispatchedLanes(facts) {
   const mergedNumbers = new Set((facts.mergedPrs ?? []).map(pr => Number(pr?.number)));
   const nowMs = Date.parse(at);
   const dayMs = 24 * 60 * 60 * 1000;
-  const pruneKeys = [];
-  for (const [key, e] of Object.entries(judged.journal.dispatched ?? {})) {
+  const shouldPrune = (key, e) => {
     const kind = e?.kind ?? String(key).split(':')[1] ?? 'develop';
     if (kind === 'review' || kind === 'fix') {
-      if (e?.judged == null || !mergedBranches.has(String(e?.branch ?? ''))) continue;
-      if (nowMs - (Date.parse(e?.judgedAt ?? e?.at ?? '') || 0) > dayMs) pruneKeys.push(key);
-    } else if (kind === 'merge') {
-      if (!['merged', 'merge-failed'].includes(e?.result) || !mergedNumbers.has(Number(e?.pr))) continue;
-      if (nowMs - (Date.parse(e?.at ?? '') || 0) > dayMs) pruneKeys.push(key);
+      return e?.judged != null
+        && mergedBranches.has(String(e?.branch ?? ''))
+        && nowMs - (Date.parse(e?.judgedAt ?? e?.at ?? '') || 0) > dayMs;
     }
+    if (kind === 'merge') {
+      return ['merged', 'merge-failed'].includes(e?.result)
+        && mergedNumbers.has(Number(e?.pr))
+        && nowMs - (Date.parse(e?.at ?? '') || 0) > dayMs;
+    }
+    return false;
+  };
+  const pruneKeys = [];
+  for (const [key, e] of Object.entries(judged.journal.dispatched ?? {})) {
+    if (shouldPrune(key, e)) pruneKeys.push(key);
   }
 
   const changedKeys = Object.keys(judged.journal.dispatched ?? {})
@@ -642,8 +649,18 @@ async function judgeDispatchedLanes(facts) {
   // edit made while the sweep ran is not silently reverted.
   const written = await updateJournal(fresh => {
     const dispatched = { ...(fresh.dispatched ?? {}) };
-    for (const key of changedKeys) dispatched[key] = judged.journal.dispatched[key];
-    for (const key of pruneKeys) delete dispatched[key];
+    for (const key of changedKeys) {
+      const before = journal.dispatched?.[key] ?? {};
+      const after = judged.journal.dispatched?.[key] ?? {};
+      const boardFields = {};
+      for (const field of ['firstSeenFree', 'judged', 'judgedAt', 'judgeReason']) {
+        if (after[field] !== before[field]) boardFields[field] = after[field];
+      }
+      dispatched[key] = { ...(dispatched[key] ?? {}), ...boardFields };
+    }
+    // A same-key outcome may have landed since pruneKeys was computed. Only
+    // delete an entry that is still old and terminal in the fresh journal.
+    for (const key of pruneKeys) if (shouldPrune(key, dispatched[key])) delete dispatched[key];
     return { ...fresh, dispatched };
   });
   if (pruneKeys.length && written) {
@@ -1153,6 +1170,7 @@ async function mergeSweep(sprints, facts = null) {
 
   let ledger = await readJournalStrict();
   if (!ledger) return rows;
+  const rejudgedKeys = new Set();
 
   // Issue #14: a crash between 'merging' and its outcome — or a PR merged by
   // hand while the board sat on it — must never leave 'merging' in the journal
@@ -1170,19 +1188,23 @@ async function mergeSweep(sprints, facts = null) {
       if (!(nowMs - (Date.parse(entry.at ?? '') || 0) > MERGING_STALE_MS)) continue;
       const number = Number(entry.pr);
       if (mergedNumbers.has(number)) {
-        rejudged.push([key, { ...entry, result: 'merged', error: null }]);
+        rejudged.push([key, { result: 'merged', error: null }]);
       } else if (openNumbers.has(number)) {
-        rejudged.push([key, { ...entry, result: 'merge-failed', error: 'no outcome recorded — re-judged from GitHub facts' }]);
+        rejudged.push([key, { result: 'merge-failed', error: 'no outcome recorded — re-judged from GitHub facts' }]);
       } else {
         continue; // neither open nor merged in the snapshot — leave it for fresher facts
       }
+      rejudgedKeys.add(key);
       console.log(`merge: stale 'merging' entry ${key} re-judged ${rejudged.at(-1)[1].result}`);
     }
     if (rejudged.length) {
-      ledger = (await updateJournal(fresh => ({
-        ...fresh,
-        dispatched: { ...(fresh.dispatched ?? {}), ...Object.fromEntries(rejudged) },
-      }))) ?? ledger;
+      ledger = (await updateJournal(fresh => {
+        const dispatched = { ...(fresh.dispatched ?? {}) };
+        for (const [key, boardFields] of rejudged) {
+          dispatched[key] = { ...(dispatched[key] ?? {}), ...boardFields };
+        }
+        return { ...fresh, dispatched };
+      })) ?? ledger;
     }
   }
 
@@ -1211,6 +1233,10 @@ async function mergeSweep(sprints, facts = null) {
     if (!decision.ok) continue;
 
     const keys = group.items.map(({ unit }) => mergeKey(unit.ticket, group.pr.headSha));
+    // A stale active attempt was just resolved from facts. Retrying it in this
+    // same sweep collapses crash recovery and a new side effect into one tick;
+    // the ordinary next tick owns that retry.
+    if (keys.some(key => rejudgedKeys.has(key))) continue;
     const previous = keys.map(key => ledger.dispatched?.[key]).filter(Boolean);
     if (previous.some(entry => entry.result === 'merged')) continue;
     const attempts = Math.max(0, ...previous.map(entry => Number(entry.attempts) || 0));
@@ -1243,10 +1269,13 @@ async function mergeSweep(sprints, facts = null) {
       const entries = group.items.map((item, i) => [keys[i], mergeEntry(item, group, {
         at, result, error, attempts: attemptsOverride ?? nextAttempt,
       })]);
-      const next = await updateJournal(fresh => ({
-        ...fresh,
-        dispatched: { ...(fresh.dispatched ?? {}), ...Object.fromEntries(entries) },
-      }));
+      const next = await updateJournal(fresh => {
+        const dispatched = { ...(fresh.dispatched ?? {}) };
+        for (const [key, boardFields] of entries) {
+          dispatched[key] = { ...(dispatched[key] ?? {}), ...boardFields };
+        }
+        return { ...fresh, dispatched };
+      });
       if (!next) throw new Error('the journal is unreadable — the merge outcome was not recorded');
       ledger = next;
     };
@@ -1302,7 +1331,7 @@ async function mergeSweep(sprints, facts = null) {
           // the head the update itself produced inherits; a no-review PR
           // carries nothing — it merges on the green check alone.
           const verdict = group.pr.verdictOnHead;
-          if (verdict?.go === true) {
+          if (strict && verdict?.go === true) {
             const seen = await execCmd(bins.gh,
               ['pr', 'view', String(group.pr.number), '--repo', repo, '--json', 'headRefOid'], 60000);
             let newHead = null;

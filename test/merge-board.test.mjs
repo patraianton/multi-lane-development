@@ -756,6 +756,51 @@ test('after its own update-branch the board carries the GO to the new head', asy
   }
 });
 
+test('an all-no-review PR with an existing GO does not carry that GO after update-branch', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-no-review-no-carry-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[1] === 'merge') {",
+      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
+      '  process.exit(1);',
+      '}',
+      "if (a[1] === 'view') process.stdout.write(JSON.stringify({ headRefOid: " + JSON.stringify(OTHER) + ' }));',
+    ].join('\n'));
+    const behindFacts = facts();
+    behindFacts.prs[0].body = 'Ticket: #1624';
+    behindFacts.unitIssues[1600][0].labels = ['no-review'];
+    board = await startBoard({
+      port: 15032,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': behindFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+
+    await journalUntil(path.join(board.dir, 'auto-dispatch.json'), value =>
+      /^superseded/.test(value?.dispatched?.['1624:merge:abc12345']?.error ?? ''));
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const ghCalls = await calls(callsFile);
+    assert.equal(ghCalls.filter(args => args[1] === 'comment').length, 0,
+      'no-review associations never synthesize a review verdict');
+    assert.equal(ghCalls.filter(args => args[1] === 'view').length, 0,
+      'without a review-required association there is no carried head to look up');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a stale merging entry is re-judged from GitHub facts: merged PR → merged, open PR → merge-failed', async () => {
   const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const freshAt = new Date(Date.now() - 60 * 1000).toISOString();
@@ -796,6 +841,106 @@ test('a stale merging entry is re-judged from GitHub facts: merged PR → merged
       'a young merging entry may still be a live gh call — left alone');
   } finally {
     await board.stop();
+  }
+});
+
+test('an active stale merging entry is re-judged now and retried only on the next sweep', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-stale-active-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const storedCards = { cards: [
+    { id: 'cm', title: 'MERGE sprint', stage: 'ticketed', links: { ticket: UMBRELLA } },
+    { id: 'cu', title: 'UNIT-U1: board merge fixture', stage: 'ci_pr', parent: 'cm', ticket: 1624, unit: 'U1' },
+  ] };
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+    ].join('\n'));
+    board = await startBoard({
+      port: 15033,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: {
+        'sprint-facts.json': facts(),
+        'pipeline-cards.json': storedCards,
+        'auto-dispatch.json': { dispatched: {
+          '1624:merge:abc12345': {
+            card: 'cm', title: 'MERGE sprint', unit: 'U1', ticket: 1624, branch: 'feat/1624',
+            lane: null, host: null, base: 'abc12345', kind: 'merge', round: null,
+            head: HEAD, pr: 1632, at: staleAt, result: 'merging', error: null, attempts: 1,
+          },
+        } },
+      },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '1200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+
+    const journalFile = path.join(board.dir, 'auto-dispatch.json');
+    const rejudged = await journalUntil(journalFile, value =>
+      value?.dispatched?.['1624:merge:abc12345']?.result === 'merge-failed');
+    assert.equal(rejudged.dispatched['1624:merge:abc12345'].attempts, 1);
+    assert.equal((await calls(callsFile)).filter(args => args[1] === 'merge').length, 0,
+      'the sweep that re-judges a live association does not also retry it');
+
+    const retried = await journalUntil(journalFile, value =>
+      value?.dispatched?.['1624:merge:abc12345']?.result === 'merged', 5000);
+    assert.equal(retried.dispatched['1624:merge:abc12345'].attempts, 2,
+      'the following tick owns the retry');
+    assert.equal((await calls(callsFile)).filter(args => args[1] === 'merge').length, 1);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a concurrent hand field survives a merge outcome while board-owned fields win', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-merge-same-entry-tools-'));
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "import path from 'node:path';",
+      'const a = process.argv.slice(2);',
+      "if (a[1] === 'merge') {",
+      "  const file = path.join(process.env.WATCHTOWER_STATE_DIR, 'auto-dispatch.json');",
+      "  const journal = JSON.parse(readFileSync(file, 'utf8'));",
+      "  journal.dispatched['1624:merge:abc12345'] = {",
+      "    ...journal.dispatched['1624:merge:abc12345'],",
+      "    note: 'keep this hand note', result: 'hand value', error: 'hand value', attempts: 99,",
+      '  };',
+      "  writeFileSync(file, JSON.stringify(journal, null, 2));",
+      '}',
+    ].join('\n'));
+    const mergeFacts = facts();
+    mergeFacts.prs[0].body = 'Ticket: #1624';
+    board = await startBoard({
+      port: 15034,
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': mergeFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+
+    const journal = await journalUntil(path.join(board.dir, 'auto-dispatch.json'), value =>
+      value?.dispatched?.['1624:merge:abc12345']?.result === 'merged');
+    const entry = journal.dispatched['1624:merge:abc12345'];
+    assert.equal(entry.note, 'keep this hand note');
+    assert.deepEqual([entry.result, entry.error, entry.attempts], ['merged', null, 1],
+      'fresh hand fields do not override the merge writer\'s owned outcome fields');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
   }
 });
 
