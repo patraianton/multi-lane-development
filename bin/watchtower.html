@@ -60,9 +60,6 @@
   header .num b { color: var(--ink); }
   header .flag { color: var(--blocked); font-family: var(--mono); font-size: 12px; }
   header .spacer { margin-left: auto; }
-  header #signed-in { color: var(--ink-mid); font-family: var(--mono); font-size: 12px; }
-  header #signed-in a { color: var(--focus); text-decoration: none; margin-left: 8px; }
-  header #signed-in a:hover { text-decoration: underline; }
 
   .hbtn {
     font-family: var(--ui); font-size: 11px; line-height: 1.5;
@@ -289,7 +286,6 @@
   .sprint-band .status-line.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
   .sprint-band .status-line.stalled::before { background: var(--done); }
   .sprint-band .status-line.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
-  .sprint-band .status-line.stale { border-color: #6a5122; background: #1a140c; }
   .sprint-band .status-copy {
     display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere;
   }
@@ -298,7 +294,6 @@
   .sprint-band .status-line.moving .verdict { color: var(--working); }
   .sprint-band .status-line.stalled .verdict { color: var(--done); }
   .sprint-band .status-line.looping .verdict { color: var(--blocked); }
-  .sprint-band .status-line .stale-mark { color: var(--done); }
   /* The lanes of the fleet as a table across the whole pane — the same table
      as "in flight", a size smaller: lane (FLEET.md name), server, state, who
      is on it. The chips (ticket, artifact, subscription, sources) share one
@@ -731,10 +726,6 @@
   .pcard .status.stalled .verdict { color: var(--done); }
   .pcard .status.looping .verdict { color: var(--blocked); }
   .pcard .status .age { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
-  .pcard .status.stale {
-    border-color: #6a5122; background: #1a140c;
-  }
-  .pcard .stale-mark { color: var(--done); font-family: var(--mono); font-size: 10px; }
   .pcard a.spec-link {
     display: inline-flex; max-width: 100%; padding: 2px 6px; border: 1px solid #285266; border-radius: 8px;
     color: var(--focus); font-family: var(--mono); font-size: 9.5px; text-decoration: none;
@@ -778,7 +769,6 @@
   <div class="num" id="pipe-counts"></div>
   <div class="flag" id="board-warn" hidden></div>
   <span class="spacer"></span>
-  <div class="num" id="signed-in" hidden></div>
   <button class="hbtn plus" id="pipe-add-toggle" title="add a pipeline card">+ Card</button>
   <button class="hbtn gear" id="settings-toggle" title="settings: the project whose windows feed the facts">⚙</button>
 </header>
@@ -820,33 +810,6 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-// Signed-in founder, filled from GET /auth/me. Null when sign-in is off or
-// the viewer is localhost-as-owner (the header then stays empty).
-let signedIn = null;
-
-async function loadSignedIn() {
-  try {
-    const r = await fetch('/auth/me', { cache: 'no-store' });
-    if (!r.ok) return;
-    const d = await r.json();
-    signedIn = d.founder && typeof d.founder === 'object' ? d.founder : null;
-    const box = $('signed-in');
-    if (!box) return;
-    if (signedIn && d.via === 'session') {
-      box.hidden = false;
-      box.innerHTML = esc(signedIn.name) + ' <a href="/auth/logout">sign out</a>';
-      const a = box.querySelector('a');
-      a.onclick = async (ev) => {
-        ev.preventDefault();
-        await fetch('/auth/logout', { method: 'POST' });
-        location.reload();
-      };
-    } else {
-      box.hidden = true;
-      box.textContent = '';
-    }
-  } catch (e) { /* an older board has no /auth/me — the page still draws */ }
-}
 let pageVersion = null;
 let lastData = null;
 
@@ -982,7 +945,6 @@ const COLUMN_STAGES = { grilled: ['spec', 'grilled'] };
 const columnOf = stage => (stage === 'spec' ? 'grilled' : stage);
 const ATTACH_FIELDS = ['ticket', 'branch', 'pr', 'artifact', 'lane', 'subscription', 'slot', 'window'];
 const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
-const ACTIVE_STATUS_STAGES = ['development', 'local_check', 'ci_pr'];
 
 let pipeSeen = '';
 let pipeTimer = null;
@@ -1009,12 +971,6 @@ const sprintBandSort = new Map();
 // The server decides this in /pipeline/data; default off so a board that never
 // sends looks exactly as it did before this wave.
 let usesSubscriptions = false;
-// Watchdog Status: interval (minutes) and whether a watchdog.json is present.
-// The page only marks a missing Status as stale when the checker is configured;
-// an old Status is always a mark. Default 15 matches the Watchdog's default.
-let watchdogIntervalMin = 15;
-let watchdogConfigured = false;
-
 // A duration in plain words — the same words the agent endpoint uses.
 function fmtDur(ms) {
   if (!Number.isFinite(ms) || ms < 0) return '-';
@@ -1115,32 +1071,16 @@ function hasCardStatus(c) {
   return Boolean(s && ((s.text && String(s.text).trim()) || s.verdict || s.at));
 }
 
-function isStatusStale(c) {
-  if (ACTIVE_STATUS_STAGES.indexOf(c.stage) < 0) return false;
-  const limit = (Number(watchdogIntervalMin) > 0 ? Number(watchdogIntervalMin) : 15) * 2 * 60 * 1000;
-  if (!hasCardStatus(c)) return watchdogConfigured;
-  const t = Date.parse(c.status.at);
-  if (!Number.isFinite(t)) return true;
-  return (Date.now() - t) > limit;
-}
-
 function statusLine(c) {
-  const stale = isStatusStale(c);
-  if (!hasCardStatus(c)) {
-    if (!stale) return '';
-    return '<div class="row status stale" data-stale="yes"><span class="stale-mark">stale Status</span>'
-      + ' — watchdog has not written one yet</div>';
-  }
+  if (!hasCardStatus(c)) return '';
   const v = String(c.status.verdict || '').toLowerCase();
   const age = ago(c.status.at);
   const cls = 'status'
-    + (v === 'moving' || v === 'stalled' || v === 'looping' ? ' ' + v : '')
-    + (stale ? ' stale' : '');
-  return '<div class="row ' + cls + '"' + (stale ? ' data-stale="yes"' : '') + '>'
+    + (v === 'moving' || v === 'stalled' || v === 'looping' ? ' ' + v : '');
+  return '<div class="row ' + cls + '">'
     + (c.status.text ? '<span class="status-text">' + esc(c.status.text) + '</span> ' : '')
     + (v ? '<span class="verdict">' + esc(v) + '</span>' : '')
     + (age ? ' <span class="age">' + esc(age) + '</span>' : '')
-    + (stale ? ' <span class="stale-mark">stale Status</span>' : '')
     + '</div>';
 }
 
@@ -1293,14 +1233,12 @@ function sprintBandStatus(c) {
   const status = c.status && typeof c.status === 'object' ? c.status : {};
   const text = String(status.text || 'No orchestrator status yet').replace(/\uFFFD/g, '—');
   const verdict = String(status.verdict || 'unknown').toLowerCase();
-  const stale = isStatusStale(c);
   const tone = ['moving', 'stalled', 'looping'].includes(verdict) ? ' ' + verdict : '';
   const age = status.at ? ago(status.at) : '';
-  return '<div class="status-line' + tone + (stale ? ' stale' : '') + '" title="' + esc(text) + '">'
+  return '<div class="status-line' + tone + '" title="' + esc(text) + '">'
     + '<span class="status-copy">' + esc(text)
     + '<span class="status-meta"><span class="verdict">' + esc(verdict) + '</span>'
     + (age ? ' · ' + esc(age) : '')
-    + (stale ? ' · <span class="stale-mark">stale Status</span>' : '')
     + '</span></span></div>';
 }
 
@@ -1734,9 +1672,7 @@ function pcard(c) {
     : '<div class="row mono">nobody has commented</div>';
   inner.push('<section class="card-section comments-section"><h3>comments</h3>' + comments
     + '<form data-comment="' + esc(c.id) + '">'
-    + (signedIn
-      ? ''
-      : '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">')
+    + '<input class="author" name="author" data-k="' + esc(c.id) + '/author" placeholder="you" maxlength="100">'
     + '<input class="text" name="text" data-k="' + esc(c.id) + '/text" placeholder="comment" maxlength="4000">'
     + '<button class="hbtn" type="submit">say</button></form></section>');
 
@@ -1836,22 +1772,17 @@ function restoreInputs(snap) {
 function renderPipeline(d) {
   const snap = snapshotInputs();
   usesSubscriptions = Boolean(d.usesSubscriptions);
-  watchdogIntervalMin = Number(d.watchdogIntervalMin) > 0 ? Number(d.watchdogIntervalMin) : 15;
-  watchdogConfigured = Boolean(d.watchdogConfigured);
   const cards = d.cards ?? [];
   const stuck = cards.filter(c => c.stage === 'stuck');
 
   // The header counts what this view is about: cards on the road, cards that
-  // are done, and cards that are looping. Stale Status is the Watchdog
-  // falling behind — only shown when at least one card is marked.
+  // are done, and cards that are looping.
   const moving = cards.filter(c => !['stuck', 'done'].includes(c.stage)).length;
-  const staleN = cards.filter(isStatusStale).length;
   const ob = d.offBoard && typeof d.offBoard === 'object' ? d.offBoard : {};
   const obList = Array.isArray(ob.findings) ? ob.findings : [];
   $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
     + stuck.length + '</b> stuck · <b>'
     + cards.filter(c => c.stage === 'done').length + '</b> done'
-    + (staleN ? ' · <b>' + staleN + '</b> stale Status' : '')
     + (obList.length ? ' · <b class="ob-count">' + obList.length + '</b> off the board' : '');
 
   // A sprint that has split into unit cards is shown in the band above the
@@ -2016,8 +1947,8 @@ function wirePipeline(data) {
       const textEl = f.querySelector('[name=text]');
       const author = authorEl ? authorEl.value.trim() : '';
       const text = textEl.value.trim();
-      if (!text || (!signedIn && !author)) {
-        showError(signedIn ? 'a comment needs a text' : 'a comment needs an author and a text');
+      if (!text || !author) {
+        showError('a comment needs an author and a text');
         return;
       }
       const body = { id: f.dataset.comment, text };
@@ -2112,7 +2043,6 @@ async function poll() {
     pollTimer = setTimeout(poll, 3000);
   }
 }
-loadSignedIn();
 poll();
 </script>
 </body>

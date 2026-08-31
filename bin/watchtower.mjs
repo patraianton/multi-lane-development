@@ -28,7 +28,7 @@ import {
   clipText, toonTable, agentParams,
 } from './serve.mjs';
 import {
-  configurePipeline, handlePipeline, setPipelineBoard, pipelineStaleProblems,
+  configurePipeline, handlePipeline, setPipelineBoard,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
   failCard, succeedCard, setCardReadyAt,
 } from './pipeline.mjs';
@@ -2948,7 +2948,7 @@ async function collect() {
 
 // --------------------------------------------- the agent view (/api/board)
 //
-// An endpoint for a watchdog agent: the same board without a picture and without
+// An endpoint for an agent: the same board without a picture and without
 // a browser. Its shape is pinned separately from /data: the page lives on /data
 // and its fields change together with the layout, while the agent reads
 // /api/board, so editing the page does not break it.
@@ -3198,7 +3198,7 @@ const server = http.createServer(async (req, res) => {
       payload.pageVersion = (await stat(PAGE_FILE).catch(() => null))?.mtimeMs ?? null;
       return send(res, 200, JSON.stringify(payload));
     }
-    // The board for a watchdog agent: no page, no pictures, short text. Built by
+    // The board for an agent: no page, no pictures, short text. Built by
     // the same collect() as /data — the sources inside it go out on their own
     // timers, so this costs no extra ssh or gh call.
     if (req.method === 'GET' && url.pathname === '/api/board') {
@@ -3213,24 +3213,6 @@ const server = http.createServer(async (req, res) => {
           + 'help: check that herdr answers — herdr api snapshot');
       }
       const view = buildAgentBoard(payload, p.full);
-      try {
-        const stale = await pipelineStaleProblems();
-        if (stale.count) {
-          const n = stale.count;
-          const ids = stale.ids.join(', ');
-          view.problems.push({
-            source: 'watchdog',
-            error: n === 1
-              ? `1 active card has a stale Status (older than ${stale.staleAfterMin}m): ${ids}`
-              : `${n} active cards have a stale Status (older than ${stale.staleAfterMin}m): ${ids}`,
-          });
-        }
-      } catch (e) {
-        view.problems.push({
-          source: 'watchdog',
-          error: `could not read pipeline Status: ${String(e?.message || e)}`,
-        });
-      }
       if (p.format === 'json') return send(res, 200, JSON.stringify(view, null, 2));
       return sendText(res, 200, renderToonBoard(view));
     }
