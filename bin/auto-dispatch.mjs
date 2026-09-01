@@ -28,7 +28,7 @@ export const LANE_HOLD_MS = 10 * 60 * 1000;
 // Journal entries older than this are dropped; a unit dispatched a week ago
 // has long since bound itself to a branch or a PR.
 export const JOURNAL_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-export const DEFAULT_PROMPT = 'Прочитай {taskFile} и выполни целиком';
+export const DEFAULT_PROMPT = 'Read {taskFile} and do it whole.';
 export const DEFAULT_CHECK = 'bash ../ci-local-and-stamp.sh';
 
 function laneNo(name) {
@@ -104,7 +104,7 @@ export function taskFileName(pair) {
 // ------------------------------------------------------------ the fleet
 
 // state/fleet-launch.json (docs/fleet-launch.example.json is the template):
-//   { prompt: 'Прочитай {taskFile} и выполни целиком',
+//   { prompt: 'Read {taskFile} and do it whole.',
 //     hosts: { 'lanes-01': { kitchen: '/root/kitchens/autopase.lv', launch: 'hzlane {n} "{prompt}"' },
 //              mac: { kitchen: '~/kitchens/autopase.lv', shell: 'export PATH=…;', launch: 'maclane {n} "{prompt}"' } },
 //     lanes: { 'lane-1': { host: 'lanes-01', n: 1 }, 'lane-3': { host: 'lanes-01', n: 3, noBuilds: true }, … } }

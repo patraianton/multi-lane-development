@@ -15,7 +15,7 @@ import {
 import { judgeLanes } from '../bin/lane-judge.mjs';
 
 const FLEET = {
-  prompt: 'Прочитай {taskFile} и выполни целиком',
+  prompt: 'Read {taskFile} and do it whole.',
   hosts: {
     'lanes-01': { kitchen: '/root/kitchens/autopase.lv', launch: 'hzlane {n} "{prompt}"' },
     mac: { kitchen: '~/kitchens/autopase.lv', shell: 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH;', launch: 'maclane {n} "{prompt}"', browser: true },
@@ -1242,7 +1242,7 @@ test('the launch plan is commands and nothing runs: copy the task, ship the bund
   assert.equal(plan.error, null);
   assert.equal(plan.taskFile, '~/kitchens/autopase.lv/TASK-1583.md');
   assert.equal(plan.bundle, '~/kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1');
-  assert.equal(plan.laneCmd, 'maclane 6 "Прочитай $HOME/kitchens/autopase.lv/TASK-1583.md и выполни целиком"');
+  assert.equal(plan.laneCmd, 'maclane 6 "Read $HOME/kitchens/autopase.lv/TASK-1583.md and do it whole."');
   assert.deepEqual(plan.steps.map(st => st.kind), ['task-copy', 'bundle-check', 'bundle-copy', 'launch', 'comment']);
   const by = Object.fromEntries(plan.steps.map(st => [st.kind, st]));
   assert.deepEqual(by['task-copy'].args.slice(-2), ['C:\\wt\\state\\auto-dispatch\\TASK-1583.md', 'mac:kitchens/autopase.lv/TASK-1583.md'], 'a ~/ kitchen is home-relative for scp');
@@ -1251,7 +1251,7 @@ test('the launch plan is commands and nothing runs: copy the task, ship the bund
   assert.equal(by['bundle-check'].args.at(-1), 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; test -d "$HOME/kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1" && echo HAVE || echo MISSING');
   assert.deepEqual(by['bundle-copy'].args.slice(-3), ['-r', 'C:\\specs\\AUTO-DETAIL-FINANCE-CARDS-R1', 'mac:kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1']);
   assert.equal(by['bundle-copy'].onlyIf, 'MISSING');
-  assert.equal(by.launch.args.at(-1), 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane 6 "Прочитай $HOME/kitchens/autopase.lv/TASK-1583.md и выполни целиком"');
+  assert.equal(by.launch.args.at(-1), 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane 6 "Read $HOME/kitchens/autopase.lv/TASK-1583.md and do it whole."');
   assert.equal(by.launch.args.at(-2), 'mac');
   assert.deepEqual(by.comment.args, ['issue', 'comment', '1569', '--repo', 'acme/web', '--body', 'board: U3b #1583 dispatched to mac/lane-6 from feat/fin-u3a@b34d212d (PR #1602 of U3a)']);
   assert.equal(commentLine(pair), 'board: U3b #1583 dispatched to mac/lane-6 from feat/fin-u3a@b34d212d (PR #1602 of U3a)');
@@ -1268,7 +1268,7 @@ test('the launch plan is commands and nothing runs: copy the task, ship the bund
   const p2 = launchPlan(lx, { fleet: FLEET, hosts: HOSTS, localTask: '/tmp/TASK-1583.md', home: '/home/me' });
   assert.deepEqual(p2.steps.map(st => st.kind), ['task-copy', 'launch']);
   assert.deepEqual(p2.steps[0].args, ['-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-i', path.join('/home/me', '.ssh', 'id_ed25519'), '/tmp/TASK-1583.md', 'root@203.0.113.10:/root/kitchens/autopase.lv/TASK-1583.md']);
-  assert.equal(p2.steps[1].args.at(-1), 'hzlane 1 "Прочитай /root/kitchens/autopase.lv/TASK-1583.md и выполни целиком"');
+  assert.equal(p2.steps[1].args.at(-1), 'hzlane 1 "Read /root/kitchens/autopase.lv/TASK-1583.md and do it whole."');
   // No ssh target anywhere: an error, no steps.
   const p3 = launchPlan({ ...lx, host: 'nowhere' }, { fleet: { ...FLEET, hosts: { ...FLEET.hosts, nowhere: { launch: 'x {n}' } } }, hosts: {}, localTask: 't' });
   assert.match(p3.error, /no ssh target for host nowhere/);

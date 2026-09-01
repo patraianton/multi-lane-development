@@ -1,6 +1,6 @@
 {
   "_": "Copy to state/fleet-launch.json (not in git). Lanes and launchers per docs/FLEET.md; host keys are the board's own host names from `hosts` in state/autopase-board.json, where the ssh target and key live — `ssh`/`key` here only override them. {n} = the lane number, {prompt} = the prompt with {taskFile} = <kitchen>/TASK-<ticket>.md. A `~/` kitchen becomes $HOME/ in the prompt and a home-relative path for scp.",
-  "prompt": "Прочитай {taskFile} и выполни целиком",
+  "prompt": "Read {taskFile} and do it whole.",
   "hosts": {
     "lanes-01": {
       "kitchen": "/root/kitchens/autopase.lv",
