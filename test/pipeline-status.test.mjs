@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getJson, postJson, startBoard, until } from './helpers.mjs';
 
@@ -165,6 +165,42 @@ test('a stale source keeps the sentence and its clock', async () => {
     assert.equal(after.status.text, before.status.text);
     assert.equal(after.status.at, before.status.at);
     assert.equal((board.output().match(/card U1 #1850/g) ?? []).length, linesBefore);
+  } finally {
+    await board.stop();
+  }
+});
+
+test('a restart does not re-log unchanged card sentences before dispatch rows return', async () => {
+  const first = await fixture();
+  let storedCards;
+  let storedJournal;
+  try {
+    await until(first.board.base, body => body.cards?.find(c => c.ticket === 1850)?.status?.text?.startsWith('PR #1854 open —'), { pathName: '/pipeline/data' });
+    await new Promise(resolve => setTimeout(resolve, 700));
+    storedCards = await readFile(path.join(first.board.dir, 'pipeline-cards.json'), 'utf8');
+    storedJournal = await readFile(path.join(first.board.dir, 'auto-dispatch.json'), 'utf8');
+  } finally {
+    await first.board.stop();
+  }
+
+  const board = await startBoard({
+    config: { source: 'probe', autoDispatch: false, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+    files: {
+      'sprint-facts.json': first.source,
+      'fleet-launch.json': FLEET,
+      'pipeline-cards.json': storedCards,
+      'auto-dispatch.json': storedJournal,
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_FLEET_LAUNCH_FILE: path.join(dir, 'fleet-launch.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '300',
+    }),
+  });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    assert.doesNotMatch(board.output(), /card (?:U\d|QA) #[^\n]+:/,
+      'restoring the dispatch rows must not rewrite or re-log unchanged unit sentences');
   } finally {
     await board.stop();
   }
