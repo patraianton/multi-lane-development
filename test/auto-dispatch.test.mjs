@@ -119,6 +119,139 @@ test('ticketed and merged sprints dispatch, and a missing branch defaults to fea
   }
 });
 
+test('closed units are not served for review, fix, or a develop retry', () => {
+  const at = '2026-09-02T12:00:00.000Z';
+  const head = 'a78faae8a78faae8a78faae8a78faae8a78faae8';
+  const closed = {
+    unit: 'QA', ticket: 1843, title: 'closed finding', branch: 'feat/1843', qa: true,
+    open: false, closedAt: '2026-09-02T05:39:27.000Z', state: 'pr open', deps: [],
+  };
+  const reviewUnit = {
+    ...closed,
+    pr: { number: 1900, headSha: head, draft: false, verdictOnHead: null, verdictRounds: 0 },
+  };
+  const reviewSource = new Map([['cs', sprint({
+    units: [reviewUnit], qaTickets: [], free: ['mac/lane-6'],
+  })]]);
+  assert.deepEqual(planReviews({ cards, sprints: reviewSource, fleet: FLEET, at }), []);
+  assert.deepEqual(
+    planReviews({
+      cards,
+      sprints: new Map([['cs', sprint({ units: [{ ...reviewUnit, open: true }], qaTickets: [], free: ['mac/lane-6'] })]]),
+      fleet: FLEET,
+      at,
+    }).map(pair => pair.unit.ticket),
+    [1843],
+    'an otherwise identical open unit still receives a review',
+  );
+
+  const fixUnit = {
+    ...reviewUnit,
+    pr: {
+      ...reviewUnit.pr,
+      verdictOnHead: { round: 1, go: false, head, body: `R1 — NO-GO\nhead ${head}` },
+    },
+  };
+  const fixSource = new Map([['cs', sprint({
+    units: [fixUnit], qaTickets: [], free: ['mac/lane-6'],
+  })]]);
+  assert.deepEqual(planFixes({ cards, sprints: fixSource, fleet: FLEET, at }), []);
+  assert.deepEqual(
+    planFixes({
+      cards,
+      sprints: new Map([['cs', sprint({ units: [{ ...fixUnit, open: true }], qaTickets: [], free: ['mac/lane-6'] })]]),
+      fleet: FLEET,
+      at,
+    }).map(pair => pair.unit.ticket),
+    [1843],
+    'an otherwise identical open unit still receives a fix',
+  );
+
+  const developUnit = { ...closed, state: 'on lane', pr: null, merged: null };
+  const developSource = new Map([['cs', sprint({
+    units: [developUnit], qaTickets: [], free: ['mac/lane-6'],
+  })]]);
+  const ledger = { dispatched: {
+    '1843:develop:1': {
+      ticket: 1843, kind: 'develop', round: 1, host: 'lanes-01', lane: 'lanes-01/lane-1',
+      result: 'launched', judged: 'no-proof', at: '2026-09-02T11:59:00.000Z',
+    },
+  } };
+  const closedRetry = planDispatchFull(cards, developSource, { fleet: FLEET, ledger, at });
+  assert.equal(closedRetry.pairs.some(pair => pair.unit.ticket === 1843), false);
+  assert.equal(closedRetry.holds.some(hold => hold.ticket === 1843), false);
+  assert.deepEqual(
+    planDispatch(cards, new Map([['cs', sprint({
+      units: [{ ...developUnit, open: true }], qaTickets: [], free: ['mac/lane-6'],
+    })]]), { fleet: FLEET, ledger, at }).map(pair => pair.unit.ticket),
+    [1843],
+    'an otherwise identical open unit still receives its develop retry',
+  );
+
+  const doneTicket = 1844;
+  const doneCards = [...cards, {
+    id: 'closed-unit', parent: 'cs', ticket: doneTicket, title: `QA #${doneTicket}`, stage: 'done',
+  }];
+  const openDoneUnit = {
+    ...closed, ticket: doneTicket, open: true, state: 'queued', pr: null, merged: null,
+  };
+  assert.deepEqual(
+    planDispatch(doneCards, new Map([['cs', sprint({
+      units: [openDoneUnit], qaTickets: [], free: ['mac/lane-6'],
+    })]]), { fleet: FLEET, at }),
+    [],
+    'the existing board-startability rule still leaves a done unit card inert',
+  );
+});
+
+test('a live develop launch holds the unit until lane facts catch up', () => {
+  const at = '2026-08-29T12:00:30.000Z';
+  const unit = sprint().units.find(candidate => candidate.ticket === 1583);
+  const source = new Map([['cs', sprint({
+    units: [unit], qaTickets: [], free: ['lanes-01/lane-1', 'mac/lane-6'],
+  })]]);
+  const ledger = { dispatched: {
+    '1583:develop:1': {
+      ticket: 1583, kind: 'develop', round: 1, host: 'mac', lane: 'mac/lane-6',
+      result: 'launched', at: '2026-08-29T12:00:00.000Z',
+    },
+  } };
+
+  const live = planDispatchFull(cards, source, { fleet: FLEET, ledger, at });
+  assert.equal(live.pairs.some(pair => pair.unit.ticket === 1583), false);
+  assert.deepEqual(
+    live.holds.filter(hold => hold.ticket === 1583).map(hold => hold.reason),
+    ['launched on mac/lane-6 at 12:00Z — waiting for the lane facts'],
+  );
+  assert.deepEqual(
+    dispatchRows({ holds: live.holds, ledger, at }).filter(row => row.ticket === 1583).map(row => row.state),
+    ['launched 12:00Z'],
+    'the live journal row remains the single visible dispatch row',
+  );
+
+  const laterNonLaunch = { dispatched: {
+    ...ledger.dispatched,
+    '1583:develop:2': {
+      ticket: 1583, kind: 'develop', round: 2, result: 'held', at: '2026-08-29T12:00:10.000Z',
+    },
+  } };
+  assert.deepEqual(
+    planDispatchFull(cards, source, { fleet: FLEET, ledger: laterNonLaunch, at }).holds
+      .filter(hold => hold.ticket === 1583).map(hold => hold.reason),
+    ['launched on mac/lane-6 at 12:00Z — waiting for the lane facts'],
+    'the round-one journal guard also explains a launch hidden by a later non-launch entry',
+  );
+
+  const judged = { dispatched: {
+    '1583:develop:1': { ...ledger.dispatched['1583:develop:1'], judged: 'no-proof' },
+  } };
+  const retry = planDispatchFull(cards, source, { fleet: FLEET, ledger: judged, at });
+  assert.equal(retry.holds.some(hold => hold.ticket === 1583), false);
+  assert.deepEqual(retry.pairs.filter(pair => pair.unit.ticket === 1583).map(pair => [pair.round, pair.lane]), [
+    [2, 'lanes-01/lane-1'],
+  ]);
+});
+
 test('a NO-GO fix carries the verdict verbatim and prefers another host', () => {
   const head = 'abc12345def0000000000000000000000000000000';
   const body = `R1 — NO-GO\nhead ${head}\n\nKeep this paragraph exactly.\n`;
