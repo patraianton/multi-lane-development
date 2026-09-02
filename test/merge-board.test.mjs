@@ -36,7 +36,7 @@ function facts(verdictHead = 'abc12345') {
       title: 'Board merge fixture #3',
       // Long on purpose: a real PR body ran to 61 KB on 30.08 and an argument
       // that size is an OS error, not a merge.
-      body: 'Summary & details\n\nCloses #1624\n' + 'x'.repeat(5000),
+      body: 'Summary & details\n\nTicket: #1624\n' + 'x'.repeat(5000),
       draft: false,
       mergeable: 'MERGEABLE',
       labels: [],
@@ -203,14 +203,13 @@ test('a base-moved refusal retries the squash merge and journals its eventual su
       'the base-moved refusal is retried once, then the stale open-PR fact cannot merge again');
     assert.equal(ghCalls.filter(args => args[1] === 'update-branch').length, 0);
     assert.deepEqual(ghCalls.map(args => args.slice(0, 2)), [
-      ['pr', 'edit'], ['pr', 'merge'], ['pr', 'edit'], ['pr', 'merge'],
+      ['pr', 'merge'], ['pr', 'merge'],
     ]);
-    const edit = ghCalls[0];
-    const merge = ghCalls[3];
+    const merge = ghCalls[1];
     assert.ok(merge.includes('--squash'));
     assert.equal(merge[merge.indexOf('--match-head-commit') + 1], HEAD);
     const expectedBody = 'Summary & details\n\nTicket: #1624\n' + 'x'.repeat(5000);
-    for (const args of [edit, merge]) {
+    for (const args of [merge]) {
       assert.ok(args.includes('--body-file'), 'the squash body travels as a file');
       assert.ok(!args.includes('--body'), 'the PR body never reaches a command line again');
       assert.equal(await readFile(args[args.indexOf('--body-file') + 1], 'utf8'), expectedBody);

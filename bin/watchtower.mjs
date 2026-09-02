@@ -30,7 +30,7 @@ import {
 import {
   configurePipeline, handlePipeline, setPipelineBoard,
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
-  failCard, succeedCard, setCardReadyAt, sweepStuck,
+  clocks, failCard, fmtDur, succeedCard, sweepStuck,
 } from './pipeline.mjs';
 import { offBoardFindings } from './off-board.mjs';
 import { fixDebtFindings, idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
@@ -39,11 +39,11 @@ import {
   launchFailureHolds, quarantinedLanes,
 } from './auto-dispatch.mjs';
 import {
-  bodyFix, canMerge, ciColor, MERGE_ATTEMPTS, prVerdict as latestPrVerdict, prVerdictFacts, REQUIRED_CHECKS,
+  canMerge, ciColor, MERGE_ATTEMPTS, prVerdict as latestPrVerdict, prVerdictFacts, REQUIRED_CHECKS,
 } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
 import { judgeLanes } from './lane-judge.mjs';
-import { applyReadyAt } from './ready.mjs';
+import { readyForAcceptance } from './ready.mjs';
 import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
@@ -51,7 +51,6 @@ import {
   configureTelegram,
   notifyArtifactReady,
   notifyStuck,
-  notifyReady,
   notifyIdleLanes,
   notifyOwner,
   notifyDone,
@@ -415,7 +414,6 @@ function applyConfig(raw) {
     senders: telegramOn ? {
       artifactReady: notifyArtifactReady,
       stuck: notifyStuck,
-      ready: notifyReady,
       done: notifyDone,
     } : null,
     sweepStuckMs,
@@ -605,7 +603,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   const sync = await syncSprintUnits(sprints);
   for (const line of sync.lines) console.log(line);
   await judgeDispatchedLanes(facts);
-  await readyAcceptanceSweep(sprints);
+  await closeSprintSweep(sprints);
   await offBoardSweep(facts);
   // The try/finally below covers only the dispatch step: without this, an
   // exception in the merge step also cancels this tick's dispatch and idle sweeps.
@@ -752,26 +750,69 @@ async function judgeDispatchedLanes(facts) {
   }
 }
 
-async function readyAcceptanceSweep(sprints) {
+const closeSprintFailures = new Map();
+
+function cleanQaWalk(sprint) {
+  const runs = (sprint?.qaTickets ?? []).filter(ticket => ticket.qaRun
+    || (ticket.labels ?? []).some(label => String(label).toLowerCase() === 'qa-run'));
+  const walk = runs.filter(run => Number.isFinite(Date.parse(run.closedAt ?? '')))
+    .sort((a, b) => Date.parse(b.closedAt) - Date.parse(a.closedAt))[0] ?? null;
+  const match = /\bQA\s+R(\d+)\b/i.exec(String(walk?.title ?? ''));
+  return { walk, round: match ? Number(match[1]) : 1 };
+}
+
+async function closeSprintSweep(sprints) {
   const cards = await listPipelineCards();
-  const at = new Date().toISOString();
   for (const [cardId, sprint] of sprints) {
     if (sprint?.stale?.length) continue;
     const card = cards.find(item => item.id === cardId && !item.parent);
-    // Readiness is the edge at the end of the automated road. Historical
-    // Done cards and pre-ticket cards must not ring when the board restarts.
-    if (!card || (card.stage !== 'merged' && !card.readyAt)) continue;
-    const edge = applyReadyAt(card, sprint, at);
-    // Historical/non-merged cards do not acquire readiness on startup, but a
-    // persisted ready edge still has to be invalidated by a later QA ticket.
-    if (card.stage !== 'merged' && !edge.cleared) continue;
-    if (!edge.becameReady && !edge.cleared) continue;
-    const saved = await setCardReadyAt(cardId, edge.card.readyAt);
-    if (!edge.becameReady || !config.telegramOn) continue;
-    try {
-      await notifyReady(saved);
-    } catch (e) {
-      console.log(`ready for acceptance: telegram failed: ${e.message}`);
+    if (!card || card.stage !== 'merged' || !sprint.umbrellaOpen || !readyForAcceptance(sprint)) {
+      closeSprintFailures.delete(cardId);
+      continue;
+    }
+    if (!config.repo || await githubGate()) continue;
+
+    const { round } = cleanQaWalk(sprint);
+    const closing = [...(sprint.units ?? []), ...(sprint.qaTickets ?? [])]
+      .filter(ticket => ticket.open && ticket.merged);
+    const failures = [];
+    for (const ticket of closing) {
+      const comment = `Closed by the board: merged in PR #${ticket.merged.number}; QA R${round} clean`;
+      const outcome = await execCmd(bins.gh,
+        ['issue', 'close', String(ticket.ticket), '--repo', config.repo, '--comment', comment], 60000);
+      if (outcome.code === 0) {
+        console.log(`sprint close: ticket #${ticket.ticket} closed`);
+      } else {
+        const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
+        failures.push(`#${ticket.ticket}: ${why}`);
+        console.log(`sprint close: could not close ticket #${ticket.ticket}: ${why}`);
+      }
+    }
+
+    const wallClock = fmtDur(clocks(card).total);
+    const summary = `Sprint ${card.title} closed by the board: ${(sprint.units ?? []).length} units merged, QA R${round} clean, ${wallClock}`;
+    if (!failures.length) {
+      const outcome = await execCmd(bins.gh,
+        ['issue', 'close', String(sprint.umbrella), '--repo', config.repo, '--comment', summary], 60000);
+      if (outcome.code === 0) {
+        console.log(`sprint close: umbrella #${sprint.umbrella} closed`);
+        closeSprintFailures.delete(cardId);
+        if (config.telegramOn) {
+          try { await notifyOwner(summary); }
+          catch (e) { console.log(`sprint close: telegram failed: ${e.message}`); }
+        }
+        continue;
+      }
+      const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
+      failures.push(`#${sprint.umbrella}: ${why}`);
+      console.log(`sprint close: could not close umbrella #${sprint.umbrella}: ${why}`);
+    }
+
+    const attempts = (closeSprintFailures.get(cardId) ?? 0) + 1;
+    closeSprintFailures.set(cardId, attempts);
+    if (attempts >= 3) {
+      await alarmOwner(`sprint-close:${sprint.umbrella}`,
+        `could not close sprint #${sprint.umbrella} after ${attempts} sweeps — ${failures.join('; ')}`);
     }
   }
 }
@@ -1515,23 +1556,15 @@ async function mergeSweep(sprints, facts = null) {
 
     try {
     await writeResult('merging');
-    const fixed = bodyFix(group.pr.body);
     // A PR body runs to tens of thousands of characters; on a command line that
     // is an OS error, not a merge. It travels as a file next to the task files.
     await mkdir(DISPATCH_DIR, { recursive: true });
     const bodyFile = path.join(DISPATCH_DIR, 'merge-body.md');
-    await writeFile(bodyFile, fixed.body, 'utf8');
-    let outcome = { code: 0, out: '' };
-    if (fixed.changed) {
-      outcome = await execCmd(bins.gh,
-        ['pr', 'edit', String(group.pr.number), '--repo', repo, '--body-file', bodyFile], 60000);
-    }
-    if (outcome.code === 0) {
-      outcome = await execCmd(bins.gh,
+    await writeFile(bodyFile, String(group.pr.body ?? ''), 'utf8');
+    const outcome = await execCmd(bins.gh,
         ['pr','merge', String(group.pr.number), '--repo', repo, '--squash',
           '--match-head-commit', String(group.pr.headSha), '--subject', String(group.pr.title ?? ''), '--body-file', bodyFile],
         90000);
-    }
     if (outcome.code === 0) {
       await writeResult('merged');
       console.log(`merge: PR #${group.pr.number} squash-merged at ${group.pr.headSha}`);
@@ -1584,7 +1617,7 @@ function fireSprintSweep() {
     const ageMin = Math.max(1, Math.floor((Date.now() - sprintSource.startedAt) / 60000));
     void alarmOwner(
       `sprint-sweep-stuck:${sprintSource.startedAt}`,
-      `the board's sweep has not finished for ${ageMin} min — dispatch, merges, acceptance and the watchdogs are all held`,
+      `the board's sweep has not finished for ${ageMin} min — dispatch, merges, sprint closes and the watchdogs are all held`,
     );
   }
   void Promise.resolve(sprintSource.tick(true)).catch(e => {

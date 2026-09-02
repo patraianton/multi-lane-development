@@ -12,8 +12,8 @@ gets: `docs/RULES.md`. The lanes: `docs/FLEET.md`. The HTTP API: `docs/API.md`.
 |---|---|
 | the board | everything below, every 30 seconds, by itself |
 | 8 Codex lanes | one task per run: `lane` (write a ticket), `reviewer` (read one PR head), `fixer` (one round on an open PR), `qa` (walk production) |
-| the owner and his MLD session | spec intake (grill → questions page → tickets), the sprint order, stuck cards, the acceptance page |
-| the partner | writes specs, answers the questions page, accepts on one page per sprint |
+| the owner and his MLD session | spec intake (grill → questions page → tickets), the sprint order, stuck cards |
+| the partner | writes specs and answers the questions page |
 
 Nobody but the board starts a lane, a review or a merge. There is no orchestrator window.
 
@@ -30,14 +30,14 @@ U2b #1685 on hostinger/lane-4 by lane number.
 - `spec`, `grilled`, `ticketed`: paper work, the MLD session. The board rings the partner group when a
   questions page is linked (`links.artifact`) and marks the card answered when the page is ended.
 - From `ticketed` the board runs everything: unit cards (one per ticket referencing the umbrella) move by facts —
-  lane busy → `development`, local check → `local_check`, PR open → `ci_pr`, PR merged → `merged`, ticket closed
-  after the merge → `done`. The sprint card follows its units.
+  lane busy → `development`, local check → `local_check`, PR open → `ci_pr`, PR merged → `merged`; after the clean
+  QA walk the board closes merged tickets and the umbrella, and those facts move the cards to `done`.
 - Every unit card of a served sprint carries one sentence the board writes (`status.text`, `status.at`): the lane
   it builds on, the review or fix running, the planner's hold verbatim (`waits for #1850 (pr green)`, `no free
   lane with a launcher`), the merge sweep's word for a green+GO head, or `waiting for the owner — <reason>` when
   stuck. It is logged once when it changes. `development` means a lane is busy on it or a fix is owed on its PR.
-- The board's work ends at **ready for acceptance** (every unit merged, every `qa` ticket merged or closed, the
-  latest QA walk closed with no finding after it): one Telegram line to the owner.
+- A sprint closes when every unit is merged, every QA finding is merged or closed, a QA walk is closed, and no
+  finding merged after that latest-closed walk. The board closes the remaining merged tickets, then the umbrella.
 
 ## 3. Lane tasks and their proofs
 
@@ -86,9 +86,8 @@ see the working copy; edit the rules, commit, and the next task carries the new 
   head, the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge` label. `pr-ci` builds the PR
   head, never the combination with `main` (`pr-ci.yml:37`, `:134`, `:426` use `head.sha`); with `strict` off the
   first build of a combination is `main`'s own run; red main → the board holds every main-based task and dispatches
-  the `main-fix` ticket the cutter cuts (RULES cutter 7, decision 19). Before merging, the board rewrites
-  `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open because merged is not accepted —
-  and sends the squash subject and body to `gh` as a file, never on the command line.
+  the `main-fix` ticket the cutter cuts (RULES cutter 7, decision 19). The squash subject and body go to `gh` as a
+  file, never on the command line.
 - On a `no-review` ticket the GO requirement is dropped — the green check on the exact head, not draft, mergeable
   and no `hold-merge` are enough. A `NO-GO` on that head still blocks the merge and gets its fix round: dropped is
   the requirement, never a standing stop order. On a PR shared by several tickets every one of them must carry
@@ -116,23 +115,21 @@ POST /pipeline/card/unstuck { "id": "<card id>" }
 `ticketed`. A lane the judge closes with no proof lands the same way. Fix the ticket first — the board will send it
 again.
 
-## 7. QA and acceptance
+## 7. QA and sprint close
 
 - The QA round-1 ticket is cut with the sprint from `docs/QA-TICKET.md` (label `qa-run`, depends on every unit).
   When every unit is merged the board sends it to a Mac lane (a real browser on production). The walker files
   findings as `qa` tickets (the full road: local check, PR, review, board merge) and, if there were any, the
   round-2 ticket. Round 3 with findings → `QUESTION` → stuck.
-- Ready for acceptance → the owner's MLD session writes one Lavish page ("what was done, how to check",
-  *accepted / remarks*), publishes it with `node bin/lavish-publish.mjs publish <html> --card <id>`; the board
-  rings the partner group and marks the answer. *Accepted* → close the tickets and the umbrella; the cards reach
-  `done` by the facts.
+- After the latest closed QA walk is clean, the board closes every merged ticket still open and then the umbrella.
+  Each close carries the merge and QA-round facts; the cards reach `done` from the refreshed issue facts.
 
 ## 8. Messages
 
 To the owner (private chat with the bot): `stuck`; idle lanes (a free lane with a non-empty queue for 5 minutes
 AND no reason from the planner — a unit the planner holds is not idle, its reason stands in the auto-dispatch
-table); `main` turned red and `main` is green again; a merge the board gave up on after three attempts; ready for
-acceptance. To the partner group: a page is ready; a sprint is done. The board only sends; nothing polls the bot
+table); `main` turned red and `main` is green again; a merge the board gave up on after three attempts; a sprint
+close summary. To the partner group: a page is ready; a sprint is done. The board only sends; nothing polls the bot
 from the board.
 
 ## 9. Settings

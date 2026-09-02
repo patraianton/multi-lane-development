@@ -49,10 +49,11 @@ test('unitStatus: a card with a PR says the PR\'s state and what it waits for', 
     ['local check', { ticket, pr: openPr, lane: { host: 'mac', lane: 'lane-6', busy: true, check: true } }, card, [], 'PR #1854 open — local check on mac/lane-6'],
     ['busy lane', { ticket, pr: openPr, lane: { host: 'mac', lane: 'lane-6', busy: true, check: false } }, card, [], 'PR #1854 open — busy on mac/lane-6'],
     ['accepted open PR', { ticket, accepted: true, pr: openPr }, card, [], 'ticket closed — PR #1854 is still open: close it by hand'],
-    ['merged', { ticket, merged: { number: 1854 } }, card, [], 'merged in PR #1854 — waiting for the ticket to close'],
+    ['merged with blocker', { ticket, merged: { number: 1854 } }, card, [], 'merged in PR #1854 — sprint waits for finding #1885 open', { blocker: 'finding #1885 open' }],
+    ['merged while close runs', { ticket, merged: { number: 1854 } }, card, [], 'merged in PR #1854 — sprint closing', {}],
   ];
-  for (const [name, unit, current, rows, expected] of cases) {
-    assert.equal(unitStatus(unit, current, { rows }), expected, name);
+  for (const [name, unit, current, rows, expected, options = {}] of cases) {
+    assert.equal(unitStatus(unit, current, { rows, ...options }), expected, name);
   }
 });
 
