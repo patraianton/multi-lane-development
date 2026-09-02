@@ -80,7 +80,6 @@ What is in the pipeline answer:
                         done, or stuck
                 clock   delivery time; a done card shows "(stopped)"
                 fails   local / ci / review counts, or "-"
-                verdict moving, stalled, looping, or "-"
   stuck       cards waiting for a human after three failures in a row
   specs       under --full only, the spec text of every card that has one
 
