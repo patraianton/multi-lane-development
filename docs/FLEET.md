@@ -19,8 +19,8 @@ lanes retired the same day, every row below checked live.
 |---|---|---|---|
 | Hostinger / srv1487642 | 8 | 1 796 (fastest) | production services + 2 development lanes |
 | Hetzner / codex-dev | 4 | 1 771 | development — 3 lanes |
-| Hetzner / ci-runners-01 | 8 | 1 657 | PR checks — 3 slots (hzci-1…3) |
-| Hetzner / autopase-ci | 16 | 212 — 8× slower per core | CI slots — 2 (hzci-4, hzci-5); no lanes since 2026-08-29 |
+| ~~Hetzner / ci-runners-01~~ | 8 | 1 657 | **deleted 2026-09-01** (owner; Hetzner price rise, #1862) — hzci-1…3 are gone |
+| Hetzner / autopase-ci | 16 | 212 — 8× slower per core | CI slots — 4 (hzci-4, hzci-5, hzci-7, hzci-8); no lanes since 2026-08-29 |
 | Hetzner / autopase-scraper | — | — | production scraper |
 | Mac mini | 10 | — | development — 3 lanes |
 
@@ -64,11 +64,11 @@ on Linux, `~/kitchens/autopase.lv` on the Mac). Names match this table since
 
 | Slot | Runner | Server | Labels | Notes |
 |---|---|---|---|---|
-| ci-slot-1 | hzci-1 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | `pr-ci` targets `ci-fast` |
-| ci-slot-2 | hzci-2 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| ci-slot-3 | hzci-3 | Hetzner / ci-runners-01 | `ci-fast`, `vps1` | — |
-| ci-slot-4 | hzci-4 | Hetzner / autopase-ci | `vps1`, `hetzner` | registered 2026-08-29; no core cap, 8 GB swap added |
-| ci-slot-5 | hzci-5 | Hetzner / autopase-ci | `vps1`, `hetzner` | registered 2026-08-29 |
+| ~~ci-slot-1…3~~ | ~~hzci-1…3~~ | ~~Hetzner / ci-runners-01~~ | — | server deleted 2026-09-01 (#1862); `pr-ci` still targets `ci-fast`, now carried by autopase-ci |
+| ci-slot-4 | hzci-4 | Hetzner / autopase-ci | `vps1`, `hetzner`, `ci-fast` | registered 2026-08-29; no core cap, 8 GB swap added |
+| ci-slot-5 | hzci-5 | Hetzner / autopase-ci | `vps1`, `hetzner`, `ci-fast` | registered 2026-08-29 |
+| ci-slot-7 | hzci-7 | Hetzner / autopase-ci | `vps1`, `hetzner`, `ci-fast` | registered 2026-09-02 (replaces the deleted box; same recipe as 4/5) |
+| ci-slot-8 | hzci-8 | Hetzner / autopase-ci | `vps1`, `hetzner`, `ci-fast` | registered 2026-09-02 |
 
 - The board shows the slots from its own copy of this table — `ciSlots` in
   `state/autopase-board.json`, keyed by runner name → `{ name, server }`; a change
