@@ -42,8 +42,8 @@ owner assigns one per card by answering the Telegram bot; the card auto-advances
 Ticketed once assigned.
 
 **Status**:
-An optional one-line "what is happening right now" note written through the card status endpoint.
-It may carry a moving, stalled or looping verdict and is distinct from Stage.
+One sentence written by the board on every unit card of a served sprint — what the card is doing or waiting for.
+Read-only; distinct from Stage.
 
 **Lane**:
 A remote build slot (lanes-01 / Hetzner / Mac) where code is written or checked. Assigned to a

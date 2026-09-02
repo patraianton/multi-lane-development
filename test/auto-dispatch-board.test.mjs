@@ -614,7 +614,7 @@ test('fix debt not dispatched for 30 minutes forces the unit Stuck and notifies 
   }
 });
 
-test('the four silent dispatch skips are holds on the table, and a no-free-lane hold suppresses fix-debt Stuck', async () => {
+test('the planner\'s holds and live rows reach the card sentence; a no-free-lane hold suppresses fix-debt Stuck', async () => {
   const sprintId = 'held-fix-debt-sprint';
   const head = ticket => `${ticket.toString(16).padStart(8, 'a')}${'0'.repeat(32)}`;
   const old = new Date(Date.now() - 31 * 60_000).toISOString();
@@ -634,7 +634,10 @@ test('the four silent dispatch skips are holds on the table, and a no-free-lane 
   const journal = { dispatched: {
     [`1516:fix:${head(1516).slice(0, 8)}`]: { ticket: 1516, kind: 'fix', round: 1, head: head(1516), result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z' },
     [`1517:review:${head(1517).slice(0, 8)}`]: { ticket: 1517, kind: 'review', round: 1, head: head(1517), result: 'launched', judged: 'ok', at: '2026-08-31T05:30:00.000Z' },
-    [`1518:fix:${head(1518).slice(0, 8)}`]: { ticket: 1518, kind: 'fix', round: 1, head: head(1518), result: 'launched', at: '2026-08-31T05:30:00.000Z' },
+    [`1518:fix:${head(1518).slice(0, 8)}`]: {
+      ticket: 1518, kind: 'fix', round: 1, head: head(1518), result: 'launched',
+      lane: 'mac/lane-6', host: 'mac', at: new Date(Date.now() - 10 * 60_000).toISOString(),
+    },
   } };
   const facts = {
     ...TICKETED_FACTS, lanes: [], prs, unitIssues: { 1515: issues },
@@ -668,6 +671,12 @@ test('the four silent dispatch skips are holds on the table, and a no-free-lane 
       assert.match(stateOf('U3 #1518'), /^held: fix of head [0-9a-f]{8} is running — the review waits for a new head$/);
       assert.doesNotMatch(board.output(), /auto-dispatch: HELD/);
     }
+    const page = await until(board.base, body => body.cards?.find(c => c.ticket === 1519)?.status?.text?.endsWith('— no free lane'), { pathName: '/pipeline/data' });
+    const textOf = ticket => page.cards.find(c => c.ticket === ticket).status.text;
+    assert.match(textOf(1516), /^PR #1616 NO-GO R1 — fix of head [0-9a-f]{8} was already dispatched$/);
+    assert.match(textOf(1517), /^PR #1617 open — review of head [0-9a-f]{8} was already dispatched$/);
+    assert.equal(textOf(1518), 'PR #1618 red checks (test) — fix on mac/lane-6');
+    assert.equal(textOf(1519), 'PR #1619 red checks (test) — no free lane');
     await new Promise(resolve => setTimeout(resolve, 700));
     const api = (await getJson(board.base, '/pipeline/data')).body;
     assert.notEqual(api.cards.find(card => card.ticket === 1519)?.stage, 'stuck');
@@ -782,6 +791,8 @@ test('a dependency on a stuck unit is visible on the dispatch table', async () =
     const api = await until(board.base, body => (body.autoDispatch ?? []).some(row =>
       row.unit === 'U2 #1687' && row.state === 'held: waits for #1686 (stuck)'));
     assert.equal(api.cards.find(card => card.id === dependency.id).stage, 'stuck');
+    const u2 = await until(board.base, body => body.cards?.find(c => c.ticket === 1687)?.status?.text === 'queued — waits for #1686 (stuck)', { pathName: '/pipeline/data' });
+    assert.ok(u2);
   } finally {
     await board.stop();
   }

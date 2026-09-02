@@ -7,7 +7,7 @@ import { getJson, postJson, startBoard } from './helpers.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-test('status writes remain plain card data without watchdog configuration or stale machinery', async () => {
+test('status is board data: no watchdog, no stale flag, no hand endpoint', async () => {
   const board = await startBoard({
     config: { source: 'probe' },
     files: { 'watchdog.json': { boardUrl: 'http://board.invalid', intervalMin: 1 } },
@@ -36,13 +36,13 @@ test('status writes remain plain card data without watchdog configuration or sta
     const windows = await getJson(board.base, '/api/board?format=json');
     assert.equal(windows.body.problems.some(problem => problem.source === 'watchdog'), false);
 
-    const written = await postJson(board.base, `/pipeline/card/${encodeURIComponent(id)}/status`, {
-      text: 'A person or client can still write this line',
-      verdict: 'moving',
-    });
-    assert.equal(written.status, 200);
-    assert.equal(written.body.card.status.text, 'A person or client can still write this line');
-    assert.equal(written.body.card.status.verdict, 'moving');
+    const written = await postJson(board.base, `/pipeline/card/${encodeURIComponent(id)}/status`, { text: 'by hand' });
+    assert.equal(written.status, 404);
+    const ignored = await postJson(board.base, '/pipeline/card/update', { id, status: { text: 'by hand' } });
+    assert.equal(ignored.status, 200);
+    const card = (await getJson(board.base, '/pipeline/data')).body.cards.find(c => c.id === id);
+    assert.deepEqual(Object.keys(card.status).sort(), ['at', 'text']);
+    assert.equal(card.status.text, '');
   } finally {
     await board.stop();
   }
@@ -67,5 +67,5 @@ test('the glossary no longer reserves Status for or defines the deleted watchdog
   const context = await readFile(path.join(ROOT, 'CONTEXT.md'), 'utf8');
   assert.doesNotMatch(context, /\*\*Watchdog\*\*:/);
   assert.doesNotMatch(context, /reserved for the watchdog/i);
-  assert.match(context, /\*\*Status\*\*:[\s\S]*written through the card status endpoint/i);
+  assert.match(context, /\*\*Status\*\*:[\s\S]*written by the board/i);
 });

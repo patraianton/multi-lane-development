@@ -601,6 +601,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
   setCardSprints(sprints);
   const sync = await syncSprintUnits(sprints);
+  for (const line of sync.lines) console.log(line);
   await judgeDispatchedLanes(facts);
   await readyAcceptanceSweep(sprints);
   await offBoardSweep(facts);

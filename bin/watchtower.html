@@ -277,25 +277,6 @@
   .sprint-band .qa-line a:hover { text-decoration: underline; }
   .sprint-band .qa-line a.closed { color: var(--working); }
   .sprint-band .qa-line.clean b { color: var(--working); }
-  .sprint-band .status-line {
-    position: relative; min-width: 0; padding: 6px 8px 6px 20px; border: 1px solid var(--line-soft);
-    border-radius: 6px; background: rgba(8, 13, 19, .45); color: var(--ink-mid); font-size: 10px; line-height: 1.4;
-  }
-  .sprint-band .status-line::before {
-    content: ""; position: absolute; left: 8px; top: 10px; width: 5px; height: 5px;
-    border-radius: 50%; background: var(--ink-dim);
-  }
-  .sprint-band .status-line.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
-  .sprint-band .status-line.stalled::before { background: var(--done); }
-  .sprint-band .status-line.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
-  .sprint-band .status-copy {
-    display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere;
-  }
-  .sprint-band .status-meta { margin-left: 5px; color: var(--ink-dim); font: 9px var(--mono); white-space: nowrap; }
-  .sprint-band .status-meta .verdict { text-transform: uppercase; }
-  .sprint-band .status-line.moving .verdict { color: var(--working); }
-  .sprint-band .status-line.stalled .verdict { color: var(--done); }
-  .sprint-band .status-line.looping .verdict { color: var(--blocked); }
   /* The lanes of the fleet as a table across the whole pane — the same table
      as "in flight", a size smaller: lane (FLEET.md name), server, state, who
      is on it. The chips (ticket, artifact, subscription, sources) share one
@@ -563,9 +544,6 @@
     content: ""; position: absolute; left: 7px; top: 8px; width: 4px; height: 4px;
     border-radius: 50%; background: var(--ink-dim);
   }
-  .pcard .status.moving::before { background: var(--working); box-shadow: 0 0 8px rgba(53, 214, 160, .38); }
-  .pcard .status.stalled::before { background: var(--done); }
-  .pcard .status.looping::before { background: var(--blocked); box-shadow: 0 0 8px rgba(255, 92, 95, .38); }
   .pcard .artifact-row { padding: 0 8px 7px 9px; }
   .pcard .artifact-bell {
     display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 7px 8px;
@@ -617,7 +595,6 @@
     flex: 0 0 auto; color: var(--ink-dim); font-family: var(--ui); font-size: 8px;
     font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
   }
-  .pcard .deps-row.blocked .deps-label { color: var(--done); }
   .pcard .dep-chip.met { border-color: #1f6a52; color: var(--working); }
   .pcard .dep-chip.open { border-color: #5a4a1f; color: var(--done); }
   .pcard .dep-chip.outside { border-color: var(--line); color: var(--ink-dim); }
@@ -658,10 +635,6 @@
   .pcard .unit-parent .chip-key { color: var(--sprint, var(--ink-dim)); }
   .pcard .row.unit-state { padding: 0 8px 6px 9px; font-family: var(--mono); font-size: 10px; }
   /* The live review badge: a reader is on the PR head right now. */
-  .pcard .row.review-live { padding: 0 8px 6px 9px; font: 700 10px var(--mono); color: var(--violet); letter-spacing: .04em; }
-  .pcard .row.review-live i.pulse { display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 50%; background: var(--violet); animation: review-pulse 1.1s ease-in-out infinite; }
-  .pcard .row.review-live .clk { color: var(--violet); }
-  @keyframes review-pulse { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
   .pcard .spec {
     min-width: 0; margin: 0; color: #bdcad6; font-size: 11.5px; line-height: 1.48;
     overflow-wrap: anywhere; white-space: pre-wrap;
@@ -736,12 +709,6 @@
   .pcard .cnt { min-width: 0; font-family: var(--mono); font-size: 9.5px; color: var(--ink-dim); }
   .pcard .cnt b { color: var(--blocked); }
   .pcard .review-counter .cnt b { color: var(--violet); }
-  .pcard .status .verdict {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
-  }
-  .pcard .status.moving .verdict { color: var(--working); }
-  .pcard .status.stalled .verdict { color: var(--done); }
-  .pcard .status.looping .verdict { color: var(--blocked); }
   .pcard .status .age { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
   .pcard a.spec-link {
     display: inline-flex; max-width: 100%; padding: 2px 6px; border: 1px solid #285266; border-radius: 8px;
@@ -1154,18 +1121,14 @@ function calcClocks(c) {
 
 function hasCardStatus(c) {
   const s = c.status;
-  return Boolean(s && ((s.text && String(s.text).trim()) || s.verdict || s.at));
+  return Boolean(s && ((s.text && String(s.text).trim()) || s.at));
 }
 
 function statusLine(c) {
   if (!hasCardStatus(c)) return '';
-  const v = String(c.status.verdict || '').toLowerCase();
   const age = ago(c.status.at);
-  const cls = 'status'
-    + (v === 'moving' || v === 'stalled' || v === 'looping' ? ' ' + v : '');
-  return '<div class="row ' + cls + '">'
+  return '<div class="row status">'
     + (c.status.text ? '<span class="status-text">' + esc(c.status.text) + '</span> ' : '')
-    + (v ? '<span class="verdict">' + esc(v) + '</span>' : '')
     + (age ? ' <span class="age">' + esc(age) + '</span>' : '')
     + '</div>';
 }
@@ -1313,19 +1276,6 @@ function sprintBandQaLine(s) {
   const links = qa.map(u => '<a class="' + (u.open && !u.merged ? 'open' : 'closed') + '" target="_blank" rel="noreferrer" href="'
     + esc(u.url || '#') + '" title="' + esc((u.title || '') + ' — ' + (u.state || '')) + '">#' + esc(String(u.ticket)) + '</a>').join(' ');
   return '<div class="qa-line' + (open || uo ? '' : ' clean') + '"><b>QA</b> ' + open + ' open of ' + qa.length + ' · ' + links + umb + '</div>';
-}
-
-function sprintBandStatus(c) {
-  const status = c.status && typeof c.status === 'object' ? c.status : {};
-  const text = String(status.text || 'No orchestrator status yet').replace(/\uFFFD/g, '—');
-  const verdict = String(status.verdict || 'unknown').toLowerCase();
-  const tone = ['moving', 'stalled', 'looping'].includes(verdict) ? ' ' + verdict : '';
-  const age = status.at ? ago(status.at) : '';
-  return '<div class="status-line' + tone + '" title="' + esc(text) + '">'
-    + '<span class="status-copy">' + esc(text)
-    + '<span class="status-meta"><span class="verdict">' + esc(verdict) + '</span>'
-    + (age ? ' · ' + esc(age) : '')
-    + '</span></span></div>';
 }
 
 // Every lane of the fleet, one row each: the FLEET.md name, the server, what
@@ -1529,7 +1479,7 @@ function sprintBandPanel(c) {
     + (open ? 'true' : 'false') + '" title="Toggle the full sprint card">card</button></div>'
     + '<div class="identity-meta"><span class="badge">' + esc(STAGE_TITLE[c.stage] ?? c.stage) + '</span>'
     + '<span class="clock"><small>Total</small>' + clockSpan('clk', cl.total, cl.totalFrom) + '</span></div></div>'
-    + sprintBandProgress(s) + sprintBandStatus(c)
+    + sprintBandProgress(s)
     + sprintBandLanes(s) + sprintBandLinks(c, s) + '</aside>'
     + sprintBandTable(c) + '</article><div class="sprint-card-detail" data-sprint-detail="' + esc(c.id) + '"'
     + (open ? '' : ' hidden') + '>' + pcard(c) + '</div></div>';
@@ -1672,34 +1622,21 @@ function pcard(c) {
         + '<span class="chip-key">CI</span><span class="chip-value">—</span></span>');
     }
     bits.push('<div class="row mono chip-row">' + pieces.join('') + '</div>');
-    // The ticket's dependencies, each with the state of the unit it names —
-    // "waits for" while the card is still queued behind an unmerged one.
+    // The ticket's dependencies, each with the state of the unit it names.
     if (uf && Array.isArray(uf.deps) && uf.deps.length) {
-      const unmet = uf.deps.filter(d => d.met === false);
-      const blocked = unmet.length > 0 && c.stage === 'ticketed';
       const chips = uf.deps.map(d => {
         const cls = d.met ? 'met' : (d.met === false ? 'open' : 'outside');
         const name = (d.unit ? d.unit + ' ' : '') + '#' + d.ticket;
         return '<span class="meta-chip dep-chip ' + cls + '" title="' + esc('depends on ' + name + ' — ' + (d.state || '?')) + '">'
           + '<span class="chip-key">' + esc(name) + '</span><span class="chip-value">' + esc(d.state || '?') + '</span></span>';
       });
-      bits.push('<div class="row mono chip-row deps-row' + (blocked ? ' blocked' : '') + '">'
-        + '<span class="deps-label">' + (blocked ? 'waits for' : 'depends on') + '</span>' + chips.join('') + '</div>');
+      bits.push('<div class="row mono chip-row deps-row">'
+        + '<span class="deps-label">depends on</span>' + chips.join('') + '</div>');
     }
     if (uf && uf.state) {
       bits.push('<div class="row unit-state st-' + esc(String(uf.state).replace(/\s+/g, '-')) + '">' + esc(uf.state)
         + (uf.open === false && !uf.merged ? ' · ticket closed' : '') + '</div>');
     }
-  }
-  // The live review badge (decision 20): a reader is on the PR head right now —
-  // the board set it when it started one; the verdict clears it.
-  if (c.review && c.review.running) {
-    const from = Date.parse(c.review.since || '') || Date.now();
-    bits.push('<div class="row review-live" title="a reviewer is reading the PR head — set by the board when it starts a reader, cleared by the verdict on the PR">'
-      + '<i class="pulse" aria-hidden="true"></i>review running'
-      + (c.review.round ? ' · R' + esc(String(c.review.round)) : '')
-      + (c.review.by ? ' · ' + esc(c.review.by) : '')
-      + ' · ' + clockSpan('clk', 0, from) + '</div>');
   }
   const attached = ATTACH_FIELDS
     .filter(k => !(k === 'lane' && sprint && sprint.lanes.length))
@@ -1779,7 +1716,7 @@ function pcard(c) {
 
   const acts = [];
   if (c.stage === 'stuck') {
-    acts.push(actBtn(c.id, 'unstuck', {}, 'return to development', 'go'));
+    acts.push(actBtn(c.id, 'unstuck', {}, 'unstick', 'go'));
   } else if (NEXT_STAGE[c.stage]
       && !(usesSubscriptions && c.stage === 'grilled' && !(c.subscription || '').trim())
       // The server refuses ticketed → development without a ticket link, so the

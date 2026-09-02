@@ -42,7 +42,7 @@ A successful step along the road resets `consecutiveFails` to zero. So does a hu
 
 Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
 
-**Status** is a different field: a one-line "what is happening right now", with a verdict `moving` / `stalled` / `looping`. It is not the stage.
+**Status** is one sentence the board writes on every unit card of a served sprint — what it is doing or waiting for (`status.text`, `status.at`). It is not the stage and nobody writes it by hand.
 
 How a card is created, moved, failed, commented, and updated: [`docs/API.md`](docs/API.md).
 

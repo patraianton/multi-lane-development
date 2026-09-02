@@ -92,10 +92,6 @@ const STUCK_AFTER = 3;
 // tickets, which no move is allowed to do.
 const CAN_FAIL = new Set(['development', 'local_check', 'ci_pr']);
 
-// The optional verdict carried by a card's status line. The value is validated
-// here so a wrong word never reaches the board.
-const VERDICTS = ['moving', 'stalled', 'looping'];
-
 // ------------------------------------------------------------------- limits
 
 const LIMIT = {
@@ -248,7 +244,6 @@ function normCard(raw) {
     comments.push({ author, text, at: isoOr(c?.at, createdAt) });
   }
 
-  const verdict = VERDICTS.includes(src.status?.verdict) ? src.status.verdict : '';
   const notified = {};
   const rawNotified = src.notified && typeof src.notified === 'object' && !Array.isArray(src.notified)
     ? src.notified : {};
@@ -286,7 +281,6 @@ function normCard(raw) {
     unit: str(src.unit, LIMIT.slotish).trim(),
     status: {
       text: str(src.status?.text, LIMIT.status).trim(),
-      verdict,
       at: isoOr(src.status?.at, null),
     },
     comments,
@@ -475,13 +469,13 @@ export function sweepStuck(source, now = Date.now(), stuckMs = 0) {
 
 // -------------------------------------------------------------------- status
 //
-// Status is optional card data: a short line, verdict and write time. It is not
-// the Stage and no background process is assumed to refresh it.
+// Status is optional board-owned card data: one short sentence and its write
+// time. It is not the Stage.
 
 function hasStatus(card) {
   const s = card?.status;
   if (!s || typeof s !== 'object') return false;
-  return Boolean(String(s.text ?? '').trim() || s.verdict || s.at);
+  return Boolean(String(s.text ?? '').trim() || s.at);
 }
 
 function statusAgeMs(card, now = Date.now()) {
@@ -622,7 +616,7 @@ async function createCard(body) {
     parent: '',
     ticket: 0,
     unit: '',
-    status: { text: '', verdict: '', at: null },
+    status: { text: '', at: null },
     comments: [],
   };
   await commit(st => { st.cards.push(card); });
@@ -695,6 +689,7 @@ function applyFailure(card, {
   reason,
   counterKey = null,
   forceStuck = false,
+  landing = 'development',
   failureHead = '',
   failureCause = '',
   allowAnyStage = false,
@@ -707,8 +702,12 @@ function applyFailure(card, {
   }
   if (counterKey) card.counters[counterKey] += 1;
   if (!forceStuck) card.consecutiveFails += 1;
-  const to = forceStuck || card.consecutiveFails >= STUCK_AFTER ? 'stuck' : 'development';
+  const to = forceStuck || card.consecutiveFails >= STUCK_AFTER ? 'stuck' : landing;
   enterStage(card, to, now, { reason, failureHead, failureCause });
+}
+
+function landingStage(card) {
+  return card.parent && !card.links.pr ? 'ticketed' : 'development';
 }
 
 // Board-owned failures (for example, a freed lane with no proof) have no HTTP
@@ -718,7 +717,9 @@ export async function failCard(id, reason, { forceStuck = false } = {}) {
   const why = str(reason, LIMIT.comment).trim();
   if (!why) throw new BadRequest('a failure reason is required');
   const { card, events } = unwrapMutation(await editCard(id, current => {
-    applyFailure(current, { reason: why, forceStuck, allowAnyStage: true });
+    applyFailure(current, {
+      reason: why, forceStuck, allowAnyStage: true, landing: landingStage(current),
+    });
   }));
   await emitNotifications(card, events);
   return card;
@@ -772,7 +773,7 @@ async function failCardAction(body) {
 async function unstuckCard(body) {
   return editCard(body.id, card => {
     if (card.stage !== 'stuck') throw new BadRequest('the card is not stuck');
-    enterStage(card, 'development', new Date().toISOString());
+    enterStage(card, landingStage(card), new Date().toISOString());
     // A human decided what to do about the loop, so the card gets a fresh run of
     // three attempts. Otherwise the very next failure would bounce it straight
     // back into Stuck and the decision would have bought nothing.
@@ -851,14 +852,6 @@ async function updateCard(body) {
       }
     }
   }
-  if (body.status !== undefined
-      && (!body.status || typeof body.status !== 'object' || Array.isArray(body.status))) {
-    throw new BadRequest('status must be an object');
-  }
-  const verdict = body.status?.verdict;
-  if (verdict !== undefined && verdict !== '' && !VERDICTS.includes(verdict)) {
-    throw new BadRequest(`unknown verdict "${verdict}" — verdicts are ${VERDICTS.join(', ')}`);
-  }
   const spec = body.spec;
   if (spec !== undefined && typeof spec !== 'string') throw new BadRequest('spec must be a text');
 
@@ -877,31 +870,6 @@ async function updateCard(body) {
     }
     if (spec !== undefined) card.spec = str(spec, LIMIT.spec);
     if (body.review) setReview(card, body.review, new Date().toISOString());
-    if (body.status) {
-      if (body.status.text !== undefined) card.status.text = str(body.status.text, LIMIT.status).trim();
-      if (verdict !== undefined) card.status.verdict = verdict;
-      card.status.at = new Date().toISOString();
-    }
-  });
-}
-
-// Plain status write: POST /pipeline/card/<id>/status { text, verdict }.
-// Id is in the path, not the body. Verdict is required and must be one of the
-// three words; text is clipped to LIMIT.status. This is a refresh, not a
-// second event — posting the same Status twice only updates `at`.
-async function writeStatus(id, body) {
-  const verdict = String(body?.verdict ?? '').trim().toLowerCase();
-  if (!VERDICTS.includes(verdict)) {
-    throw new BadRequest(
-      verdict
-        ? `unknown verdict "${verdict}" — verdicts are ${VERDICTS.join(', ')}`
-        : `a verdict is required — verdicts are ${VERDICTS.join(', ')}`);
-  }
-  const text = str(body?.text, LIMIT.status).trim();
-  return editCard(id, card => {
-    card.status.text = text;
-    card.status.verdict = verdict;
-    card.status.at = new Date().toISOString();
   });
 }
 
@@ -1103,8 +1071,10 @@ function cardExtras(c, all = []) {
 // walked forward by facts alone — on a busy lane → development, the lane
 // running the project's local check → local_check, PR open → ci_pr, PR
 // merged → done (a unit's review IS the GO its merge required). Never
-// backwards, never out of stuck, never while a source is stale: unknown is not
-// empty. The sprint card itself is moved by people (and, later, ADR-0006).
+// backwards by facts, never out of stuck, never while a source is stale:
+// unknown is not empty. A run the board itself ends without a PR lands in
+// ticketed (failCard, unstuck). The sprint card itself is moved by people (and,
+// later, ADR-0006).
 const ROAD_ORDER = STAGES.filter(s => s.key !== 'stuck').map(s => s.key);
 
 function unitTitle(u) {
@@ -1129,6 +1099,94 @@ function unitTargetStage(u) {
   if (u.lane?.busy) return 'development';
   // A QA finding nobody has picked up is a ticket like any other: ticketed.
   return null;
+}
+
+export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage = '' } = {}) {
+  const mine = rows.filter(r => r.kind !== 'merge' && Number(r.ticket) === Number(u.ticket));
+  const verb = u.qaRun ? 'QA run' : 'building';
+  const live = mine.find(r => /^launch/.test(String(r.state)) && r.judged == null);
+  const liveWord = live
+    ? `${live.kind === 'develop' ? verb : live.kind} on ${live.lane}`
+    : '';
+  const held = mine.find(r => String(r.state).startsWith('held: '))?.state.slice(6).trim() || '';
+  const wouldRow = mine.find(r => r.state === 'would dispatch');
+  const would = wouldRow
+    ? `${wouldRow.kind === 'develop' ? '' : wouldRow.kind + ' '}would dispatch to ${wouldRow.lane} (auto-dispatch is off)`
+    : '';
+  const mergeWord = rows.find(r => r.kind === 'merge'
+    && r.unit === `PR #${u.pr?.number}`
+    && r.base === String(u.pr?.headSha ?? '').slice(0, 8))?.state || '';
+  const laneName = u.lane ? `${u.lane.host}/${u.lane.lane}` : '';
+
+  if (card.stage === 'stuck') {
+    return `waiting for the owner — ${card.stageHistory?.at(-1)?.reason || 'no reason recorded'}`;
+  }
+  if (['done', 'stuck'].includes(sprintStage) && card.stage !== 'done') {
+    return `sprint is ${sprintStage} — no scheduler serves this ticket`;
+  }
+  if (u.accepted) return u.pr ? `ticket closed — PR #${u.pr.number} is still open: close it by hand` : '';
+  if (u.merged) return `merged in PR #${u.merged.number} — waiting for the ticket to close`;
+
+  if (u.pr) {
+    const verdict = u.pr.verdictOnHead;
+    let word;
+    if (verdict?.go === false) word = `NO-GO R${verdict.round ?? u.pr.verdictRounds ?? 1}`;
+    else if (u.pr.ci?.color === 'red') {
+      const failed = failedCheckNames(u.pr.ci);
+      word = `red checks (${failed.join(', ') || u.pr.ci.text || 'failed check'})`;
+    } else if (u.pr.mergeable === 'CONFLICTING') word = 'conflicts with main';
+    else if (verdict?.go === true && u.pr.ci?.color === 'green') word = 'green + GO';
+    else if (verdict?.go === true) word = 'GO, checks not green';
+    else if (u.pr.draft) word = 'draft';
+    else word = 'open';
+
+    let tail;
+    if (u.lane?.check) tail = `local check on ${laneName}`;
+    else if (liveWord) tail = liveWord;
+    else if (card.review?.running) {
+      tail = `review R${card.review.round}${card.review.by ? ` on ${card.review.by}` : ''}`;
+    } else if (u.lane?.busy) tail = `busy on ${laneName}`;
+    else if (held) tail = held;
+    else if (would) tail = would;
+    else if (word.startsWith('NO-GO') || word.startsWith('red checks') || word === 'conflicts with main') {
+      tail = 'waiting for a fixer';
+    } else if (word === 'green + GO') tail = mergeWord || 'waiting for the merge sweep';
+    else if (word === 'GO, checks not green') tail = 'waiting for green checks';
+    else if (word === 'draft') tail = 'waiting for the author';
+    else tail = 'waiting for a review';
+    return `PR #${u.pr.number} ${word} — ${tail}`;
+  }
+
+  if (u.lane?.check) return `local check on ${laneName}`;
+  if (liveWord) return liveWord;
+  if (u.lane?.busy) return `${verb} on ${laneName}`;
+
+  let head;
+  if (card.links?.pr) head = 'PR closed without a merge';
+  else if (u.open === false) head = 'ticket closed without a merge';
+  else if (u.lane) head = `lane ${laneName} is parked on its branch`;
+  else if (['development', 'local_check'].includes(card.stage)) head = 'no lane and no PR';
+  else head = 'queued';
+
+  let tail;
+  if (held) tail = held;
+  else if (would) tail = would;
+  else if (head === 'PR closed without a merge') tail = 'close the ticket or reopen the PR';
+  else if (head === 'ticket closed without a merge') tail = 'nothing to do';
+  else if (head.startsWith('lane ')) tail = 'the planner will not start it: free the lane or open the PR';
+  else if (head === 'no lane and no PR') tail = 'the board is not running this card';
+  else tail = dispatchOn ? 'no lane has taken it yet' : 'auto-dispatch is off';
+  return `${head} — ${tail}`;
+}
+
+function normalStatus(text) {
+  return str(text ?? '', LIMIT.status).trim();
+}
+
+function canWriteUnitStatus(card, text) {
+  const enteredAt = card?.stageHistory?.at(-1)?.enteredAt;
+  return text !== null && AUTO_DISPATCH.at
+    && (card.stage === 'stuck' || !(Date.parse(enteredAt) > Date.parse(AUTO_DISPATCH.at)));
 }
 
 function firstLine(text) {
@@ -1200,6 +1258,10 @@ function unitPlan(cards, sprints) {
       // QA card: the label is the fact, the card follows it.
       const unit = str(u.unit ?? '', LIMIT.slotish);
       const fresh = !s.stale?.length;
+      const statusCard = card ?? { stage: 'ticketed', stageHistory: [], links: { pr: '' } };
+      const text = fresh ? normalStatus(unitStatus(u, statusCard, {
+        rows: AUTO_DISPATCH.rows, dispatchOn: AUTO_DISPATCH.on, sprintStage: sprint.stage,
+      })) : null;
       const target = (fresh && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       let move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
       // One step back that is a fact, not a failure (decision 18): a card that
@@ -1228,7 +1290,7 @@ function unitPlan(cards, sprints) {
         && Date.parse(verdictAt) > Date.parse(card.review.since));
       const question = card && fresh && card.stage !== 'stuck' ? latestQuestion(card, u) : null;
       if (question) {
-        plan.push({ kind: 'question', id: card.id, lane, pr, branch, slot, unit, reason: question.reason, reviewDone, verdictAt });
+        plan.push({ kind: 'question', id: card.id, u, fresh, lane, pr, branch, slot, unit, reason: question.reason, reviewDone, verdictAt });
         continue;
       }
 
@@ -1245,7 +1307,7 @@ function unitPlan(cards, sprints) {
       const legacyNoGoIsNew = !noGo?.at || !enteredCi || Date.parse(noGo.at) > Date.parse(enteredCi);
       if (noGo && !reviewRecorded && (head || legacyNoGoIsNew)) {
         plan.push({
-          kind: 'review-fail', id: card.id, lane, pr, branch, slot, unit,
+          kind: 'review-fail', id: card.id, u, fresh, lane, pr, branch, slot, unit,
           reason: noGoReason(noGo, head), failureHead: head, failureCause: 'review', reviewDone, verdictAt,
         });
         continue;
@@ -1253,7 +1315,7 @@ function unitPlan(cards, sprints) {
       const red = card && fresh && CAN_FAIL.has(card.stage) && head && u.pr?.ci?.color === 'red';
       if (red && !ciRecorded) {
         plan.push({
-          kind: 'ci-fail', id: card.id, lane, pr, branch, slot, unit,
+          kind: 'ci-fail', id: card.id, u, fresh, lane, pr, branch, slot, unit,
           reason: redCheckReason(u.pr, head), failureHead: head, failureCause: 'ci', reviewDone, verdictAt,
         });
         continue;
@@ -1265,9 +1327,10 @@ function unitPlan(cards, sprints) {
       if ((reviewRecorded && noGo) || (ciRecorded && u.pr?.ci?.color === 'red')) move = null;
       const resetFails = Boolean(card?.consecutiveFails && fresh
         && (u.merged || u.accepted || (verdictMatchesHead && verdict?.go === true)));
-      if (!card) plan.push({ kind: 'spawn', sprintId, u, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
-      else if (move || reviewDone || resetFails || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)) {
-        plan.push({ kind: 'refresh', id: card.id, lane, pr, branch, slot, unit, move, resetFails, reviewDone, verdictAt });
+      if (!card) plan.push({ kind: 'spawn', sprintId, u, fresh, lane, pr, branch, slot, target: target && target !== 'ticketed' ? target : null });
+      else if (move || reviewDone || resetFails || card.lane !== lane || card.links.pr !== pr || card.links.branch !== branch || card.slot !== slot || (unit && card.unit !== unit)
+          || (canWriteUnitStatus(card, text) && text !== normalStatus(card.status.text))) {
+        plan.push({ kind: 'refresh', id: card.id, u, fresh, lane, pr, branch, slot, unit, move, resetFails, reviewDone, verdictAt });
       }
     }
     // The sprint's own stage follows its units: development once any unit has
@@ -1292,16 +1355,26 @@ function unitPlan(cards, sprints) {
 }
 
 export async function syncSprintUnits(sprints) {
-  if (!(sprints instanceof Map) || !sprints.size) return { spawned: 0, moved: 0 };
+  if (!(sprints instanceof Map) || !sprints.size) return { spawned: 0, moved: 0, lines: [] };
   const st = await load();
-  if (!unitPlan(st.cards, sprints).length) return { spawned: 0, moved: 0 };
+  if (!unitPlan(st.cards, sprints).length) return { spawned: 0, moved: 0, lines: [] };
   const result = await commit(state => {
     const now = new Date().toISOString();
     let spawned = 0, moved = 0;
+    const lines = [];
     const notifications = [];
     const rememberNotifications = (before, card) => {
       const events = takeNotifyEvents(before, card);
       if (events.length) notifications.push({ card, events });
+    };
+    const writeUnitStatus = (step, card) => {
+      const sprintStage = state.cards.find(c => c.id === card.parent)?.stage ?? '';
+      const text = step.fresh ? normalStatus(unitStatus(step.u, card, {
+        rows: AUTO_DISPATCH.rows, dispatchOn: AUTO_DISPATCH.on, sprintStage,
+      })) : null;
+      if (!canWriteUnitStatus(card, text) || text === normalStatus(card.status.text)) return;
+      card.status = text ? { text, at: now } : { text: '', at: null };
+      lines.push(`card ${card.title}: ${card.stage}${card.status.text ? ` — ${card.status.text}` : ''}`);
     };
     for (const step of unitPlan(state.cards, sprints)) {
       if (step.kind === 'spawn') {
@@ -1325,7 +1398,7 @@ export async function syncSprintUnits(sprints) {
           parent: step.sprintId,
           ticket: int(step.u.ticket),
           unit: str(step.u.unit, LIMIT.slotish),
-          status: { text: '', verdict: '', at: null },
+          status: { text: '', at: null },
           comments: [],
         };
         if (step.target) { enterStage(card, step.target, now); moved++; }
@@ -1355,24 +1428,25 @@ export async function syncSprintUnits(sprints) {
         if (step.reviewDone) closeReview(card, step.verdictAt || now);
         rememberNotifications(before, card);
         moved++;
-        continue;
+      } else {
+        if (step.reviewDone) closeReview(card, step.verdictAt || now);
+        card.lane = step.lane;
+        card.links.pr = step.pr;
+        card.links.branch = step.branch;
+        card.slot = step.slot;
+        if (step.unit && card.unit !== step.unit) {
+          card.unit = step.unit;
+          if (step.unit === 'QA' && !/^QA /.test(card.title)) card.title = str(`QA ${card.title}`, LIMIT.title);
+        }
+        if (step.move) { enterStage(card, step.move, now); moved++; }
+        if (step.resetFails) card.consecutiveFails = 0;
       }
-      if (step.reviewDone) closeReview(card, step.verdictAt || now);
-      card.lane = step.lane;
-      card.links.pr = step.pr;
-      card.links.branch = step.branch;
-      card.slot = step.slot;
-      if (step.unit && card.unit !== step.unit) {
-        card.unit = step.unit;
-        if (step.unit === 'QA' && !/^QA /.test(card.title)) card.title = str(`QA ${card.title}`, LIMIT.title);
-      }
-      if (step.move) { enterStage(card, step.move, now); moved++; }
-      if (step.resetFails) card.consecutiveFails = 0;
+      writeUnitStatus(step, card);
     }
-    return { spawned, moved, notifications };
+    return { spawned, moved, notifications, lines };
   });
   for (const item of result.notifications) await emitNotifications(item.card, item.events);
-  return { spawned: result.spawned, moved: result.moved };
+  return { spawned: result.spawned, moved: result.moved, lines: result.lines };
 }
 
 // --------------------------------------------------------------- agent view
@@ -1401,7 +1475,6 @@ function agentRow(card, now) {
     readyAt: card.readyAt,
     clock: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     fails: failCell(card),
-    verdict: card.status.verdict || '-',
     review: card.review?.running ? { running: true, round: card.review.round, since: card.review.since, by: card.review.by || '' } : null,
     lane: card.lane || '',
     links: {
@@ -1411,7 +1484,7 @@ function agentRow(card, now) {
       artifact: card.links.artifact || '',
     },
     status: present
-      ? { text: card.status.text || '', verdict: card.status.verdict || '', at: card.status.at }
+      ? { text: card.status.text || '', at: card.status.at }
       : null,
     artifactAnswered: card.artifactAnswered ?? null,
     sprint: sprintMap.has(card.id) ? sprintSummary(sprintMap.get(card.id)) : null,
@@ -1483,7 +1556,7 @@ function renderToonPipeline(v) {
     `generated: ${v.generated}`,
     `swept: ${v.swept.at ?? 'never'} (age ${v.swept.age})`,
     `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done}, failures ${s.failures}`,
-    toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails', 'verdict'],
+    toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails'],
       'no cards in the pipeline'),
     toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
       'no card is stuck'),
@@ -1586,8 +1659,7 @@ async function buildAgentCard(card, withSpec = false) {
       state: u.state,
     })),
     status: hasStatus(card)
-      ? `${card.status.text || '(empty)'} (${card.status.verdict || 'no verdict'}, ${ageWord}`
-        + ')'
+      ? `${card.status.text || '(empty)'} (${ageWord})`
       : '-',
     summary: card.summary || '-',
     specLines: specLineCount(card.spec),
@@ -1750,26 +1822,6 @@ export async function handlePipeline(req, res, url, port) {
     return true;
   }
 
-  // Plain status write: POST /pipeline/card/<id>/status { text, verdict }.
-  // Checked before the action table so an id that happens to match an action
-  // name cannot steal this path.
-  if (req.method === 'POST' && url.pathname.startsWith('/pipeline/card/')
-      && url.pathname.endsWith('/status')) {
-    const raw = url.pathname.slice('/pipeline/card/'.length, -'/status'.length);
-    let id;
-    try { id = decodeURIComponent(raw).trim(); }
-    catch { id = String(raw || '').trim(); }
-    if (!id || id.includes('/')) {
-      send(res, 400, JSON.stringify({ error: 'a card id is required' }));
-      return true;
-    }
-    const body = await readBody(req);
-    const { card, events } = unwrapMutation(await writeStatus(id, body));
-    send(res, 200, JSON.stringify({ ok: true, card }));
-    await emitNotifications(card, events);
-    return true;
-  }
-
   // Deleting a card. It lives next to the action table but answers its own
   // way: the deleted card comes back whole in `removed`, and an unknown id is
   // a 404 with the live ids — the table's wrapper can only say 200 or 400.
@@ -1781,6 +1833,7 @@ export async function handlePipeline(req, res, url, port) {
     }
     try {
       const removed = await deleteCard(body);
+      console.log(`by hand: delete ${removed.title}`);
       send(res, 200, JSON.stringify({ ok: true, removed }));
     } catch (e) {
       if (!(e instanceof MissingCard)) throw e;
@@ -1807,6 +1860,9 @@ export async function handlePipeline(req, res, url, port) {
       return true;
     }
     const { card, events } = unwrapMutation(await fn(body));
+    if (['move', 'unstuck', 'fail'].includes(action)) {
+      console.log(`by hand: ${action} ${card.title} → ${card.stage}`);
+    }
     // The mutation is already persisted; answer first so a slow or hanging
     // Telegram round-trip can never delay the founder/agent, then notify.
     send(res, 200, JSON.stringify({ ok: true, card }));

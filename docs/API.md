@@ -254,9 +254,8 @@ Three lines about the pipeline itself (`pipeline`, `generated`, `summary` —
 counters: **cards**, **stuck**, **done**, **failures**), then:
 
 - `cards` — one card per line: `id`, `title`, `stage`, `clock`, `fails`
-  (`local 3 ci 1 (1 in a row)`, or `-`), `verdict` (`moving`, `stalled`,
-  `looping`, or `-`). JSON also carries `lane`, `links`, `status`
-  (`text`, `verdict`, `at`), `slot`, `subscription`, `window`, `consecutiveFails`,
+  (`local 3 ci 1 (1 in a row)`, or `-`). JSON also carries `lane`, `links`, `status`
+  (`text`, `at`, written by the board), `slot`, `subscription`, `window`, `consecutiveFails`,
   and the compatibility field `shadow: null`;
 - `stuck` — the cards waiting for a human, with how long they have been waiting;
 - `specs` — under `?full=1` only, the spec text of every card that has one.
@@ -326,7 +325,7 @@ and `/api/pipeline` an `idle-lanes[N]{card,free,queued,since}` table plus
 sprint is queued with nothing in its way.
 
 **Auto-dispatch (decision 16).** `/pipeline/data` carries `autoDispatch: { at, on,
-rows }` and `/api/pipeline` an `auto-dispatch[N]{card,unit,lane,base,state}` table
+rows }` and `/api/pipeline` an `auto-dispatch[N]{kind,card,unit,lane,base,state}` table
 plus `summary.autoDispatch` (rows) and `summary.autoDispatchOn`. One row per
 startable unit the board pairs with a free launchable lane — `unit` is `U3b #1583`,
 `lane` the fleet name (`mac/lane-6`), `base` where the unit starts from (`main`, or
@@ -336,6 +335,10 @@ journal `state/auto-dispatch.json` says — `launched 12:19Z`, `failed 12:19Z �
 `held 12:19Z — …` — and `held: <why>` for a startable unit that could not be paired
 (no pinned branch, two open-PR dependencies, only light lanes free, no launcher for
 the lane). Journal rows stay in the table for a day.
+Rows of `develop`, `fix` and `review R<n>` carry `ticket` and `judged` (`ok`,
+`no-proof`, or null while the run is live); `held:` rows carry `ticket`. A
+`held:` row is dropped only while a live, unjudged launch of the same pair is on
+the table. A judged, failed or refused entry keeps the hold beside it.
 
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
@@ -400,24 +403,16 @@ the reason in plain words; the store is left exactly as it was.
 | `create` | `title` (required), `spec`, `summary` | a new card at the `spec` stage. `summary` is the short retelling shown instead of the spec — at most 200 characters, longer is 400 naming the limit and the actual length |
 | `move` | `to` | one step along the road; anything else is 400. `grilled → ticketed` additionally requires a linked review artifact, if there is one, to be marked answered (`artifactAnswered`); `ticketed → development` additionally requires a non-empty `links.ticket` on the card |
 | `fail` | `kind`: `local` \| `ci` \| `review` | counts the failure, back to `development` — or to `stuck` on the third in a row; only from `development`, `local_check`, `ci_pr` |
-| `unstuck` | — | a human returns the card to `development` and clears the streak |
+| `unstuck` | — | clears the streak; a unit with a PR returns to `development`, a unit without a PR to `ticketed` |
 | `comment` | `author`, `text` (both required) | one flat comment on the card |
 | `summary` | `summary` (required, a string) | writes or replaces the card's short retelling; an empty string clears it. At most 200 characters — longer is 400 naming the limit and the actual length, never a silent clip. The spec is not touched |
-| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `status` (`text`, `verdict`), `review` (`running`, `round`, `by`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `review: { running: true, round: N, by }` turns the live review badge on (since 2026-08-30 the board sets it itself when it launches a reviewer; the `autoDispatch` rows of `/api/pipeline` carry a `kind` column: develop, review R<n>, fix R<n>, merge) (a new round number restarts its clock), `{ running: false }` turns it off and files the round; the board files it itself when a verdict newer than the badge lands on the PR. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window. A *different* `links.artifact` is a new round of questions and clears `artifactAnswered` |
+| `update` | `links` (`ticket`, `branch`, `pr`, `artifact`), `lane`, `subscription`, `slot`, `window`, `spec`, `review` (`running`, `round`, `by`) | attaches what the card points at; only the keys sent are touched, an empty string clears one. `review: { running: true, round: N, by }` turns the live review badge on (since 2026-08-30 the board sets it itself when it launches a reviewer; the `autoDispatch` rows of `/api/pipeline` carry a `kind` column: develop, review R<n>, fix, merge) (a new round number restarts its clock), `{ running: false }` turns it off and files the round; the board files it itself when a verdict newer than the badge lands on the PR. `window` is the herdr window's name as the windows board shows it — with it set, the card's title on the page jumps into that window. A *different* `links.artifact` is a new round of questions and clears `artifactAnswered` |
 | `artifact-answered` | `answers` (count, default 1), `by`, `at` | records that the founders answered on the linked review artifact: sets `artifactAnswered` (the first mark keeps its time and writes one comment; later marks only raise the count). 400 without `links.artifact`. The board's own sweep posts this for answers it can see; an agent posts it when the answers came another way (Telegram, a call) |
 | `delete` | — | removes the card from the pipeline for good, whatever stage it is in; answers `{ "ok": true, "removed": <the card> }`. An unknown id is 404 with the ids currently in the pipeline |
 
-The retained Status compatibility endpoint is:
-
-```
-POST /pipeline/card/<id>/status
-{ "text": "Codex is running the local check on lane-2.", "verdict": "moving" }
-```
-
-`<id>` is in the path (URL-encoded). `verdict` must be `moving`, `stalled` or
-`looping` — anything else is `400`. `text` is clipped to 400 characters. The board stores
-`card.status = { text, verdict, at }` (`at` is the time of this write).
-Posting the same Status twice is a refresh, not a second event.
+`card.status` (`text`, `at`) is written by the board and is read-only. There is
+no status endpoint: a POST to `/pipeline/card/<id>/status` is 404 like any
+unknown action.
 
 A separate path assigns who pays for the run and **walks the card forward**:
 
@@ -466,10 +461,10 @@ written by an older deployment or another local mechanism:
 pipeline: http://127.0.0.1:4878
 generated: 2026-08-26T17:36:54.960Z
 summary: cards 3, stuck 1, done 1, failures 7
-cards[3]{id,title,stage,clock,fails,verdict}:
-  cmtadl1k48ian,Ship the pipeline view,done,3h 12m (stopped),local 3 ci 1,moving
-  cmtadlv1j63cm,Grill the copilot spec,spec,41m,-,-
-  cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row),-
+cards[3]{id,title,stage,clock,fails}:
+  cmtadl1k48ian,Ship the pipeline view,done,3h 12m (stopped),local 3 ci 1
+  cmtadlv1j63cm,Grill the copilot spec,spec,41m,-
+  cmtadlv3hrpww,Stuck example,stuck,2h 4m,ci 3 (3 in a row)
 stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
 help[4]:

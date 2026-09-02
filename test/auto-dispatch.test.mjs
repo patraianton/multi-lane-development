@@ -101,7 +101,7 @@ test('a unit startable except for dependencies gets a hold row naming a stuck bl
   assert.equal(result.pairs.length, 0);
   assert.deepEqual(dispatchRows({ holds: result.holds }).find(row => row.unit === 'U8 #1687'), {
     kind: 'develop', card: 'FINANCE-CARDS', unit: 'U8 #1687', lane: '-', base: '-',
-    state: 'held: waits for #1686 (stuck)',
+    state: 'held: waits for #1686 (stuck)', ticket: 1687,
   });
 });
 
@@ -1171,11 +1171,15 @@ test('the table rows: pairs as would-dispatch, the journal\'s recent word, and h
   const s = sprint();
   const { pairs, holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET, at });
   const rows = dispatchRows({ pairs, holds, at, state: 'would dispatch' });
-  assert.deepEqual(rows[0], { kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'would dispatch' });
+  assert.deepEqual(rows[0], { kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'would dispatch', ticket: 1583 });
   assert.deepEqual(holds.map(hold => [hold.ticket, hold.reason]), [[1581, 'waits for #1580 (on lane)']]);
   const ledger = recordDispatch({ dispatched: {} }, pairs[0], { result: 'launched', error: null }, at);
   const later = dispatchRows({ pairs: [], holds: [], ledger, at: '2026-08-29T12:30:00.000Z' });
-  assert.deepEqual(later, [{ kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'launched 12:00Z' }]);
+  assert.deepEqual(later, [{ kind: 'develop', card: 'FINANCE-CARDS', unit: 'U3b #1583', lane: 'mac/lane-6', base: 'feat/fin-u3a@b34d212d (PR #1602 of U3a)', state: 'launched 12:00Z', ticket: 1583, judged: null }]);
+  const hold = { card: pairs[0].card, unit: 'U3b', ticket: 1583, lane: '', reason: 'waits for #1580 (on lane)' };
+  assert.deepEqual(dispatchRows({ holds: [hold], ledger, at: '2026-08-29T12:30:00.000Z' }).map(r => r.state), ['launched 12:00Z'], 'a live launch is the truth for its pair');
+  const judged = { dispatched: { '1583:develop:1': { ...ledger.dispatched['1583:develop:1'], judged: 'no-proof' } } };
+  assert.deepEqual(dispatchRows({ holds: [hold], ledger: judged, at: '2026-08-29T12:30:00.000Z' }).map(r => r.state), ['launched 12:00Z', 'held: waits for #1580 (on lane)'], 'a judged entry is history — the hold stands beside it');
   assert.equal(dispatchRows({ ledger, at: '2026-09-05T12:00:00.000Z' }).length, 0, 'a day later the journal line is gone from the table');
 });
 
