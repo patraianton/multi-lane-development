@@ -542,6 +542,14 @@ function lanesWithMemory(hostResults, staleSources) {
 
 const sprintSweepMs = Math.max(200, Number(process.env.WATCHTOWER_SPRINT_SWEEP_MS) || 30000);
 const sweepStuckMs = 20 * sprintSweepMs;
+
+// An open PR disappearing is not evidence that it closed unmerged until the
+// merged list from the same observation has arrived. Whenever the faster open
+// source is due, make the merged source due in that sweep as well.
+function couplePrSources() {
+  if (Date.now() - prSource.at >= 60000) mergedPrSource.at = 0;
+}
+
 const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   // The scheduler runs with no page open. Re-read its safety switch on this
   // cadence so turning auto-dispatch off also stops merges within one sweep.
@@ -569,6 +577,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // The pipeline page never runs the windows sweep, so the slow sources are
     // refreshed here too (each on its own interval) — a board showing only
     // the pipeline still sees lanes, PRs and tickets move.
+    couplePrSources();
     await Promise.all([lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource,
       ciRunnersSource, mainCiSource]
       .map(src => src.tick()).filter(Boolean));
@@ -740,6 +749,17 @@ async function judgeDispatchedLanes(facts) {
         await succeedCard(unit.id, { throughAt, kind: judgment.kind });
       } else {
         await failCard(unit.id, judgment.reason);
+        const entry = judged.journal.dispatched?.[judgment.key] ?? {};
+        const launchedAt = Date.parse(entry.at ?? '');
+        const freedAt = Date.parse(entry.firstSeenFree ?? '');
+        const minutes = Number.isFinite(launchedAt) && Number.isFinite(freedAt)
+          ? Math.max(0, Math.round((freedAt - launchedAt) / 60000))
+          : 0;
+        const suffix = ` after ${judgment.lane} freed`;
+        const reason = String(judgment.reason ?? '').endsWith(suffix)
+          ? String(judgment.reason).slice(0, -suffix.length)
+          : String(judgment.reason ?? '');
+        console.log(`lane judgment: #${judgment.ticket} ${judgment.kind} no-proof after ${judgment.lane} freed, ${minutes} min — ${reason}`);
         if (judgment.kind === 'review') {
           await setCardReview(unit.id, { running: false }, judgment.judgedAt);
         }
@@ -835,7 +855,10 @@ async function alarmOwner(key, line) {
   alarmed.add(key);
   console.log(`ALARM ${line}`);
   if (!config.telegramOn) return;
-  try { await notifyOwner(line); }
+  try {
+    await notifyOwner(line);
+    console.log(`telegram: alarm sent (${key})`);
+  }
   catch (e) { console.log(`alarm: telegram failed: ${e.message}`); }
 }
 
@@ -1322,7 +1345,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   const repo = config.repo;
   let next = ledger;
   for (const p of pairs) {
-    const label = `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
+    const label = `${p.kind} R${p.round} ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket} -> ${p.lane} from ${baseLine(p.base)}`;
     // Each pair can follow minutes of work by earlier pairs, so its crash
     // recovery window starts immediately before its own remote attempt.
     // Every journal write goes through updateJournal: the intent and outcome
@@ -2678,6 +2701,7 @@ async function collect() {
 
   // Background sources: just nudge them, do not wait for an answer.
   const first = [];
+  couplePrSources();
   for (const s of [programsSource, lanesSource, prSource, mergedPrSource, unitIssuesSource, umbrellaSource]) {
     const p = s.tick();
     if (s.at === 0 && p) first.push(p);

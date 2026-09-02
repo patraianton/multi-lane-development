@@ -118,6 +118,8 @@ test('a red main alarm names the first failed jobs', async () => {
         WATCHTOWER_GH: fakeGh,
       }),
     });
+    await until(() => board.output().includes('telegram: alarm sent (main:red:'));
+    assert.match(board.output(), /telegram: alarm sent \(main:red:abc12345/);
     await until(() => /ALARM main is red.*listing-photos-ui, listing-questionnaire-i18n/.test(board.output()));
     const output = board.output();
     assert.doesNotMatch(output, /photos render|translations render/, 'job names take priority over their failed steps');
@@ -1082,5 +1084,94 @@ test('a source error is logged again after that source recovers', async () => {
       'success resets the notice, then the next failure is logged once again');
   } finally {
     if (board) await board.stop();
+  }
+});
+
+test('live open and merged PR lists refresh together across the board-owned merge', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-coupled-pr-lists-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  const markerFile = path.join(toolsDir, 'merged');
+  let board;
+  try {
+    const pr = {
+      number: 1632,
+      title: 'Coupled PR lists',
+      body: 'Ticket: #1631',
+      headRefName: 'feat/1631',
+      headRefOid: HEAD,
+      isDraft: false,
+      mergeable: 'MERGEABLE',
+      labels: [],
+      url: 'https://github.com/acme/web/pull/1632',
+      createdAt: '2026-08-30T10:00:00.000Z',
+      updatedAt: '2026-08-30T10:00:01.000Z',
+      mergedAt: '2026-08-30T10:00:02.000Z',
+      statusCheckRollup: [{ name: 'pr-ci', conclusion: 'SUCCESS' }],
+      author: { login: 'lane' },
+      comments: [{ body: `R1 — GO\nhead ${HEAD}`, createdAt: '2026-08-30T10:00:01.000Z' }],
+    };
+    const issues = [{
+      number: 1600, title: 'Sprint umbrella', body: '', url: UMBRELLA,
+      labels: [{ name: 'umbrella' }], createdAt: '2026-08-30T09:00:00.000Z',
+      updatedAt: '2026-08-30T09:00:00.000Z', state: 'OPEN', closedAt: null, comments: [],
+    }, {
+      number: 1631, title: 'UNIT-U1: coupled sources', body: 'Part of #1600.',
+      url: 'https://github.com/acme/web/issues/1631', labels: [],
+      createdAt: '2026-08-30T09:30:00.000Z', updatedAt: '2026-08-30T09:30:00.000Z',
+      state: 'OPEN', closedAt: null, comments: [],
+    }];
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `const callsFile = ${JSON.stringify(callsFile)};`,
+      `const markerFile = ${JSON.stringify(markerFile)};`,
+      `const pr = ${JSON.stringify(pr)};`,
+      `const issues = ${JSON.stringify(issues)};`,
+      "appendFileSync(callsFile, JSON.stringify(a) + '\\n');",
+      "if (a[0] === 'pr' && a[1] === 'list') {",
+      "  const state = a[a.indexOf('--state') + 1];",
+      "  const merged = existsSync(markerFile);",
+      "  process.stdout.write(JSON.stringify(state === 'open' ? (merged ? [] : [pr]) : (merged ? [pr] : [])));",
+      "} else if (a[0] === 'pr' && a[1] === 'merge') {",
+      "  writeFileSync(markerFile, 'merged');",
+      "} else if (a[0] === 'issue' && a[1] === 'list') {",
+      "  process.stdout.write(JSON.stringify(issues));",
+      "} else if (a[0] === 'issue' && a[1] === 'view') {",
+      "  process.stdout.write(JSON.stringify(issues.find(issue => String(issue.number) === a[2]) || {}));",
+      "} else {",
+      "  process.stdout.write('[]');",
+      '}',
+    ].join('\n'));
+    board = await startBoard({
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      env: { WATCHTOWER_SPRINT_SWEEP_MS: '200', WATCHTOWER_GH: fakeGh },
+    });
+    await createTicketed(board);
+
+    const seen = [];
+    const deadline = Date.now() + 8000;
+    let mergedAt = null;
+    for (;;) {
+      const data = (await getJson(board.base, '/pipeline/data')).body;
+      const card = data.cards?.find(item => item.ticket === 1631);
+      if (card) seen.push(`${card.stage} — ${card.status?.text ?? ''}`);
+      if (!mergedAt && data.autoDispatch?.rows?.some(row => row.kind === 'merge' && String(row.state).startsWith('merged at '))) {
+        mergedAt = Date.now();
+      }
+      if (mergedAt && Date.now() - mergedAt >= 3000) break;
+      if (Date.now() > deadline) throw new Error(`merge did not settle:\n${board.output()}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    assert.ok(seen.includes('merged — merged in PR #1632 — waiting for the ticket to close'), seen.join('\n'));
+    assert.ok(!seen.includes('ci_pr — PR closed without a merge — close the ticket or reopen the PR'), seen.join('\n'));
+    const ghCalls = await calls(callsFile);
+    const openReads = ghCalls.filter(args => args[0] === 'pr' && args[1] === 'list' && args.includes('open')).length;
+    const mergedReads = ghCalls.filter(args => args[0] === 'pr' && args[1] === 'list' && args.includes('merged')).length;
+    assert.equal(mergedReads, openReads, 'each open-PR read has a merged-PR read in the same sweep');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
   }
 });
