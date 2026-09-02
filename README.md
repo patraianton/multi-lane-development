@@ -100,7 +100,7 @@ Until a project is chosen, slow sources (ssh, `gh`) are not asked, and `/api/boa
 
 ## Off the board
 
-Everything being built is on the board — the watch (`bin/off-board.mjs`) checks it after every sprint sweep: an open PR no card carries, a ticket in work that names no umbrella, a busy lane on a branch no card carries. Findings stand in the amber **Off the board** zone above the columns and in `/api/pipeline` (`off-board` table), each with its fix; every new one is written into `state/edge-cases.md` (`GET /pipeline/edge-cases`) as an edge case to fold into [`docs/TICKETING.md`](docs/TICKETING.md) §7.
+Everything being built is on the board — the watch (`bin/off-board.mjs`) checks it after every sprint sweep: an open PR no card carries, a ticket in work that names no umbrella, a busy lane on a branch no card carries. Findings stand in the amber **Off the board** zone above the columns and in `/api/pipeline` (`off-board` table), each with its fix.
 
 ## Sources
 

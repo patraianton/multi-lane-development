@@ -289,7 +289,6 @@ test('journal entries whose PR is merged are pruned after a day of grace', async
       value?.dispatched && !value.dispatched['1500:review:aaaa1111'] && !value.dispatched['1500:merge:aaaa1111']);
     assert.deepEqual(Object.keys(journal.dispatched), ['1516:develop:1'],
       'develop history keeps its own 7-day window; served review/merge entries go');
-    assert.match(board.output(), /journal: pruned 2 entries whose PR is merged/);
   } finally {
     await board.stop();
   }

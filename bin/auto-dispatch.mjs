@@ -420,10 +420,6 @@ function entriesForAllTickets(journal) {
   return tickets;
 }
 
-export function launchFailureHoldLine(hold) {
-  return `auto-dispatch: HELD ${hold?.unit ? hold.unit + ' ' : ''}#${hold?.ticket} — ${hold?.reason}`;
-}
-
 function entryBlocksDispatch(entry, now, launchingMs) {
   if (!entry || entry.judged === 'no-proof') return false;
   if (entry.result === 'failed' || entry.result === 'held') return false;
@@ -686,7 +682,7 @@ export function planFixes({
       if (blocked) {
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-          reason: `fix of head ${shortSha(head)} was already dispatched`, log: true,
+          reason: `fix of head ${shortSha(head)} was already dispatched`,
         });
         continue;
       }
@@ -774,7 +770,6 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       holds.push({
         card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '',
         reason: `waits for ${blockers.map(dep => `#${dep.ticket} (${dep.state})`).join(', ')}`,
-        stuckDeps: blockers.filter(dep => dep.state === 'stuck').map(dep => dep.ticket),
       });
     }
     const waiting = candidates
@@ -960,7 +955,7 @@ export function planReviews({
           || (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs))) {
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-          reason: `review of head ${shortSha(head)} was already dispatched`, log: true,
+          reason: `review of head ${shortSha(head)} was already dispatched`,
         });
         continue;
       }
@@ -970,7 +965,7 @@ export function planReviews({
       if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) {
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-          reason: `fix of head ${shortSha(head)} is running — the review waits for a new head`, log: true,
+          reason: `fix of head ${shortSha(head)} is running — the review waits for a new head`,
         });
         continue;
       }
@@ -989,7 +984,7 @@ export function planReviews({
         ? lanes.find(candidate => eligible(candidate) && candidate.host !== retry.avoidHost)
         : null) ?? lanes.find(eligible);
       if (!lane) {
-        holds?.push({ card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '', reason: 'no free lane', log: true });
+        holds?.push({ card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '', reason: 'no free lane' });
         continue;
       }
 

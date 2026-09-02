@@ -10,7 +10,7 @@ import {
   planDispatch, planDispatchFull, planReviews, planFixes, sortDispatchQueue,
   baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
   taskText, specDirFor, launchPlan, runLaunch, commentLine, dispatchKey, taskFileName,
-  launchFailureHoldLine, quarantinedLanes, RETRY_MS, LAUNCHING_HOLD_MS,
+  quarantinedLanes, RETRY_MS, LAUNCHING_HOLD_MS,
 } from '../bin/auto-dispatch.mjs';
 import { judgeLanes } from '../bin/lane-judge.mjs';
 
@@ -178,7 +178,7 @@ test('a spent fix head guard yields to a newer NO-GO on the same head', () => {
   assert.equal(pair.sections[0].title, 'VERDICT R2 — verbatim');
 });
 
-test('silent fix and review skips become HELD reasons', () => {
+test('silent fix and review skips become hold reasons', () => {
   const at = '2026-08-31T06:00:00.000Z';
   const head = 'f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6';
   const noGo = {
@@ -227,10 +227,14 @@ test('silent fix and review skips become HELD reasons', () => {
     holds: laneHolds,
   });
 
-  const lines = [...fixHolds, ...reviewHolds, ...mirrorHolds, ...laneHolds].map(launchFailureHoldLine);
-  assert.equal(lines.length, 4);
-  for (const line of lines) assert.match(line, /^auto-dispatch: HELD U13 #20(?:13|14) — /);
-  assert.ok(lines.some(line => line.endsWith('no free lane')));
+  const holds = [...fixHolds, ...reviewHolds, ...mirrorHolds, ...laneHolds];
+  assert.deepEqual(holds.map(h => h.reason), [
+    'fix of head f6f6f6f6 was already dispatched',
+    'review of head f6f6f6f6 was already dispatched',
+    'fix of head f6f6f6f6 is running — the review waits for a new head',
+    'no free lane',
+  ]);
+  for (const h of holds) assert.equal('log' in h, false, 'a hold is data, not a log line');
 });
 
 test('a no-proof fix retries under the next round key and keeps the verdict section round', () => {
@@ -851,10 +855,6 @@ test('three consecutive launch failures hold every host for RETRY_MS and name th
   assert.equal(held.pairs.length, 0, 'there is no fourth launch inside the all-host hold');
   const hold = held.holds.find(item => item.ticket === 1680);
   assert.equal(hold.reason, 'launch failed on hostinger, lanes-01, mac; retry in 10m');
-  assert.equal(
-    launchFailureHoldLine(hold),
-    'auto-dispatch: HELD U1 #1680 — launch failed on hostinger, lanes-01, mac; retry in 10m',
-  );
   const reviewHead = 'e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4';
   const reviewSource = new Map([['cs', { ...one, units: [{
     ...one.units[0], state: 'pr open',
