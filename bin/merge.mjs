@@ -123,15 +123,3 @@ export function canMerge({ pr, unit } = {}) {
   }
   return { ok: true, why: '' };
 }
-
-// GitHub recognises these words and closes the referenced ticket as part of
-// the merge. Acceptance happens later in this pipeline, so retain only the
-// ticket reference. A qualified owner/repo#N reference is handled too.
-export function bodyFix(body) {
-  const original = String(body ?? '');
-  const fixed = original.replace(
-    /^(?:Closes|Fixes|Resolves)[^\S\r\n]+(?:[\w.-]+\/[\w.-]+)?#(\d+)\b/gim,
-    'Ticket: #$1',
-  );
-  return { body: fixed, changed: fixed !== original };
-}

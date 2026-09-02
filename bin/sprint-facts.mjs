@@ -115,27 +115,11 @@ function unitOrder(u) {
   return Number.isFinite(n) && u.unit ? n : 9999;
 }
 
-// The PR's own "Closes #N" shuts the ticket in the same second as the merge —
-// that is not an acceptance, it is GitHub. A ticket closed later than this
-// window after the merge (a person, after the acceptance run — for a rollout
-// unit that is the production probe), or closed with no merge at all (dropped,
-// or done by hand), is accepted: the unit is done. Merged and not accepted is
-// QA. An auto-closed ticket is accepted by reopening it and closing it again.
-const AUTO_CLOSE_WINDOW_MS = 2 * 60 * 1000;
-function acceptedAt(u, at = null) {
+// Closed is accepted once the sprint umbrella is closed. A closed ticket with
+// no merge behind it is already finished and needs no sprint-close action.
+function acceptedAt(u, sprintClosed) {
   if (u.open || !u.closedAt) return null;
-  if (u.merged?.mergedAt) {
-    const gap = Date.parse(u.closedAt) - Date.parse(u.merged.mergedAt);
-    return Number.isFinite(gap) && gap > AUTO_CLOSE_WINDOW_MS ? u.closedAt : null;
-  }
-  // No merge known. A close seconds old is more likely the PR's auto-close
-  // seen before the merged-PR source caught up than a person's word — the
-  // issue list refreshes faster than the merged list, and a card that reached
-  // done that way never came back (U4, U6 on 29.08). Give the merged source
-  // the same window before a close with no PR behind it counts.
-  const age = at ? Date.parse(at) - Date.parse(u.closedAt) : NaN;
-  if (Number.isFinite(age) && age < AUTO_CLOSE_WINDOW_MS) return null;
-  return u.closedAt;
+  return !u.merged || sprintClosed ? u.closedAt : null;
 }
 
 function unitState(u) {
@@ -200,6 +184,9 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     if (card?.parent) continue;
     const umbrella = umbrellaOf(card?.links?.ticket);
     if (!umbrella) continue;
+    const umbrellaOpen = umbrellaStates instanceof Map && umbrellaStates.has(umbrella)
+      ? umbrellaStates.get(umbrella) === 'OPEN'
+      : null;
     const units = (unitIssues.get(umbrella) ?? []).map(i => {
       const labels = Array.isArray(i.labels) ? i.labels.map(String) : [];
       const lowerLabels = labels.map(label => label.toLowerCase());
@@ -316,7 +303,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
         const merged = mergedPrs.find(p => sameBranch(p.branch, u.branch));
         if (merged) u.merged = { number: merged.number, url: merged.url ?? '', mergedAt: merged.mergedAt ?? null };
       }
-      u.accepted = acceptedAt(u, at);
+      u.accepted = acceptedAt(u, umbrellaOpen === false);
       u.state = unitState(u);
     }
     // Dependencies resolved against the sprint's own units, so a card can say
@@ -371,7 +358,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     const work = units.filter(u => !u.qa);
     out.set(card.id, {
       umbrella,
-      umbrellaOpen: umbrellaStates instanceof Map && umbrellaStates.has(umbrella) ? umbrellaStates.get(umbrella) === 'OPEN' : null,
+      umbrellaOpen,
       units: work,
       qaTickets,
       lanes: bound,

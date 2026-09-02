@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { postJson, startBoard, until as waitUntil } from './helpers.mjs';
+import { executable, postJson, startBoard, until as waitUntil } from './helpers.mjs';
 
 const UMBRELLA = 'https://github.com/acme/web/issues/1515';
+const REPO = 'acme/web';
 const TELEGRAM = {
   dryRun: true,
   chatId: '-100123',
@@ -13,84 +15,141 @@ const TELEGRAM = {
   founders: [{ name: 'Anton', tgUserId: 1001, tag: '@anton', owner: true }],
 };
 
-function readyFacts(extraQa = []) {
+function readyFacts() {
   return {
-    lanes: [],
-    prs: [],
+    lanes: [], prs: [],
     mergedPrs: [
       { number: 1600, branch: 'feat/1516', url: 'https://github.com/acme/web/pull/1600', mergedAt: '2026-08-30T09:00:00Z' },
+      { number: 1601, branch: 'feat/1517', url: 'https://github.com/acme/web/pull/1601', mergedAt: '2026-08-30T09:01:00Z' },
+      { number: 1602, branch: 'feat/1590', url: 'https://github.com/acme/web/pull/1602', mergedAt: '2026-08-30T09:30:00Z' },
     ],
     unitIssues: {
       1515: [
-        {
-          number: 1516, title: 'PAY-U1: shipped', url: 'https://github.com/acme/web/issues/1516',
-          state: 'OPEN', branch: 'feat/1516', labels: [], createdAt: '2026-08-30T08:00:00Z',
-        },
-        {
-          number: 1590, title: 'QA: earlier finding', url: 'https://github.com/acme/web/issues/1590',
-          state: 'CLOSED', closedAt: '2026-08-30T09:10:00Z', branch: 'feat/1590',
-          labels: ['qa'], qa: true, createdAt: '2026-08-30T08:30:00Z',
-        },
-        {
-          number: 1591, title: 'QA R1', url: 'https://github.com/acme/web/issues/1591',
-          state: 'CLOSED', closedAt: '2026-08-30T10:10:00Z', branch: 'feat/1591',
-          labels: ['qa-run'], qa: true, createdAt: '2026-08-30T10:00:00Z',
-        },
-        ...extraQa,
+        { number: 1516, title: 'PAY-U1: shipped', url: 'https://github.com/acme/web/issues/1516', state: 'OPEN', branch: 'feat/1516', labels: [], createdAt: '2026-08-30T08:00:00Z' },
+        { number: 1517, title: 'PAY-U2: shipped', url: 'https://github.com/acme/web/issues/1517', state: 'CLOSED', closedAt: '2026-08-30T09:01:01Z', branch: 'feat/1517', labels: [], createdAt: '2026-08-30T08:01:00Z' },
+        { number: 1590, title: 'QA: merged finding', url: 'https://github.com/acme/web/issues/1590', state: 'OPEN', branch: 'feat/1590', labels: ['qa'], qa: true, createdAt: '2026-08-30T08:30:00Z' },
+        { number: 1591, title: 'QA R1 — Payments', url: 'https://github.com/acme/web/issues/1591', state: 'CLOSED', closedAt: '2026-08-30T10:10:00Z', branch: 'feat/1591', labels: ['qa-run'], qa: true, createdAt: '2026-08-30T10:00:00Z' },
       ],
     },
-    ciJobs: {},
-    ciRunners: [],
-    umbrellaStates: { 1515: 'OPEN' },
-    staleSources: [],
+    ciJobs: {}, ciRunners: [], umbrellaStates: { 1515: 'OPEN' }, staleSources: [],
   };
 }
 
 const until = (base, ready) => waitUntil(base, ready, { pathName: '/pipeline/data' });
+const count = (text, needle) => text.split(needle).length - 1;
 
-function count(text, needle) {
-  return text.split(needle).length - 1;
+async function sprintCard(board) {
+  const created = await postJson(board.base, '/pipeline/card/create', { title: 'Payments sprint', spec: 'the spec' });
+  const id = created.body.card.id;
+  await postJson(board.base, '/pipeline/card/move', { id, to: 'grilled' });
+  await postJson(board.base, '/pipeline/card/update', { id, links: { ticket: UMBRELLA } });
+  await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' });
+  return id;
 }
 
-test('the watchtower persists one readyAt notification and clears it for a later QA ticket', async () => {
+function closingGh(callsFile, factsFile, { fail = false } = {}) {
+  return [
+    '#!/usr/bin/env node',
+    "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';",
+    'const args = process.argv.slice(2);',
+    `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n');`,
+    fail ? 'process.exit(1);' : '',
+    `const factsFile = ${JSON.stringify(factsFile)};`,
+    "if (args[0] === 'issue' && args[1] === 'close') {",
+    '  const number = Number(args[2]);',
+    '  const facts = JSON.parse(readFileSync(factsFile, "utf8"));',
+    '  const issue = facts.unitIssues[1515].find(item => item.number === number);',
+    '  if (issue) { issue.state = "CLOSED"; issue.closedAt = "2026-08-30T10:11:00Z"; }',
+    '  if (number === 1515) facts.umbrellaStates[1515] = "CLOSED";',
+    '  writeFileSync(factsFile, JSON.stringify(facts, null, 2));',
+    '}',
+  ].filter(Boolean).join('\n');
+}
+
+async function callsOf(file) {
+  const text = await readFile(file, 'utf8').catch(() => '');
+  return text.trim() ? text.trim().split(/\r?\n/).map(line => JSON.parse(line)) : [];
+}
+
+test('a clean QA walk closes merged open tickets and the umbrella once, then facts finish the sprint', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-close-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  const factsFile = path.join(toolsDir, 'facts.json');
+  await writeFile(factsFile, JSON.stringify(readyFacts(), null, 2));
+  const fakeGh = await executable(toolsDir, 'gh', closingGh(callsFile, factsFile));
   const board = await startBoard({
-    config: { source: 'probe', telegram: TELEGRAM },
-    files: { 'sprint-facts.json': readyFacts() },
-    env: dir => ({
-      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+    config: { source: 'probe', repo: REPO, telegram: TELEGRAM },
+    env: {
+      WATCHTOWER_GH: fakeGh,
+      WATCHTOWER_SPRINT_FACTS_FILE: factsFile,
       WATCHTOWER_SPRINT_SWEEP_MS: '250',
-    }),
+    },
   });
 
   try {
-    const created = await postJson(board.base, '/pipeline/card/create', { title: 'Payments sprint', spec: 'the spec' });
-    const id = created.body.card.id;
-    await postJson(board.base, '/pipeline/card/move', { id, to: 'grilled' });
-    await postJson(board.base, '/pipeline/card/update', { id, links: { ticket: UMBRELLA } });
-    await postJson(board.base, '/pipeline/card/move', { id, to: 'ticketed' });
+    const id = await sprintCard(board);
+    const done = await until(board.base, data => data.cards.find(card => card.id === id)?.stage === 'done');
+    assert.equal(done.cards.find(card => card.id === id).stage, 'done');
+    await new Promise(resolve => setTimeout(resolve, 600));
 
-    const ready = await until(board.base, data => Boolean(data.cards.find(card => card.id === id)?.readyAt));
-    const readyAt = ready.cards.find(card => card.id === id).readyAt;
-    assert.match(readyAt, /^\d{4}-\d\d-\d\dT/);
-    await until(board.base, () => board.output().includes('--- notifyReady ---'));
-    await new Promise(resolve => setTimeout(resolve, 700));
-    assert.equal(count(board.output(), '--- notifyReady ---'), 1);
-    assert.match(board.output(), /chatId: 4242/);
-    assert.match(board.output(), new RegExp(`Sprint Payments sprint is ready for acceptance — ${UMBRELLA}`));
-
-    const accepted = await postJson(board.base, '/pipeline/card/move', { id, to: 'done' });
-    assert.equal(accepted.body.card.stage, 'done', 'acceptance may finish before a later QA finding is observed');
-
-    const laterFinding = {
-      number: 1592, title: 'QA: found after the walk', url: 'https://github.com/acme/web/issues/1592',
-      state: 'CLOSED', closedAt: '2026-08-30T11:10:00Z', branch: 'feat/1592',
-      labels: ['qa'], qa: true, createdAt: '2026-08-30T11:00:00Z',
-    };
-    await writeFile(path.join(board.dir, 'sprint-facts.json'), JSON.stringify(readyFacts([laterFinding]), null, 2));
-    const reset = await until(board.base, data => data.cards.find(card => card.id === id)?.readyAt === null);
-    assert.equal(reset.cards.find(card => card.id === id).readyAt, null);
-    assert.equal(count(board.output(), '--- notifyReady ---'), 1);
+    const calls = await callsOf(callsFile);
+    assert.deepEqual(calls.map(args => args.slice(0, 3)), [
+      ['issue', 'close', '1516'],
+      ['issue', 'close', '1590'],
+      ['issue', 'close', '1515'],
+    ], 'the already-closed unit and clean QA-run ticket are not reopened');
+    assert.deepEqual(calls.map(args => args[args.indexOf('--comment') + 1]), [
+      'Closed by the board: merged in PR #1600; QA R1 clean',
+      'Closed by the board: merged in PR #1602; QA R1 clean',
+      calls[2][calls[2].indexOf('--comment') + 1],
+    ]);
+    assert.match(calls[2][calls[2].indexOf('--comment') + 1],
+      /^Sprint Payments sprint closed by the board: 2 units merged, QA R1 clean, /);
+    assert.equal(count(board.output(), 'sprint close: ticket #1516 closed'), 1);
+    assert.equal(count(board.output(), 'sprint close: ticket #1590 closed'), 1);
+    assert.equal(count(board.output(), 'sprint close: umbrella #1515 closed'), 1);
+    assert.equal(count(board.output(), '--- notifyReady ---'), 0);
+    assert.equal(count(board.output(), '--- notifyOwner ---'), 1);
+    assert.equal(count(board.output(), '--- notifyDone ---'), 1);
   } finally {
     await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed ticket close retries, keeps the sprint closing, and alarms once after three sweeps', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-close-fail-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  const factsFile = path.join(toolsDir, 'facts.json');
+  const facts = readyFacts();
+  facts.unitIssues[1515] = facts.unitIssues[1515].filter(issue => ![1517, 1590].includes(issue.number));
+  facts.mergedPrs = facts.mergedPrs.filter(pr => pr.number === 1600);
+  await writeFile(factsFile, JSON.stringify(facts, null, 2));
+  const fakeGh = await executable(toolsDir, 'gh', closingGh(callsFile, factsFile, { fail: true }));
+  const board = await startBoard({
+    config: { source: 'probe', repo: REPO },
+    env: {
+      WATCHTOWER_GH: fakeGh,
+      WATCHTOWER_SPRINT_FACTS_FILE: factsFile,
+      WATCHTOWER_SPRINT_SWEEP_MS: '250',
+    },
+  });
+
+  try {
+    const id = await sprintCard(board);
+    await waitUntil(async () => board.output().includes('ALARM could not close sprint #1515 after 3 sweeps'));
+    const data = await until(board.base, value => value.cards.some(card => card.parent === id && card.ticket === 1516));
+    const unit = data.cards.find(card => card.parent === id && card.ticket === 1516);
+    assert.equal(unit.stage, 'merged');
+    assert.equal(unit.status.text, 'merged in PR #1600 — sprint closing');
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    const calls = await callsOf(callsFile);
+    assert.ok(calls.length >= 3, 'the close keeps retrying after the alarm');
+    assert.ok(calls.every(args => args.slice(0, 3).join(' ') === 'issue close 1516'), 'the umbrella is never closed after a ticket failure');
+    assert.equal(count(board.output(), 'ALARM could not close sprint #1515'), 1);
+  } finally {
+    await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
   }
 });

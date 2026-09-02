@@ -138,9 +138,9 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.equal(by.U0.state, 'on lane');
   assert.equal(by.U5.lane.lane, 'lane-b', 'the busy lane reading TASK-1519 beats the idle branch match');
   assert.equal(by.U5.state, 'on lane');
-  // Merged PR on a ticket closed an hour later: accepted.
-  assert.equal(by.U3.state, 'accepted');
-  assert.equal(by.U3.accepted, '2026-08-28T21:00:00Z');
+  // A merged, closed ticket stays merged until the sprint umbrella closes.
+  assert.equal(by.U3.state, 'merged');
+  assert.equal(by.U3.accepted, null);
   assert.equal(by.U3.merged.number, 1530);
   assert.equal(by.U3.lane, null);
   // Nothing yet.
@@ -148,7 +148,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   // Dependencies resolved against the sprint: merged → met, open PR → not met,
   // a ticket from elsewhere → unresolved.
   assert.deepEqual(by.U5.deps, [
-    { ticket: 1518, unit: 'U3', state: 'accepted', met: true },
+    { ticket: 1518, unit: 'U3', state: 'merged', met: true },
     { ticket: 1517, unit: 'U2', state: 'pr open', met: false },
     { ticket: 1499, unit: '', state: 'outside the sprint', met: null },
   ]);
@@ -161,7 +161,7 @@ test('units bind to lanes by branch or TASK file, to PRs by head branch, and the
   assert.deepEqual(s.free, ['radar/lane-2', 'lanes-01/lane-5']);
   assert.deepEqual(s.busyElsewhere, ['hostinger/lane-6']);
   assert.equal(s.laneCount, 7);
-  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, accepted: 1, queued: 1, qa: 1, qaOpen: 1 });
+  assert.deepEqual(s.counts, { units: 6, onLane: 2, checking: 0, pr: 2, merged: 1, accepted: 0, queued: 1, qa: 1, qaOpen: 1 });
   assert.deepEqual(s.stale, ['umbrella']);
   assert.equal(lanesLine(s), 'mac/lane-a U0 #1521, lanes-01/lane-3 U1 #1516, radar/lane-1 U2 #1517, mac/lane-b U5 #1519');
   // Every lane is a row of the table: bound unit, busy, sorted by lane number.
@@ -252,25 +252,19 @@ test('an idle lane parked on a merged branch is free but keeps its table binding
   ]);
 });
 
-test('a close with no merge behind it counts as accepted only once it is older than the auto-close window', () => {
-  // The issue list refreshes faster than the merged-PR list: for a minute a
-  // ticket the PR just auto-closed looks closed with no merge — a person's
-  // word, accepted, done. U4 and U6 reached done that way on 29.08.
+test('a closed ticket with no merge behind it is accepted immediately', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const issue = { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'CLOSED', closedAt: '2026-08-29T10:00:00Z', branch: 'feat/salon-u01-readiness' };
   const facts = at => sprintFactsFor([card], { unitIssues: new Map([[1515, [issue]]]), umbrellaStates: new Map([[1515, 'OPEN']]), at }).get('csprint').units[0];
   const fresh = facts('2026-08-29T10:00:30Z');
-  assert.equal(fresh.accepted, null, 'thirty seconds old: the merged list may not have caught up');
-  assert.equal(fresh.state, 'closed');
-  const old = facts('2026-08-29T10:05:00Z');
-  assert.equal(old.accepted, '2026-08-29T10:00:00Z');
-  assert.equal(old.state, 'accepted');
+  assert.equal(fresh.accepted, '2026-08-29T10:00:00Z');
+  assert.equal(fresh.state, 'accepted');
 });
 
-test('merged is not accepted: the ticket closed by the PR does not count, a later close does, and no merge means the close is the word', () => {
+test('a merged closed ticket becomes accepted when the board closes the sprint umbrella', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [
-    // Closed in the same second as the merge — GitHub's "Closes #N".
+    // Closed in the same second as the merge by GitHub.
     { number: 1516, title: 'SALON-U1: readiness', url: 'u/1516', state: 'CLOSED', closedAt: '2026-08-29T07:03:46Z', branch: 'feat/salon-u01' },
     // Closed 40 minutes after the merge — the acceptance.
     { number: 1517, title: 'SALON-U2: reader', url: 'u/1517', state: 'CLOSED', closedAt: '2026-08-29T07:45:00Z', branch: 'feat/salon-u02' },
@@ -284,14 +278,23 @@ test('merged is not accepted: the ticket closed by the PR does not count, a late
     { number: 1602, url: 'pr/1602', branch: 'feat/salon-u02', mergedAt: '2026-08-29T07:03:45Z' },
     { number: 1604, url: 'pr/1604', branch: 'feat/salon-u04', mergedAt: '2026-08-29T07:03:45Z' },
   ];
-  const s = sprintFactsFor([card], { mergedPrs, unitIssues, umbrellaStates: new Map() }).get('csprint');
-  const by = Object.fromEntries(s.units.map(u => [u.unit, u]));
-  assert.deepEqual([by.U1.state, by.U1.accepted], ['merged', null], 'auto-closed by the PR: merged, not accepted');
+  for (const state of ['OPEN', null]) {
+    const umbrellaStates = state ? new Map([[1515, state]]) : new Map();
+    const s = sprintFactsFor([card], { mergedPrs, unitIssues, umbrellaStates }).get('csprint');
+    const by = Object.fromEntries(s.units.map(u => [u.unit, u]));
+    assert.deepEqual([by.U1.state, by.U1.accepted], ['merged', null]);
+    assert.deepEqual([by.U2.state, by.U2.accepted], ['merged', null]);
+    assert.deepEqual([by.U3.state, by.U3.accepted], ['accepted', '2026-08-29T08:00:00Z']);
+    assert.deepEqual([by.U4.state, by.U4.accepted], ['merged', null]);
+  }
+
+  const closed = sprintFactsFor([card], {
+    mergedPrs, unitIssues, umbrellaStates: new Map([[1515, 'CLOSED']]),
+  }).get('csprint');
+  const by = Object.fromEntries(closed.units.map(u => [u.unit, u]));
+  assert.deepEqual([by.U1.state, by.U1.accepted], ['accepted', '2026-08-29T07:03:46Z']);
   assert.deepEqual([by.U2.state, by.U2.accepted], ['accepted', '2026-08-29T07:45:00Z']);
-  assert.deepEqual([by.U3.state, by.U3.accepted], ['accepted', '2026-08-29T08:00:00Z']);
-  assert.deepEqual([by.U4.state, by.U4.accepted], ['merged', null]);
-  assert.equal(s.umbrellaOpen, null, 'an umbrella outside the list is unknown, never closed');
-  assert.equal(s.counts.accepted, 2);
+  assert.equal(closed.counts.accepted, 3);
 });
 
 test('the fleet registry renames lanes and only fleet lanes count as capacity', () => {

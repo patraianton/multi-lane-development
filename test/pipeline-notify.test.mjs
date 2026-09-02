@@ -16,7 +16,6 @@ import {
   notifyArtifactReady,
   notifyDone,
   notifyIdleLanes,
-  notifyReady,
   notifyStuck,
 } from '../bin/telegram-bot.mjs';
 
@@ -90,18 +89,14 @@ test('senders need no board credentials and route group and owner messages', asy
       ageMs: 5 * 60_000,
       startable: [{ unit: 'T2', ticket: 42 }],
     });
-    await notifyReady(card);
-
     assert.deepEqual(
       sends.map(send => send.chat_id),
-      ['-100123', '-100123', '1001', '1001', '1001']);
+      ['-100123', '-100123', '1001', '1001']);
     for (const send of [sends[0], sends[1]]) {
       assert.ok(!send.text.includes('Card:'), 'group message has no Card link');
       assert.ok(!send.text.includes('#pipeline/'), 'group message has no board deep link');
     }
     assert.ok(!sends[3].text.includes('The CTO window has been told to dispatch'));
-    assert.equal(sends[4].text,
-      'Sprint Routing proof is ready for acceptance — https://github.com/acme/web/issues/42');
   } finally {
     configureTelegram(null);
     globalThis.fetch = originalFetch;

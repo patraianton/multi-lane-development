@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bodyFix, canMerge, ciColor, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
+import { canMerge, ciColor, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 
@@ -197,27 +197,4 @@ test('a verdict without a valid line-two head is never a verdict on the current 
   assert.equal(facts.verdict, null);
   assert.equal(facts.verdictOnHead, null);
   assert.equal(facts.verdictRounds, 3);
-});
-
-test('bodyFix rewrites closing-keyword ticket references without changing other lines', () => {
-  const input = [
-    'Closes #1624',
-    'fixes #1 after review',
-    'Resolves: #7',
-    'Resolves Baltic-OrangesLV/vincheck-latvia#5',
-    'Ticket: #1624',
-  ].join('\n');
-  const expected = [
-    'Ticket: #1624',
-    'Ticket: #1 after review',
-    'Resolves: #7',
-    'Ticket: #5',
-    'Ticket: #1624',
-  ].join('\n');
-
-  assert.deepEqual(bodyFix(input), { body: expected, changed: true });
-});
-
-test('bodyFix leaves an existing Ticket reference unchanged', () => {
-  assert.deepEqual(bodyFix('Ticket: #1624'), { body: 'Ticket: #1624', changed: false });
 });

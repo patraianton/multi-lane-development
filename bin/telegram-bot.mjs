@@ -197,11 +197,6 @@ function idleLanesText(cfg, card, finding) {
   ]);
 }
 
-function readyText(card) {
-  const umbrella = String(card?.links?.ticket ?? card?.umbrella?.url ?? '').trim();
-  return `Sprint ${cardTitleOf(card)} is ready for acceptance — ${umbrella}`;
-}
-
 function doneText(cfg, card) {
   return message([
     tagAll(cfg.founders),
@@ -313,16 +308,6 @@ export async function notifyOwner(text) {
   return sendMessage(cfg, { name: 'notifyOwner', audience: 'owner', text: String(text ?? '') });
 }
 
-export async function notifyReady(card) {
-  const cfg = await loadConfig({ requireToken: !useDryRun() });
-  needCard(card);
-  return sendMessage(cfg, {
-    name: 'notifyReady',
-    audience: 'owner',
-    text: readyText(card),
-  });
-}
-
 export async function notifyDone(card) {
   const cfg = await loadConfig({ requireToken: !useDryRun() });
   needCard(card);
@@ -365,7 +350,6 @@ async function runSelftest() {
     ageMs: 5 * 60_000,
     startable: [{ unit: 'T2', ticket: 42 }],
   });
-  await notifyReady(SELFTEST_CARD);
   await notifyDone(SELFTEST_CARD);
 }
 
