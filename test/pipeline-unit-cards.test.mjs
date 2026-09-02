@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, readFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getJson, postJson, startBoard, until as waitUntil } from './helpers.mjs';
 
@@ -170,17 +170,12 @@ test('a sprint card spawns unit cards from its tickets and the facts move them',
     assert.equal(data.cards.find(c => c.id === id).stage, 'development');
 
     // The watch: the stray PR and the umbrella-less fix are off the board, the
-    // thought is not work; both are in the ledger with their fix.
+    // thought is not work.
     const watched = await until(board.base, d => d.offBoard && d.offBoard.findings.length === 2);
     assert.deepEqual(watched.offBoard.findings.map(f => [f.kind, f.ref]).sort(), [['pr', 'PR #1599'], ['ticket', '#1595']]);
     assert.equal(watched.offBoard.skipped, null);
-    const ledger = await readFile(path.join(board.dir, 'edge-cases.md'), 'utf8');
-    assert.match(ledger, /PR #1599 off the board \(pr\)/);
-    assert.match(ledger, /#1595 off the board \(ticket\)/);
     const agentView = await getJson(board.base, '/api/pipeline?format=json');
     assert.equal(agentView.body.summary.offBoard, 2);
-    const ledgerText = await fetch(`${board.base}/pipeline/edge-cases`).then(r => r.text());
-    assert.match(ledgerText, /Edge cases/);
 
     // A second sweep changes nothing and spawns nothing twice.
     await settle(700);

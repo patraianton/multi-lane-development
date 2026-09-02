@@ -9,7 +9,6 @@
 // endpoints and the agent view. watchtower.mjs only routes to it.
 
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
 import { lanesLine } from './sprint-facts.mjs';
 import {
@@ -1510,9 +1509,7 @@ function renderToonPipeline(v) {
     + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
-  help.push('off-board: what is being built without a card — open PRs no card carries, tickets'
-    + ' in work that name no umbrella, busy lanes on unknown branches; the ledger of such cases'
-    + ' is /pipeline/edge-cases (plain text)');
+  help.push('off-board: what is being built without a card — open PRs no card carries, tickets in work that name no umbrella, busy lanes on unknown branches');
   help.push('idle-lanes: a lane assigned to a sprint is free while a unit of that sprint is'
     + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
     + ' after a short grace the board alarms the owner on Telegram');
@@ -1672,15 +1669,6 @@ export async function handlePipeline(req, res, url, port) {
   // What the page polls while the Pipeline view is on.
   if (req.method === 'GET' && url.pathname === '/pipeline/data') {
     send(res, 200, JSON.stringify(await pageData()));
-    return true;
-  }
-
-  // The edge-case ledger: every case of work off the board, as written.
-  if (req.method === 'GET' && url.pathname === '/pipeline/edge-cases') {
-    let text = '';
-    try { text = await readFile(path.join(path.dirname(FILE), 'edge-cases.md'), 'utf8'); }
-    catch { text = 'no edge cases recorded yet — nothing has been built off the board since the watch started\n'; }
-    sendText(res, 200, text);
     return true;
   }
 
