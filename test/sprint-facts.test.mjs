@@ -210,7 +210,7 @@ test('a unit without a pinned branch defaults to feat/<ticket>', () => {
   assert.equal(unit.pr.number, 1601, 'the default branch binds the PR');
 });
 
-test('sprint facts count verdict history but accept only a verdict on the current head', () => {
+test('sprint facts retain the highest legacy verdict round but accept only a verdict on the current head', () => {
   const card = { id: 'csprint', links: { ticket: 'https://github.com/acme/web/issues/1515' } };
   const unitIssues = new Map([[1515, [
     { number: 1611, title: 'SALON-U1: wrong head', url: 'u/1611', state: 'OPEN', branch: 'feat/wrong' },
@@ -221,14 +221,14 @@ test('sprint facts count verdict history but accept only a verdict on the curren
   const prs = [
     { number: 1621, branch: 'feat/wrong', headSha: head, verdict: { round: 1, go: false, head: 'def12345' } },
     { number: 1622, branch: 'feat/headless', headSha: head, verdict: { round: 1, go: false, head: null } },
-    { number: 1623, branch: 'feat/current', headSha: head, verdicts: [{ round: 1, go: false, head: 'def12345' }, { round: 2, go: true, head: 'abc12345' }] },
+    { number: 1623, branch: 'feat/current', headSha: head, verdicts: [{ round: 1, go: false, head: 'def12345' }, { round: 4, go: true, head: 'abc12345' }] },
   ];
 
   const units = sprintFactsFor([card], { prs, unitIssues }).get('csprint').units;
   assert.deepEqual(units.map(unit => [unit.state, unit.pr.verdictOnHead, unit.pr.verdictRounds]), [
     ['pr open', null, 1],
     ['pr open', null, 1],
-    ['pr go', prs[2].verdicts[1], 2],
+    ['pr go', prs[2].verdicts[1], 4],
   ]);
 });
 
