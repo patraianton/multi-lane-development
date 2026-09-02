@@ -1069,7 +1069,7 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
     rows.push({
       kind: kindLabel(p), card: p.card.title || p.card.id,
       unit: `${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket}`,
-      lane: p.lane, base: baseLine(p.base), state,
+      lane: p.lane, base: baseLine(p.base), state, ticket: p.unit.ticket,
     });
   }
   const seen = new Set(pairs.map(p => dispatchKey(p)));
@@ -1103,15 +1103,21 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
       kind: kindLabel(e), card: e.title || e.card || '-', unit: `${e.unit ? e.unit + ' ' : ''}#${e.ticket}`,
       lane: e.lane || '-', base: e.base || '-',
       state: `${e.result} ${String(e.at).slice(11, 16)}Z${e.error ? ' — ' + e.error : ''}`,
+      ticket: e.ticket, judged: e.judged ?? null,
     });
   }
   for (const h of holds) {
     const identity = `${h.ticket ?? '-'}:${h.kind ?? 'develop'}:${h.round ?? 1}`;
-    if (h.ticket != null && seen.has(identity)) continue;
+    // A live launch is the truth for its pair; a judged, failed or held entry is
+    // history and the hold stands beside it (a planner hold carries no kind/round
+    // and would otherwise hide behind the unit's develop:1 row for a day).
+    const entry = ledger?.dispatched?.[identity];
+    const liveLaunch = seen.has(identity) && entry && /^launch/.test(String(entry.result)) && entry.judged == null;
+    if (h.ticket != null && liveLaunch) continue;
     rows.push({
       kind: kindLabel(h), card: h.card.title || h.card.id,
       unit: h.ticket != null ? `${h.unit ? h.unit + ' ' : ''}#${h.ticket}` : '-',
-      lane: h.lane || '-', base: '-', state: `held: ${h.reason}`,
+      lane: h.lane || '-', base: '-', state: `held: ${h.reason}`, ticket: h.ticket ?? null,
     });
   }
   return rows;

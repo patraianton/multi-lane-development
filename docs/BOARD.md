@@ -32,6 +32,10 @@ U2b #1685 on hostinger/lane-4 by lane number.
 - From `ticketed` the board runs everything: unit cards (one per ticket referencing the umbrella) move by facts —
   lane busy → `development`, local check → `local_check`, PR open → `ci_pr`, PR merged → `merged`, ticket closed
   after the merge → `done`. The sprint card follows its units.
+- Every unit card of a served sprint carries one sentence the board writes (`status.text`, `status.at`): the lane
+  it builds on, the review or fix running, the planner's hold verbatim (`waits for #1850 (pr green)`, `no free
+  lane with a launcher`), the merge sweep's word for a green+GO head, or `waiting for the owner — <reason>` when
+  stuck. It is logged once when it changes. `development` means a lane is busy on it or a fix is owed on its PR.
 - The board's work ends at **ready for acceptance** (every unit merged, every `qa` ticket merged or closed, the
   latest QA walk closed with no finding after it): one Telegram line to the owner.
 
@@ -112,10 +116,12 @@ does not break it, so a review→fix carousel stops itself on the third NO-GO. A
 `stuck` → one Telegram line to the owner. To return the card:
 
 ```
-POST /pipeline/card/unstuck { "id": "<card id>" }     # the counter resets, the facts place the card
+POST /pipeline/card/unstuck { "id": "<card id>" }
 ```
 
-(or move it from the page). Fix the ticket first — the board will send it again.
+(or unstick it from the page). The counter resets; a unit with a PR returns to `development`, one without a PR to
+`ticketed`. A lane the judge closes with no proof lands the same way. Fix the ticket first — the board will send it
+again.
 
 ## 7. QA and acceptance
 

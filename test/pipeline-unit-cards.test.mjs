@@ -397,10 +397,10 @@ test('a newer QUESTION comment sticks the unit with its first line and is ignore
     assert.equal(card.stageHistory.at(-1).reason, reason);
 
     const unstuck = await postJson(board.base, '/pipeline/card/unstuck', { id });
-    assert.equal(unstuck.body.card.stage, 'development');
+    assert.equal(unstuck.body.card.stage, 'ticketed');
     await settle(700);
     const after = await getJson(board.base, '/pipeline/data');
-    assert.equal(after.body.cards.find(item => item.id === id).stage, 'development', 'the handled QUESTION predates the unstuck stage change');
+    assert.equal(after.body.cards.find(item => item.id === id).stage, 'ticketed', 'the handled QUESTION predates the unstuck stage change');
   } finally {
     await board.stop();
   }
