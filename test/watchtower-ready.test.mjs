@@ -117,6 +117,92 @@ test('a clean QA walk closes merged open tickets and the umbrella once, then fac
   }
 });
 
+test('a successful close pass refreshes stale unit and umbrella facts before the next sweep', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-close-refresh-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  const unitClosedFile = path.join(toolsDir, 'unit-closed');
+  const umbrellaClosedFile = path.join(toolsDir, 'umbrella-closed');
+  const mergedPr = {
+    number: 1600,
+    title: 'Merged unit',
+    body: 'Ticket: #1516',
+    headRefName: 'feat/1516',
+    headRefOid: 'a'.repeat(40),
+    url: 'https://github.com/acme/web/pull/1600',
+    createdAt: '2026-08-30T08:00:00Z',
+    mergedAt: '2026-08-30T09:00:00Z',
+    comments: [],
+  };
+  const issues = [{
+    number: 1515, title: 'Payments sprint', body: '', url: UMBRELLA,
+    labels: [{ name: 'umbrella' }], createdAt: '2026-08-30T08:00:00Z',
+    state: 'OPEN', closedAt: null, comments: [],
+  }, {
+    number: 1516, title: 'PAY-U1: shipped', body: 'Part of #1515.',
+    url: 'https://github.com/acme/web/issues/1516', labels: [],
+    createdAt: '2026-08-30T08:01:00Z', state: 'OPEN', closedAt: null, comments: [],
+  }, {
+    number: 1591, title: 'QA R1 — Payments', body: 'Part of #1515.',
+    url: 'https://github.com/acme/web/issues/1591', labels: [{ name: 'qa-run' }],
+    createdAt: '2026-08-30T10:00:00Z', state: 'CLOSED',
+    closedAt: '2026-08-30T10:10:00Z', comments: [],
+  }];
+  const fakeGh = await executable(toolsDir, 'gh', [
+    '#!/usr/bin/env node',
+    "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+    'const args = process.argv.slice(2);',
+    `const callsFile = ${JSON.stringify(callsFile)};`,
+    `const unitClosedFile = ${JSON.stringify(unitClosedFile)};`,
+    `const umbrellaClosedFile = ${JSON.stringify(umbrellaClosedFile)};`,
+    `const mergedPr = ${JSON.stringify(mergedPr)};`,
+    `const issues = ${JSON.stringify(issues)};`,
+    "appendFileSync(callsFile, JSON.stringify(args) + '\\n');",
+    'if (existsSync(unitClosedFile)) {',
+    '  const unit = issues.find(issue => issue.number === 1516);',
+    '  unit.state = "CLOSED"; unit.closedAt = "2026-08-30T10:11:00Z";',
+    '}',
+    'if (existsSync(umbrellaClosedFile)) {',
+    '  const umbrella = issues.find(issue => issue.number === 1515);',
+    '  umbrella.state = "CLOSED"; umbrella.closedAt = "2026-08-30T10:11:01Z";',
+    '}',
+    "if (args[0] === 'pr' && args[1] === 'list') {",
+    "  process.stdout.write(JSON.stringify(args.includes('merged') ? [mergedPr] : []));",
+    "} else if (args[0] === 'issue' && args[1] === 'list') {",
+    '  process.stdout.write(JSON.stringify(issues));',
+    "} else if (args[0] === 'issue' && args[1] === 'view') {",
+    '  process.stdout.write(JSON.stringify(issues.find(issue => String(issue.number) === args[2]) || {}));',
+    "} else if (args[0] === 'issue' && args[1] === 'close') {",
+    "  writeFileSync(Number(args[2]) === 1515 ? umbrellaClosedFile : unitClosedFile, 'closed');",
+    '} else {',
+    "  process.stdout.write('[]');",
+    '}',
+  ].join('\n'));
+  const board = await startBoard({
+    config: { source: 'probe', repo: REPO },
+    env: { WATCHTOWER_GH: fakeGh, WATCHTOWER_SPRINT_SWEEP_MS: '250' },
+  });
+
+  try {
+    await sprintCard(board);
+    await waitUntil(async () => (await callsOf(callsFile))
+      .filter(args => args[0] === 'issue' && args[1] === 'close').length >= 2);
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    const calls = await callsOf(callsFile);
+    const closes = calls.filter(args => args[0] === 'issue' && args[1] === 'close');
+    const unitIssueReads = calls.filter(args => args[0] === 'issue' && args[1] === 'list'
+      && args[args.indexOf('--state') + 1] === 'all');
+    assert.deepEqual(closes.map(args => args.slice(0, 3)), [
+      ['issue', 'close', '1516'],
+      ['issue', 'close', '1515'],
+    ]);
+    assert.ok(unitIssueReads.length >= 2, 'the close pass forces the 180-second unit source to re-read');
+  } finally {
+    await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a failed ticket close retries, keeps the sprint closing, and alarms once after three sweeps', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-close-fail-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
