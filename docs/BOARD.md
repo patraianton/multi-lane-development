@@ -82,27 +82,20 @@ see the working copy; edit the rules, commit, and the next task carries the new 
 
 - The verdict is plain text in a PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
   the head line, or with another head, it is not a verdict.
-- The board merges with `gh pr merge --squash` when the check is green on the exact head, GO is on that head,
-  the PR is not draft, GitHub says mergeable, the ticket has no `hold-merge` label, and GitHub does not refuse the
-  merge because the branch has fallen behind `main`. It refuses because `main` requires branches to be up to date
-  (branch protection, `strict`, administrators included); the board then sends `gh pr update-branch` itself — no
-  lane — and `pr-ci` runs again on the new head. The old head's merge budget closes as `superseded` (all attempts
-  spent, no gave-up alarm — the new head merges on its own budget), and the PR snapshot is re-read on the next
-  tick. A GO the old head already had is carried to the new head as a board comment (`R<n+1> — GO / head <new>`):
-  the board's own update changes no PR diff — only main was pulled in, and that combination is exactly what
-  `pr-ci` re-checks — so no review round is spent on it. A `no-review` PR carries nothing: it merges on the green
-  check alone. At most one branch is updated per sweep. Before
-  merging it rewrites `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open: merged is not
-  accepted. The squash subject and body go to `gh` as a file, never on the command line.
+- The board merges with `gh pr merge --squash` when required `pr-ci` is green on the exact head, GO is on that
+  head, the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge` label. `pr-ci` builds the PR
+  head, never the combination with `main` (`pr-ci.yml:37`, `:134`, `:426` use `head.sha`); with `strict` off the
+  first build of a combination is `main`'s own run; red main → the board holds every main-based task and dispatches
+  the `main-fix` ticket the cutter cuts (RULES cutter 7, decision 19). Before merging, the board rewrites
+  `Closes/Fixes/Resolves #N` in the body to `Ticket: #N` — the ticket stays open because merged is not accepted —
+  and sends the squash subject and body to `gh` as a file, never on the command line.
 - On a `no-review` ticket the GO requirement is dropped — the green check on the exact head, not draft, mergeable
   and no `hold-merge` are enough. A `NO-GO` on that head still blocks the merge and gets its fix round: dropped is
   the requirement, never a standing stop order. On a PR shared by several tickets every one of them must carry
   `no-review`, and `hold-merge` on any of them still wins.
 - `NO-GO`, a red check or a conflict → a fix task on the same branch; then the reviewer runs again on the new head.
 - A merge GitHub refuses is written to the journal as `merge-failed` with GitHub's own message and a `merge:` line
-  in the log; after three attempts the owner gets one line. The board never abandons a merge in silence. An
-  update the board could not make says `behind main — update-branch failed` on the table, never that the branch
-  was updated.
+  in the log; after three attempts the owner gets one line. The board never abandons a merge in silence.
 
 ## 6. Failure, stuck, the owner
 
@@ -188,11 +181,9 @@ threads (`/usr/local/bin/hzlane` on codex-dev and hostinger, `~/.local/bin/macla
   the task files: `state/auto-dispatch/`. The log: `state/board.log`, every line with a time.
 - The dispatch table on the page and in `GET /api/pipeline` (`autoDispatch` rows) shows every decision: launched,
   held (and why), would-dispatch when the switch is off, merged.
-- GitHub auto-merge is off in the product repo; branch protection on `main` — set and changed by hand by the
-  owner — requires the `pr-ci` check AND that branches are up to date before merging (`strict`), administrators
-  included, so no dispatcher — the board, a hand, another window — can merge a branch that has not been rebuilt on
-  the current `main`. The board's `gh` acts as the identity pinned in the settings (§9); without a `github`
-  block it is the machine's default login.
+- GitHub auto-merge is off in the product repo; branch protection on `main` — set and changed by hand by the owner —
+  requires the `pr-ci` check with `strict: false` (owner, 02.09), administrators included. The board's `gh` acts as
+  the identity pinned in the settings (§9); without a `github` block it is the machine's default login.
 
 ## 11. Switch-on checklist
 
