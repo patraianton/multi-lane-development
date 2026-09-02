@@ -35,6 +35,6 @@ Leave the QA account clean: delete the listings you created before closing the t
 - Every interaction the unit tickets describe, on every locale and viewport listed.
 
 ## Finish
-Findings as `qa` tickets (one per defect, at once); the round comment on #<umbrella>; the report;
+Findings as `qa` tickets (one per defect, at once; same-file findings carry `depends on (merged): #n - same file`, RULES common 9); the round comment on #<umbrella>; the report;
 then close this ticket (RULES `qa` 4–7).
 ```
