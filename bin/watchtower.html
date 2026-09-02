@@ -1899,7 +1899,7 @@ function renderPipeline(d) {
   obZone.innerHTML = obList.length || ob.skipped
     ? '<h2 data-ob-toggle="1" title="' + (folds.offboard ? 'open the list' : 'fold the list') + '"><span class="caret"></span>Off the board — ' + obList.length + ' thing' + (obList.length === 1 ? '' : 's') + ' being built without a card'
       + (ob.skipped ? ' · watch skipped: ' + esc(ob.skipped) : '')
-      + ' · <a href="/pipeline/edge-cases" target="_blank" rel="noreferrer" data-stop="1">edge-cases.md</a></h2>'
+      + '</h2>'
       + '<div class="ob-list">' + obList.map(f => '<div class="ob-item"><span class="ob-kind">' + esc(f.kind) + '</span>'
         + (f.url ? '<a class="ob-ref" href="' + esc(f.url) + '" target="_blank" rel="noreferrer">' + esc(f.ref) + '</a>'
           : '<span class="ob-ref">' + esc(f.ref) + '</span>')

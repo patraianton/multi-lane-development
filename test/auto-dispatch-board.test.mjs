@@ -614,7 +614,7 @@ test('fix debt not dispatched for 30 minutes forces the unit Stuck and notifies 
   }
 });
 
-test('the four silent dispatch skips log HELD reasons, and a no-free-lane hold suppresses fix-debt Stuck', async () => {
+test('the four silent dispatch skips are holds on the table, and a no-free-lane hold suppresses fix-debt Stuck', async () => {
   const sprintId = 'held-fix-debt-sprint';
   const head = ticket => `${ticket.toString(16).padStart(8, 'a')}${'0'.repeat(32)}`;
   const old = new Date(Date.now() - 31 * 60_000).toISOString();
@@ -660,12 +660,14 @@ test('the four silent dispatch skips log HELD reasons, and a no-free-lane hold s
     }),
   });
   try {
-    await until(() => /auto-dispatch: HELD U4 #1519 — no free lane/.test(board.output()));
-    const output = board.output();
-    assert.match(output, /auto-dispatch: HELD U1 #1516 — fix of head [0-9a-f]{8} was already dispatched/);
-    assert.match(output, /auto-dispatch: HELD U2 #1517 — review of head [0-9a-f]{8} was already dispatched/);
-    assert.match(output, /auto-dispatch: HELD U3 #1518 — fix of head [0-9a-f]{8} is running — the review waits for a new head/);
-    assert.match(output, /auto-dispatch: HELD U4 #1519 — no free lane/);
+    {
+      const api = await until(board.base, body => (body.autoDispatch ?? []).some(row => row.unit === 'U4 #1519' && row.state === 'held: no free lane'));
+      const stateOf = unit => api.autoDispatch.find(row => row.unit === unit)?.state ?? '';
+      assert.match(stateOf('U1 #1516'), /^held: fix of head [0-9a-f]{8} was already dispatched$/);
+      assert.match(stateOf('U2 #1517'), /^held: review of head [0-9a-f]{8} was already dispatched$/);
+      assert.match(stateOf('U3 #1518'), /^held: fix of head [0-9a-f]{8} is running — the review waits for a new head$/);
+      assert.doesNotMatch(board.output(), /auto-dispatch: HELD/);
+    }
     await new Promise(resolve => setTimeout(resolve, 700));
     const api = (await getJson(board.base, '/pipeline/data')).body;
     assert.notEqual(api.cards.find(card => card.ticket === 1519)?.stage, 'stuck');
@@ -743,7 +745,7 @@ test('main red holds develop, announces once, and resumes', async () => {
   }
 });
 
-test('a dependency on a stuck unit is visible and alarms the owner once', async () => {
+test('a dependency on a stuck unit is visible on the dispatch table', async () => {
   const umbrella = 'https://github.com/acme/web/issues/1685';
   const facts = {
     ...TICKETED_FACTS,
@@ -780,9 +782,6 @@ test('a dependency on a stuck unit is visible and alarms the owner once', async 
     const api = await until(board.base, body => (body.autoDispatch ?? []).some(row =>
       row.unit === 'U2 #1687' && row.state === 'held: waits for #1686 (stuck)'));
     assert.equal(api.cards.find(card => card.id === dependency.id).stage, 'stuck');
-    await new Promise(resolve => setTimeout(resolve, 900));
-    const alarm = /ALARM dependency dead end: #1687 waits for #1686 \(stuck\)/g;
-    assert.equal((board.output().match(alarm) ?? []).length, 1, 'alarmOwner deduplicates repeated sweeps');
   } finally {
     await board.stop();
   }

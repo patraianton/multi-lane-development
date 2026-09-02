@@ -21,7 +21,7 @@ A lane belongs to whoever launched the task on it. Before stopping a lane, read 
 branch checked out in the folder): a task you did not launch is not yours to stop — write on the ticket instead.
 Hand-run work takes a reserved lane (`<lane>.reserved`, FLEET.md) and a line in the umbrella; a hand queue never
 competes with the board for a free lane. Edge case 2026-08-30: a sprint window's stop script killed the board's
-U2b #1685 on hostinger/lane-4 by lane number (`state/edge-cases.md`).
+U2b #1685 on hostinger/lane-4 by lane number.
 
 ## 2. The road
 

@@ -18,7 +18,7 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { readFile, mkdir, stat, readdir, open, appendFile, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, stat, readdir, open, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { format } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -32,11 +32,11 @@ import {
   sweepArtifactAnswers, setCardSprints, setCardReview, listPipelineCards, syncSprintUnits, setOffBoard, setIdleLanes, setAutoDispatch,
   failCard, succeedCard, setCardReadyAt, sweepStuck,
 } from './pipeline.mjs';
-import { offBoardFindings, updateLedger, ledgerMarkdown } from './off-board.mjs';
+import { offBoardFindings } from './off-board.mjs';
 import { fixDebtFindings, idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
   planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
-  launchFailureHolds, launchFailureHoldLine, quarantinedLanes,
+  launchFailureHolds, quarantinedLanes,
 } from './auto-dispatch.mjs';
 import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
@@ -601,7 +601,6 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
   const sprints = sprintFactsFor(await listPipelineCards(), { ...facts, at: new Date().toISOString() });
   setCardSprints(sprints);
   const sync = await syncSprintUnits(sprints);
-  if (sync.spawned || sync.moved) console.log(`unit cards: ${sync.spawned} spawned, ${sync.moved} moved by facts`);
   await judgeDispatchedLanes(facts);
   await readyAcceptanceSweep(sprints);
   await offBoardSweep(facts);
@@ -724,9 +723,6 @@ async function judgeDispatchedLanes(facts) {
     for (const key of pruneKeys) if (shouldPrune(key, dispatched[key])) delete dispatched[key];
     return { ...fresh, dispatched };
   });
-  if (pruneKeys.length && written) {
-    console.log(`journal: pruned ${pruneKeys.length} entr${pruneKeys.length === 1 ? 'y' : 'ies'} whose PR is merged`);
-  }
   if (!written || !judged.judgments.length) return;
   const cards = await listPipelineCards();
   for (const judgment of judged.judgments) {
@@ -787,8 +783,6 @@ const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
 const FIX_DEBT_STUCK_MS = 30 * 60 * 1000;
-let idleNotice = '';
-
 // One line to the owner about the board itself, once per distinct key. Kept in
 // memory: a restart may repeat one alarm, which is cheaper than a state file.
 const alarmed = new Set();
@@ -851,11 +845,6 @@ async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
   const debt = idleLedger({ seen: debtSeen }, fixDebt, at, { graceMs: FIX_DEBT_STUCK_MS, repeatMs: FIX_DEBT_STUCK_MS });
   await writeJsonAtomic(IDLE_JSON, { seen: { ...idle.ledger.seen, ...debt.ledger.seen } });
   setIdleLanes({ at, findings: idle.active });
-  for (const f of idle.active) {
-    const line = `idle lanes: ${f.card.title}: ${idleLine(f)}`;
-    if (line !== idleNotice) { idleNotice = line; console.log(line); }
-  }
-  if (!idle.active.length) idleNotice = '';
   for (const f of idle.alarms) {
     const card = cards.find(c => c.id === f.card.id);
     if (config.telegramOn && card) {
@@ -916,19 +905,10 @@ async function updateJournal(mutate) {
 const FLEET_LAUNCH_FILE = process.env.WATCHTOWER_FLEET_LAUNCH_FILE || path.join(STATE_DIR, 'fleet-launch.json');
 const SCP = process.env.WATCHTOWER_SCP || (process.platform === 'win32' ? path.join(path.dirname(SSH), 'scp.exe') : 'scp');
 const dispatchNotices = new Set();
-const dispatchHoldNotices = new Set();
 function dispatchNote(line) {
   if (dispatchNotices.has(line)) return;
   dispatchNotices.add(line);
   console.log(line);
-}
-function dispatchHoldNote(hold) {
-  const identity = hold?.failureKey
-    ? `${hold.failureKey}:${hold?.failureAt ?? ''}`
-    : `${hold?.ticket ?? ''}:${hold?.reason ?? ''}`;
-  if (dispatchHoldNotices.has(identity)) return;
-  dispatchHoldNotices.add(identity);
-  console.log(launchFailureHoldLine(hold));
 }
 function autoDispatchNeedsOwner() {
   return config.autoDispatch && !config.telegramOwnerChatId;
@@ -1235,13 +1215,6 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   for (const hold of failureHolds) {
     if (!holds.some(item => item.failureKey && item.failureKey === hold.failureKey)) holds.push(hold);
   }
-  for (const hold of holds) {
-    for (const dependency of hold.stuckDeps ?? []) {
-      await alarmOwner(`stuck-dependency:${hold.ticket}:${dependency}`,
-        `dependency dead end: #${hold.ticket} waits for #${dependency} (stuck)`);
-    }
-  }
-  for (const hold of holds) if (hold.log) dispatchHoldNote(hold);
   // A unit the planner has a reason to hold is not waiting "with nothing in the
   // way". One rule for every reason at once — light lane, cooling host, qa-run
   // without a browser, a base error, a red main — and the reason stays on the
@@ -1302,7 +1275,6 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   }
   for (const pair of pairs) attemptedTickets.add(pair.unit.ticket);
   if (beforeLaunch) await beforeLaunch(attemptedTickets);
-  for (const hold of failureHolds) dispatchHoldNote(hold);
   const repo = config.repo;
   let next = ledger;
   for (const p of pairs) {
@@ -1637,17 +1609,8 @@ async function mergeSweep(sprints, facts = null) {
 
 // ------------------------------------------------------ off the board
 //
-// Everything being built lives on the board (decision 14). After every sprint
-// sweep: open PRs no card carries, tickets in work that name no umbrella,
-// busy lanes on unknown branches. The findings go to the page and to
-// /api/pipeline; every new one is written into state/edge-cases.md — the
-// ledger the process is corrected from. Unknown is never "off the board":
-// a stale source skips the watch and the page says so.
-const EDGE_JSON = path.join(STATE_DIR, 'edge-cases.json');
-const EDGE_MD = path.join(STATE_DIR, 'edge-cases.md');
-const EDGE_HEAD = '# Edge cases — what was built off the board\n\n'
-  + 'Written by the board (decision 14): every entry is a case the process did not cover.'
-  + ' Fold each one into TICKETING.md §7 and note the rule here.\n\n';
+// Everything being built lives on the board (decision 14): after every sweep, open PRs no card carries, tickets in work that name no umbrella, busy lanes on unknown branches.
+// A stale source skips the watch and the page says so.
 let offBoard = { at: null, findings: [], skipped: null };
 async function offBoardSweep(facts) {
   const at = new Date().toISOString();
@@ -1662,15 +1625,6 @@ async function offBoardSweep(facts) {
   });
   offBoard = { at, findings, skipped: null };
   setOffBoard(offBoard);
-  const ledger = await readJsonSoft(EDGE_JSON, { seen: {} });
-  const r = updateLedger(ledger, findings, at);
-  if (!r.fresh.length && !r.resolved.length) return;
-  await writeJsonAtomic(EDGE_JSON, r.ledger);
-  let head = '';
-  try { await stat(EDGE_MD); } catch { head = EDGE_HEAD; }
-  await appendFile(EDGE_MD, head + ledgerMarkdown(r.fresh, r.resolved, at) + '\n');
-  for (const f of r.fresh) console.log(`off the board: ${f.ref} — ${f.reason}`);
-  for (const f of r.resolved) console.log(`back on the board: ${f.ref}`);
 }
 function fireSprintSweep() {
   if (sweepStuck(sprintSource, Date.now(), sweepStuckMs)) {

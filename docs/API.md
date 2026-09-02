@@ -318,9 +318,7 @@ findings, skipped }` and `/api/pipeline` an `off-board[N]{kind,ref,title,reason,
 table plus `summary.offBoard` — what is being built without a card: an open PR
 no card carries (`pr`), a ticket in work that names no umbrella (`ticket`), a
 busy lane on a branch no card carries (`lane`). `skipped` names the stale
-source when the watch did not run. `GET /pipeline/edge-cases` is the ledger
-(`state/edge-cases.md`): one dated block per new finding, one line per
-resolution. EXECUTION.md "Off the board (the watch)".
+source when the watch did not run. EXECUTION.md "Off the board (the watch)".
 
 **Idle lanes (decision 15).** `/pipeline/data` carries `idleLanes: { at, findings }`
 and `/api/pipeline` an `idle-lanes[N]{card,free,queued,since}` table plus

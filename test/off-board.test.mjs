@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { offBoardFindings, isWorkTicket, updateLedger, ledgerMarkdown } from '../bin/off-board.mjs';
+import { offBoardFindings, isWorkTicket } from '../bin/off-board.mjs';
 
 const cards = [
   { id: 'c1', title: 'U1 #1516 — readiness', ticket: 1516, parent: 'cs', links: { ticket: 'https://github.com/acme/web/issues/1516', branch: 'feat/salon-u01-readiness', pr: '' } },
@@ -51,28 +51,6 @@ test('a busy lane is on the board by the branch a card carries or the TASK file 
   ];
   const f = offBoardFindings({ cards, lanes });
   assert.deepEqual(f.map(x => [x.kind, x.ref, x.title]), [['lane', 'mac/lane-8', 'fix/stray-work']]);
-});
-
-test('the ledger remembers first and last sight, marks what went back on the board, and writes the document', () => {
-  const a = offBoardFindings({ cards, prs: [{ number: 1591, title: 'stray', url: 'u/1591', branch: 'fix/x' }], at: 't1' });
-  let r = updateLedger({ seen: {} }, a, 't1');
-  assert.equal(r.fresh.length, 1);
-  assert.equal(r.ledger.seen['pr:1591'].first, 't1');
-  const md = ledgerMarkdown(r.fresh, r.resolved, 't1');
-  assert.match(md, /^## t1 — PR #1591 off the board \(pr\)/);
-  assert.match(md, /Why it is off/);
-  // Seen again: not fresh, last moves.
-  r = updateLedger(r.ledger, a, 't2');
-  assert.equal(r.fresh.length, 0);
-  assert.equal(r.ledger.seen['pr:1591'].last, 't2');
-  // Gone: resolved once, and a fresh sighting later starts a new entry.
-  r = updateLedger(r.ledger, [], 't3');
-  assert.equal(r.resolved.length, 1);
-  assert.equal(r.ledger.seen['pr:1591'].resolved, 't3');
-  assert.match(ledgerMarkdown([], r.resolved, 't3'), /resolved: PR #1591/);
-  r = updateLedger(r.ledger, a, 't4');
-  assert.equal(r.fresh.length, 1);
-  assert.equal(r.ledger.seen['pr:1591'].resolved, null);
 });
 
 test('a ticket in work on the board with no pinned branch is off the board: the card can never move', () => {

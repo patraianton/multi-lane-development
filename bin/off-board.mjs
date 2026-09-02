@@ -2,9 +2,7 @@
 // module finds what does not: an open PR no card carries, a ticket in work
 // that references no umbrella (so no card was spawned), a busy lane building
 // a branch no card carries. Each finding names the fix. The server runs it
-// every sprint sweep, shows the findings on the page and in /api/pipeline,
-// and writes each new one into state/edge-cases.md — the list the process
-// is corrected from.
+// every sprint sweep and shows the findings on the page and in /api/pipeline.
 //
 // Pure: watchtower.mjs feeds it the live sources; tests feed it fixtures.
 
@@ -107,45 +105,4 @@ export function offBoardFindings({ cards = [], prs = [], issues = [], lanes = []
   }
 
   return findings.map(f => ({ ...f, at }));
-}
-
-// The edge-case ledger: which findings were seen when, which are gone. Pure
-// too — the caller reads and writes the files.
-//   ledger: { seen: { key: { kind, ref, title, reason, first, last, resolved } } }
-// Returns { ledger, fresh: [findings never seen], resolved: [entries just closed] }.
-export function updateLedger(ledger, findings, at) {
-  const seen = { ...(ledger?.seen ?? {}) };
-  const now = at ?? new Date().toISOString();
-  const fresh = [];
-  const live = new Set();
-  for (const f of findings) {
-    live.add(f.key);
-    const prev = seen[f.key];
-    if (!prev || prev.resolved) {
-      seen[f.key] = { kind: f.kind, ref: f.ref, title: f.title, url: f.url, reason: f.reason, fix: f.fix, first: now, last: now, resolved: null };
-      fresh.push(f);
-    } else {
-      seen[f.key] = { ...prev, last: now, title: f.title, reason: f.reason };
-    }
-  }
-  const resolved = [];
-  for (const [key, e] of Object.entries(seen)) {
-    if (!e.resolved && !live.has(key)) { seen[key] = { ...e, resolved: now }; resolved.push({ key, ...seen[key] }); }
-  }
-  return { ledger: { seen }, fresh, resolved };
-}
-
-// One dated block per new edge case, one line per resolution — the document
-// the process is corrected from (TICKETING.md §7).
-export function ledgerMarkdown(fresh, resolved, at) {
-  const out = [];
-  for (const f of fresh) {
-    out.push(`## ${at} — ${f.ref} off the board (${f.kind})`, '',
-      `- **What:** ${f.title || '(no title)'}${f.detail ? ' — ' + f.detail : ''}${f.url ? ' — ' + f.url : ''}`,
-      `- **Why it is off:** ${f.reason}`,
-      `- **Fix:** ${f.fix}`,
-      `- **Rule to fold in:** (fill in when the case is understood — TICKETING.md §7)`, '');
-  }
-  for (const r of resolved) out.push(`- ${at} — resolved: ${r.ref} (${r.kind}) is on the board again`, '');
-  return out.join('\n');
 }
