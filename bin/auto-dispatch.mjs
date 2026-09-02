@@ -526,6 +526,10 @@ function unitCardFor(cards, cardId, ticket) {
     && Number(candidate.ticket) === Number(ticket));
 }
 
+function servable(unit, card) {
+  return unit?.open !== false && card?.stage !== 'stuck';
+}
+
 // The dependency rules mirror idle-lanes.startable, but retain the blockers
 // so a rejected unit can explain itself on the dispatch table. A parked unit
 // card is authoritative even when the slower source still describes its PR.
@@ -618,7 +622,7 @@ export function planFixes({
     const cardRef = { id: card.id, title: String(card.title ?? '') };
     for (const unit of [...(sprint.units ?? []), ...(sprint.qaTickets ?? [])]) {
       if (occupiedTickets.has(String(unit?.ticket))) continue;
-      if (unitCardFor(cards, card.id, unit?.ticket)?.stage === 'stuck') continue;
+      if (!servable(unit, unitCardFor(cards, card.id, unit?.ticket))) continue;
       const pr = unit?.pr;
       const head = String(pr?.headSha ?? '');
       if (!head || unit?.merged || ['CLOSED', 'MERGED'].includes(String(pr?.state ?? '').toUpperCase())) continue;
@@ -764,7 +768,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     const candidates = [...(s.units ?? []), ...(s.qaTickets ?? [])];
     for (const u of candidates) {
       if (takenTicketSet.has(String(u?.ticket))) continue;
-      if (unitCardFor(cards, card.id, u?.ticket)?.stage === 'stuck') continue;
+      if (!servable(u, unitCardFor(cards, card.id, u?.ticket))) continue;
       const blockers = dependencyBlockers(u, card.id, cards);
       if (!blockers.length || !startableOnBoard({ ...u, deps: [] }, card.id, cards)) continue;
       holds.push({
@@ -775,11 +779,11 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
     const waiting = candidates
       .filter(u => {
         if (takenTicketSet.has(String(u?.ticket))) return false;
-        if (unitCardFor(cards, card.id, u?.ticket)?.stage === 'stuck') return false;
+        if (!servable(u, unitCardFor(cards, card.id, u?.ticket))) return false;
         if (startableOnBoard(u, card.id, cards)) return true;
         const retry = dispatchRetry(journal, u.ticket, 'develop', null, now, retryMs);
         if (!retry) return false;
-        return isQaRun(u) ? Boolean(u.open) : !u.pr && !u.merged;
+        return !u.pr && !u.merged;
       })
       .filter(u => !isQaRun(u) || (u.deps ?? []).every(d => d.met === true));
     if (!waiting.length) continue;
@@ -806,7 +810,10 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (takenTicketSet.has(String(u.ticket))) continue;
       const hold = reason => holds.push({ card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '', reason });
       const latestDevelop = latestEntryForKind(journal, u.ticket, 'develop');
-      if (latestDevelop?.result === 'launched' && latestDevelop.judged !== 'no-proof') continue;
+      if (latestDevelop?.result === 'launched' && latestDevelop.judged !== 'no-proof') {
+        hold(`launched on ${latestDevelop.lane} at ${String(latestDevelop.at).slice(11, 16)}Z — waiting for the lane facts`);
+        continue;
+      }
       const failureState = launchFailureState(journal, u.ticket, now, retryMs);
       const retry = dispatchRetry(journal, u.ticket, 'develop', null, now, retryMs);
       const circuitHold = failureHold(failureState, cardRef, u, retryMs, journal);
@@ -818,7 +825,10 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       const key = dispatchKey(pairIdentity);
       // A plain-number entry is the pre-T1 spelling of develop round 1.
       const prev = journal[key] ?? journal[String(u.ticket)];
-      if (prev?.result === 'launched') continue; // the journal is final for a launched unit
+      if (prev?.result === 'launched') {
+        hold(`launched on ${prev.lane} at ${String(prev.at).slice(11, 16)}Z — waiting for the lane facts`);
+        continue;
+      }
       if (entryBlocksDispatch(prev, now, launchingMs)) continue;
       const base = baseFor(u, s);
       if (base.error) { hold(base.error); continue; }
@@ -941,7 +951,7 @@ export function planReviews({
       const unitCard = unitCardFor(cards, card.id, unit?.ticket);
       // A parked child remains parked. The pure planner does not otherwise
       // require pipeline children: its input contract is the sprint PR facts.
-      if (unitCard?.stage === 'stuck') continue;
+      if (!servable(unit, unitCard)) continue;
       if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(pr.verdictOnHead?.head, head)) continue;
       // A no-review unit is skipped exactly like a head that already has its
       // verdict: the board never plans a reviewer for it (BOARD.md §3).
