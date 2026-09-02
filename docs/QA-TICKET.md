@@ -17,6 +17,12 @@ checkpoint page = say so in the report and stop that probe.
 Deployed commit: read it from <where the site exposes it, e.g. the /api/health build field> and compare with
 `origin/main`.
 Locales: RU, LV, EN. Viewports: 1280×900, 1024×800, 1023×800, 820×1000, 390×844, 360×800.
+Cabinet: every unit that touches the cabinet (`/kabinets-v2`, listing add/edit/publish, photos, contacts,
+messages) is walked in the LIVE cabinet, signed in as the QA account: `node ~/kitchens/autopase.lv/qa/qa-login.mjs`
+prints a single-use sign-in link (valid 2 h) — open it in the browser, then go to `/ru/kabinets-v2`.
+Walk the real flow end to end (add a listing by URL and by hand, upload a photo, see it rendered, publish).
+The internal preview page (`/internal/account-questionnaire-preview`) is a supplement, never the proof.
+Leave the QA account clean: delete the listings you created before closing the ticket.
 
 ## Surfaces (one line per unit: ticket, title, URL or path, mock path if the ticket names one)
 - #<unit> <title> — <URL> — mock: <path or none>
