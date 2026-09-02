@@ -274,7 +274,10 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
           const rawRounds = Number(open.verdictRounds);
           const verdictRounds = Number.isInteger(rawRounds) && rawRounds >= 0
             ? rawRounds
-            : (verdicts.length || (open.verdict ? 1 : 0));
+            : Math.max(0, ...[...verdicts, open.verdict]
+              .filter(Boolean)
+              .map(verdict => Number(verdict?.round))
+              .filter(Number.isInteger));
           // headSha: the commit a dependent unit starts from (auto-dispatch).
           u.pr = {
             number: open.number,

@@ -30,17 +30,50 @@ function labelsOf(unit) {
     : [];
 }
 
+export const REQUIRED_CHECKS = ['pr-ci'];
+export const MERGE_ATTEMPTS = 3;
+
+export function ciColor(rollup, required = REQUIRED_CHECKS) {
+  const items = rollup ?? [];
+  const requiredNames = new Set(required ?? []);
+  const selected = requiredNames.size
+    ? items.filter(item => requiredNames.has(String(item?.name ?? item?.context ?? '')))
+    : items;
+  if (!selected.length) return { color: 'none', text: 'no checks', failedNames: [] };
+
+  let fail = 0, run = 0, ok = 0;
+  const failedNames = [];
+  for (const item of selected) {
+    const value = String(item.conclusion || item.state || item.status || '').toUpperCase();
+    if (['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'].includes(value)) {
+      fail++;
+      failedNames.push(String(item.name ?? item.context ?? item.workflowName ?? 'check'));
+    } else if (['IN_PROGRESS', 'QUEUED', 'PENDING', 'WAITING', 'REQUESTED'].includes(value)) {
+      run++;
+    } else {
+      ok++;
+    }
+  }
+  if (fail) return { color: 'red', text: `CI red (${fail})`, failedNames };
+  if (run) return { color: 'run', text: `CI running (${run})`, failedNames };
+  return { color: 'green', text: `CI green (${ok})`, failedNames };
+}
+
 // Parse all review comments once so the page can show their history while the
 // scheduler separately uses only a verdict that names the current PR head.
 export function prVerdictFacts(comments, headSha = null) {
   const verdicts = [];
   let verdict = null;
   let verdictOnHead = null;
+  let verdictRounds = 0;
 
   for (const comment of comments ?? []) {
     const body = String(comment?.body ?? '');
     const lines = body.split(/\r?\n/);
     const match = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(lines[0].trim());
+    const fixMatch = /^fix\s+R(\d+)\s+pushed\b/i.exec(lines[0].trim());
+    const round = Number(match?.[1] ?? fixMatch?.[1]);
+    if (Number.isInteger(round)) verdictRounds = Math.max(verdictRounds, round);
     if (!match) continue;
 
     const headMatch = /^head\s+([0-9a-f]{7,40})\b/i.exec(lines[1] ?? '');
@@ -56,7 +89,7 @@ export function prVerdictFacts(comments, headSha = null) {
     if (prefixMatches(entry.head, headSha)) verdictOnHead = entry;
   }
 
-  return { verdicts, verdict, verdictOnHead, verdictRounds: verdicts.length };
+  return { verdicts, verdict, verdictOnHead, verdictRounds };
 }
 
 // Compatibility for callers that only need the latest headed verdict.
@@ -82,8 +115,9 @@ export function canMerge({ pr, unit } = {}) {
     if (!verdictOnHead) return { ok: false, why: 'verdict head' };
     if (verdict.go !== true) return { ok: false, why: 'NO-GO' };
   }
-  if (pr?.draft) return { ok: false, why: 'draft' };
-  if (pr?.mergeable !== 'MERGEABLE') return { ok: false, why: 'mergeable' };
+  if (pr?.draft) return { ok: false, why: 'draft — waiting for the author' };
+  if (pr?.mergeable === 'UNKNOWN') return { ok: false, why: 'GitHub has not computed mergeability yet' };
+  if (pr?.mergeable !== 'MERGEABLE') return { ok: false, why: 'GitHub says the PR is not mergeable' };
   if (labelsOf(unit).includes('hold-merge') || labelsOf(pr).includes('hold-merge')) {
     return { ok: false, why: 'hold-merge' };
   }

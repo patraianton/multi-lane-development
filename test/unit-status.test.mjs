@@ -33,6 +33,9 @@ test('unitStatus: a card with a PR says the PR\'s state and what it waits for', 
     ['green GO merge word', { ticket, pr: { ...openPr, verdictOnHead: { go: true, round: 1 } } }, card, [
       { kind: 'merge', card: 'TAIL sprint', unit: 'PR #1854', lane: '-', base: '18faeb27', state: 'hold-merge — the owner merges by hand' },
     ], 'PR #1854 green + GO — hold-merge — the owner merges by hand'],
+    ['green GO draft uses the merge decision', { ticket, pr: { ...openPr, draft: true, verdictOnHead: { go: true, round: 1 } } }, card, [
+      { kind: 'merge', card: 'TAIL sprint', unit: 'PR #1854', lane: '-', base: '18faeb27', state: 'draft — waiting for the author' },
+    ], 'PR #1854 green + GO — draft — waiting for the author'],
     ['green GO other head', { ticket, pr: { ...openPr, verdictOnHead: { go: true, round: 1 } } }, card, [
       { kind: 'merge', card: 'TAIL sprint', unit: 'PR #1854', lane: '-', base: 'ffffffff', state: 'merging at ffffffff' },
     ], 'PR #1854 green + GO — waiting for the merge sweep'],

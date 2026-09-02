@@ -152,15 +152,21 @@ test('a failed red-main details lookup still fires the original alarm', async ()
   }
 });
 
-test('green CI and GO on the current head invokes one squash merge and journals that head', async () => {
+test('a base-moved refusal retries the squash merge and journals its eventual success', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower merge tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
   try {
     const fakeGh = await executable(toolsDir, 'gh', [
       '#!/usr/bin/env node',
-      "import { appendFileSync } from 'node:fs';",
-      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "import { appendFileSync, readFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `let old = ''; try { old = readFileSync(${JSON.stringify(callsFile)}, 'utf8'); } catch {}`,
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[1] === 'merge' && !old.split(/\\r?\\n/).some(line => line.includes('\\\"merge\\\"'))) {",
+      "  process.stderr.write('Base branch was modified. Review and try the merge again.\\n');",
+      '  process.exit(1);',
+      '}',
     ].join('\n'));
     board = await startBoard({
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
@@ -182,7 +188,7 @@ test('green CI and GO on the current head invokes one squash merge and journals 
       value => value?.dispatched?.['1624:merge:abc12345']?.result === 'merged');
     assert.deepEqual(
       [journal.dispatched['1624:merge:abc12345'].pr, journal.dispatched['1624:merge:abc12345'].attempts],
-      [1632, 1],
+      [1632, 2],
     );
 
     const api = await until(board.base,
@@ -193,10 +199,14 @@ test('green CI and GO on the current head invokes one squash merge and journals 
 
     await new Promise(resolve => setTimeout(resolve, 500));
     const ghCalls = await calls(callsFile);
-    assert.equal(ghCalls.filter(args => args[0] === 'pr' && args[1] === 'merge').length, 1, 'a stale open-PR fact cannot merge twice');
-    assert.deepEqual(ghCalls.map(args => args.slice(0, 2)), [['pr', 'edit'], ['pr', 'merge']]);
+    assert.equal(ghCalls.filter(args => args[0] === 'pr' && args[1] === 'merge').length, 2,
+      'the base-moved refusal is retried once, then the stale open-PR fact cannot merge again');
+    assert.equal(ghCalls.filter(args => args[1] === 'update-branch').length, 0);
+    assert.deepEqual(ghCalls.map(args => args.slice(0, 2)), [
+      ['pr', 'edit'], ['pr', 'merge'], ['pr', 'edit'], ['pr', 'merge'],
+    ]);
     const edit = ghCalls[0];
-    const merge = ghCalls[1];
+    const merge = ghCalls[3];
     assert.ok(merge.includes('--squash'));
     assert.equal(merge[merge.indexOf('--match-head-commit') + 1], HEAD);
     const expectedBody = 'Summary & details\n\nTicket: #1624\n' + 'x'.repeat(5000);
@@ -325,6 +335,60 @@ test('without the label the same verdict-free facts still wait for the verdict',
   }
 });
 
+test('merge-table rows explain UNKNOWN mergeability and a green-GO draft', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-merge-waits-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    const cases = [
+      {
+        name: 'UNKNOWN mergeability',
+        change: value => { value.prs[0].mergeable = 'UNKNOWN'; },
+        state: 'GitHub has not computed mergeability yet',
+      },
+      {
+        name: 'draft with green CI and GO',
+        change: value => { value.prs[0].draft = true; },
+        state: 'draft — waiting for the author',
+      },
+    ];
+
+    for (const item of cases) {
+      const waitingFacts = facts();
+      item.change(waitingFacts);
+      board = await startBoard({
+        config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+        files: { 'sprint-facts.json': waitingFacts },
+        env: dir => ({
+          WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+          WATCHTOWER_SPRINT_SWEEP_MS: '200',
+          WATCHTOWER_GH: fakeGh,
+        }),
+      });
+      const sprintId = await createTicketed(board);
+      const api = await until(board.base, body => {
+        const row = body.autoDispatch?.find(candidate => candidate.kind === 'merge');
+        const unit = body.cards.find(candidate => candidate.parent === sprintId && candidate.ticket === 1624);
+        return row?.state === item.state && unit?.status?.text === `PR #1632 green + GO — ${item.state}`;
+      });
+      assert.deepEqual(api.autoDispatch.find(row => row.kind === 'merge'), {
+        kind: 'merge', card: 'MERGE sprint', unit: 'PR #1632', lane: '-', base: 'abc12345', state: item.state,
+      }, item.name);
+      await board.stop();
+      board = null;
+    }
+    assert.deepEqual(await calls(callsFile), []);
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a PR-side hold-merge produces only the owner table line and skips every pre-merge action', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-held-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
@@ -377,8 +441,8 @@ test('a PR-side hold-merge produces only the owner table line and skips every pr
   }
 });
 
-test('a failed merge records stderr and stops after three attempts', async () => {
-  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-failed-merge-tools-'));
+test('an out-of-date merge refusal exhausts three attempts without branch mutation', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-out-of-date-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
   try {
@@ -386,7 +450,7 @@ test('a failed merge records stderr and stops after three attempts', async () =>
       '#!/usr/bin/env node',
       "import { appendFileSync } from 'node:fs';",
       `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
-      "process.stderr.write('merge rejected by fixture\\n');",
+      "process.stderr.write('Pull request acme/web#1632 is not mergeable: the head branch is not up to date with the base branch\\n');",
       'process.exit(1);',
     ].join('\n'));
     const failingFacts = facts();
@@ -400,21 +464,26 @@ test('a failed merge records stderr and stops after three attempts', async () =>
         WATCHTOWER_GH: fakeGh,
       }),
     });
-    await createTicketed(board);
+    const sprintId = await createTicketed(board);
     const journalFile = path.join(board.dir, 'auto-dispatch.json');
     const journal = await journalUntil(journalFile, value => {
       const entry = value?.dispatched?.['1624:merge:abc12345'];
       return entry?.result === 'merge-failed' && entry.attempts === 3;
     });
-    assert.equal(journal.dispatched['1624:merge:abc12345'].error, 'merge rejected by fixture');
-    const api = await until(board.base, body => body.autoDispatch?.some(row => row.state
-      === 'merge failed 3/3 — merge rejected by fixture'));
+    const refusal = 'Pull request acme/web#1632 is not mergeable: the head branch is not up to date with the base branch';
+    assert.equal(journal.dispatched['1624:merge:abc12345'].error, refusal);
+    const gaveUp = `gave up after 3 attempts — ${refusal}`;
+    const api = await until(board.base, body => body.autoDispatch?.some(row => row.state === gaveUp)
+      && body.cards.some(card => card.parent === sprintId && card.ticket === 1624
+        && card.status?.text === `PR #1632 green + GO — ${gaveUp}`));
     assert.ok(api.autoDispatch.some(row => row.kind === 'merge' && row.unit === 'PR #1632'));
     await new Promise(resolve => setTimeout(resolve, 500));
     const ghCalls = await calls(callsFile);
-    assert.equal(ghCalls.length, 3, 'a message the board cannot clear is never followed by update-branch');
+    assert.equal(ghCalls.length, 3, 'the refusal spends only the bounded merge budget');
     assert.ok(ghCalls.every(args => args[0] === 'pr' && args[1] === 'merge'));
-    const alarm = /ALARM the board gave up merging PR #1632 after 3 attempts: merge rejected by fixture/;
+    assert.equal(ghCalls.filter(args => ['update-branch', 'view', 'comment'].includes(args[1])).length, 0);
+    assert.equal((board.output().match(/merge: PR #1632 failed at abc12345 — .*not up to date/g) ?? []).length, 3);
+    const alarm = /ALARM the board gave up merging PR #1632 after 3 attempts: .*not up to date/;
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.match(board.output(), alarm, 'the cap speaks — 45 minutes of silence cannot recur');
     assert.equal((board.output().match(new RegExp(alarm.source, 'g')) ?? []).length, 1,
@@ -687,26 +756,23 @@ test('a shared PR merges without a verdict once every sibling carries no-review'
   }
 });
 
-test('a merge refused as out of date updates the branch once and closes the dead head\'s budget', async () => {
-  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-behind-main-tools-'));
+test('a moved PR head closes its budget without branch mutation or a gave-up alarm', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-head-moved-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
   let board;
   try {
     const fakeGh = await executable(toolsDir, 'gh', [
       '#!/usr/bin/env node',
       "import { appendFileSync } from 'node:fs';",
-      'const a = process.argv.slice(2);',
-      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
-      "if (a[1] === 'merge') {",
-      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
-      '  process.exit(1);',
-      '}',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "process.stderr.write('GraphQL: Head branch was modified. Review and try the merge again.\\n');",
+      'process.exit(1);',
     ].join('\n'));
-    const behindFacts = facts();
-    behindFacts.prs[0].body = 'Ticket: #1624';
+    const movedFacts = facts();
+    movedFacts.prs[0].body = 'Ticket: #1624';
     board = await startBoard({
       config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
-      files: { 'sprint-facts.json': behindFacts },
+      files: { 'sprint-facts.json': movedFacts },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
         WATCHTOWER_SPRINT_SWEEP_MS: '200',
@@ -715,120 +781,16 @@ test('a merge refused as out of date updates the branch once and closes the dead
     });
     await createTicketed(board);
 
-    // Issue #16: the successful update replaces the head, so the old head's
-    // budget closes at once — superseded, attempts spent, no further tries.
-    const journalFile = path.join(board.dir, 'auto-dispatch.json');
-    const journal = await journalUntil(journalFile, value => {
+    const journal = await journalUntil(path.join(board.dir, 'auto-dispatch.json'), value => {
       const entry = value?.dispatched?.['1624:merge:abc12345'];
-      return entry?.result === 'merge-failed' && /^superseded/.test(entry?.error ?? '');
+      return entry?.attempts === 3 && entry?.error === 'superseded — the PR head moved past this snapshot';
     });
-    assert.equal(journal.dispatched['1624:merge:abc12345'].attempts, 3,
-      'the dead head cannot burn the remaining attempts');
-
-    assert.match(board.output(), /merge: PR #1632 failed at abc12345 — Pull request is not mergeable/);
-    assert.match(board.output(), /merge: PR #1632 is behind main — branch updated/);
-
-    await new Promise(resolve => setTimeout(resolve, 900));
+    assert.equal(journal.dispatched['1624:merge:abc12345'].result, 'merge-failed');
+    await new Promise(resolve => setTimeout(resolve, 700));
     const ghCalls = await calls(callsFile);
-    const updates = ghCalls.filter(args => args[1] === 'update-branch');
-    assert.deepEqual(updates, [['pr', 'update-branch', '1632', '--repo', 'acme/web']],
-      'one update total — the superseded head never asks again');
-    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 1,
-      'no second merge attempt lands on a head that no longer exists');
-    assert.doesNotMatch(board.output(), /gave up merging PR #1632/,
-      'a superseded budget is not a gave-up alarm');
-  } finally {
-    if (board) await board.stop();
-    await rm(toolsDir, { recursive: true, force: true });
-  }
-});
-
-test('after its own update-branch the board carries the GO to the new head', async () => {
-  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-carry-go-tools-'));
-  const callsFile = path.join(toolsDir, 'calls.jsonl');
-  let board;
-  try {
-    const fakeGh = await executable(toolsDir, 'gh', [
-      '#!/usr/bin/env node',
-      "import { appendFileSync } from 'node:fs';",
-      'const a = process.argv.slice(2);',
-      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
-      "if (a[1] === 'merge') {",
-      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
-      '  process.exit(1);',
-      '}',
-      "if (a[1] === 'view') process.stdout.write(JSON.stringify({ headRefOid: " + JSON.stringify(OTHER) + ' }));',
-    ].join('\n'));
-    const behindFacts = facts();
-    behindFacts.prs[0].body = 'Ticket: #1624';
-    board = await startBoard({
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
-      files: { 'sprint-facts.json': behindFacts },
-      env: dir => ({
-        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
-        WATCHTOWER_SPRINT_SWEEP_MS: '200',
-        WATCHTOWER_GH: fakeGh,
-      }),
-    });
-    await createTicketed(board);
-
-    const deadline = Date.now() + 8000;
-    for (;;) {
-      if (/carries GO to def12345 after update-branch/.test(board.output())) break;
-      if (Date.now() > deadline) throw new Error(`no carried GO in output:\n${board.output()}`);
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    const ghCalls = await calls(callsFile);
-    const comment = ghCalls.find(args => args[1] === 'comment');
-    assert.ok(comment, 'the carried verdict is a PR comment');
-    const body = comment[comment.indexOf('--body') + 1];
-    assert.match(body, /^R2 — GO\nhead def12345abcdef0123456789abcdef0123456789\n/,
-      'the carried verdict names the new head in the parseable format');
-    assert.match(body, /Carried by the board from R1 — GO on abc12345/);
-  } finally {
-    if (board) await board.stop();
-    await rm(toolsDir, { recursive: true, force: true });
-  }
-});
-
-test('an all-no-review PR with an existing GO does not carry that GO after update-branch', async () => {
-  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-no-review-no-carry-tools-'));
-  const callsFile = path.join(toolsDir, 'calls.jsonl');
-  let board;
-  try {
-    const fakeGh = await executable(toolsDir, 'gh', [
-      '#!/usr/bin/env node',
-      "import { appendFileSync } from 'node:fs';",
-      'const a = process.argv.slice(2);',
-      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
-      "if (a[1] === 'merge') {",
-      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
-      '  process.exit(1);',
-      '}',
-      "if (a[1] === 'view') process.stdout.write(JSON.stringify({ headRefOid: " + JSON.stringify(OTHER) + ' }));',
-    ].join('\n'));
-    const behindFacts = facts();
-    behindFacts.prs[0].body = 'Ticket: #1624';
-    behindFacts.unitIssues[1600][0].labels = ['no-review'];
-    board = await startBoard({
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
-      files: { 'sprint-facts.json': behindFacts },
-      env: dir => ({
-        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
-        WATCHTOWER_SPRINT_SWEEP_MS: '200',
-        WATCHTOWER_GH: fakeGh,
-      }),
-    });
-    await createTicketed(board);
-
-    await journalUntil(path.join(board.dir, 'auto-dispatch.json'), value =>
-      /^superseded/.test(value?.dispatched?.['1624:merge:abc12345']?.error ?? ''));
-    await new Promise(resolve => setTimeout(resolve, 500));
-    const ghCalls = await calls(callsFile);
-    assert.equal(ghCalls.filter(args => args[1] === 'comment').length, 0,
-      'no-review associations never synthesize a review verdict');
-    assert.equal(ghCalls.filter(args => args[1] === 'view').length, 0,
-      'without a review-required association there is no carried head to look up');
+    assert.deepEqual(ghCalls.map(args => args.slice(0, 2)), [['pr', 'merge']]);
+    assert.equal(ghCalls.filter(args => args[1] === 'update-branch').length, 0);
+    assert.doesNotMatch(board.output(), /gave up merging PR #1632/);
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });
@@ -969,66 +931,6 @@ test('a concurrent hand field survives a merge outcome while board-owned fields 
     assert.equal(entry.note, 'keep this hand note');
     assert.deepEqual([entry.result, entry.error, entry.attempts], ['merged', null, 1],
       'fresh hand fields do not override the merge writer\'s owned outcome fields');
-  } finally {
-    if (board) await board.stop();
-    await rm(toolsDir, { recursive: true, force: true });
-  }
-});
-
-test('an update-branch the board could not make says so, and is tried again', async () => {
-  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-update-failed-tools-'));
-  const callsFile = path.join(toolsDir, 'calls.jsonl');
-  let board;
-  try {
-    const fakeGh = await executable(toolsDir, 'gh', [
-      '#!/usr/bin/env node',
-      "import { appendFileSync } from 'node:fs';",
-      'const a = process.argv.slice(2);',
-      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
-      "if (a[1] === 'merge') {",
-      "  process.stderr.write('Pull request is not mergeable: Branch is not up to date with the base branch\\n');",
-      '  process.exit(1);',
-      '}',
-      "if (a[1] === 'update-branch') {",
-      "  process.stderr.write('HTTP 403: Resource not accessible by integration\\n');",
-      '  process.exit(1);',
-      '}',
-    ].join('\n'));
-    const behindFacts = facts();
-    behindFacts.prs[0].body = 'Ticket: #1624';
-    board = await startBoard({
-      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
-      files: { 'sprint-facts.json': behindFacts },
-      env: dir => ({
-        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
-        WATCHTOWER_SPRINT_SWEEP_MS: '200',
-        WATCHTOWER_GH: fakeGh,
-      }),
-    });
-    await createTicketed(board);
-
-    // The transient row lives for one sweep, so every poll collects what it saw.
-    const states = new Set();
-    const deadline = Date.now() + 8000;
-    for (;;) {
-      const body = (await getJson(board.base, '/api/pipeline?format=json')).body;
-      for (const row of body.autoDispatch ?? []) if (row.kind === 'merge') states.add(row.state);
-      if (states.has('behind main — update-branch failed')) break;
-      if (Date.now() > deadline) throw new Error(`no failed-update row in ${[...states].join(' | ')}`);
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    assert.ok(!states.has('behind main — branch updated'),
-      'the table never says the branch was updated when the update failed');
-    assert.match(board.output(), /merge: PR #1632 is behind main — update-branch failed: HTTP 403/);
-
-    await journalUntil(path.join(board.dir, 'auto-dispatch.json'),
-      value => value?.dispatched?.['1624:merge:abc12345']?.attempts === 3);
-    // The last update follows its merge attempt, so let that sweep finish.
-    await new Promise(resolve => setTimeout(resolve, 700));
-    const ghCalls = await calls(callsFile);
-    assert.equal(ghCalls.filter(args => args[1] === 'update-branch').length, 3,
-      'a failed update costs nothing and is tried again next sweep, until the attempts cap ends it');
-    assert.equal(ghCalls.filter(args => args[1] === 'merge').length, 3, 'the attempts cap still holds');
   } finally {
     if (board) await board.stop();
     await rm(toolsDir, { recursive: true, force: true });

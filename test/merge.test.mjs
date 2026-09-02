@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bodyFix, canMerge, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
+import { bodyFix, canMerge, ciColor, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 
@@ -33,9 +33,9 @@ test('canMerge reports the first missing merge condition', () => {
     ['verdict on another head', { pr: { verdictOnHead: { round: 1, go: true, head: 'def12345' } } }, 'verdict head'],
     ['missing verdict', { pr: { verdictOnHead: null } }, 'verdict head'],
     ['NO-GO', { pr: { verdictOnHead: { round: 1, go: false, head: 'abc12345' } } }, 'NO-GO'],
-    ['draft', { pr: { draft: true } }, 'draft'],
-    ['unknown mergeability', { pr: { mergeable: 'UNKNOWN' } }, 'mergeable'],
-    ['conflict', { pr: { mergeable: 'CONFLICTING' } }, 'mergeable'],
+    ['draft', { pr: { draft: true } }, 'draft — waiting for the author'],
+    ['unknown mergeability', { pr: { mergeable: 'UNKNOWN' } }, 'GitHub has not computed mergeability yet'],
+    ['conflict', { pr: { mergeable: 'CONFLICTING' } }, 'GitHub says the PR is not mergeable'],
     ['hold label on the ticket', { unit: { labels: ['Hold-Merge'] } }, 'hold-merge'],
     ['hold label on the PR', { pr: { labels: [{ name: 'Hold-Merge' }] } }, 'hold-merge'],
     ['hold label on both', {
@@ -64,10 +64,10 @@ test('canMerge on a no-review unit needs no verdict, and the other gates still h
       pr: { ...noVerdict, labels: ['hold-merge'] },
       unit: { labels: ['no-review'] },
     }, 'hold-merge'],
-    ['draft', { pr: { ...noVerdict, draft: true }, unit: { labels: ['no-review'] } }, 'draft'],
+    ['draft', { pr: { ...noVerdict, draft: true }, unit: { labels: ['no-review'] } }, 'draft — waiting for the author'],
     ['red check', { pr: { ...noVerdict, ci: { color: 'red', headSha: HEAD } }, unit: { labels: ['no-review'] } }, 'check green'],
     ['check on an old head', { pr: { ...noVerdict, ci: { color: 'green', headSha: 'def12345abcdef0123456789abcdef0123456789' } }, unit: { labels: ['no-review'] } }, 'check head'],
-    ['unknown mergeability', { pr: { ...noVerdict, mergeable: 'UNKNOWN' }, unit: { labels: ['no-review'] } }, 'mergeable'],
+    ['unknown mergeability', { pr: { ...noVerdict, mergeable: 'UNKNOWN' }, unit: { labels: ['no-review'] } }, 'GitHub has not computed mergeability yet'],
   ];
   for (const [name, overrides, why] of gates) {
     assert.deepEqual(canMerge(candidate(overrides)), { ok: false, why }, name);
@@ -77,6 +77,48 @@ test('canMerge on a no-review unit needs no verdict, and the other gates still h
 test('canMerge accepts the flat CI fact shape', () => {
   const value = candidate({ pr: { ci: undefined, ciColor: 'green', ciHeadSha: HEAD } });
   assert.deepEqual(canMerge(value), { ok: true, why: '' });
+});
+
+test('ciColor gates on pr-ci alone unless the caller explicitly asks for every check', () => {
+  const fixtures = {
+    greenWhileImageRuns: [
+      { __typename: 'CheckRun', name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { __typename: 'CheckRun', name: 'coolify-image', status: 'IN_PROGRESS', conclusion: '' },
+    ],
+    queuedWhileImagePasses: [
+      { __typename: 'CheckRun', name: 'pr-ci', status: 'QUEUED', conclusion: '' },
+      { __typename: 'CheckRun', name: 'coolify-image', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    ],
+    greenWhileImageFails: [
+      { __typename: 'CheckRun', name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { __typename: 'CheckRun', name: 'coolify-image', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ],
+    vercelOnly: [
+      { __typename: 'StatusContext', context: 'Vercel – preview', state: 'SUCCESS' },
+    ],
+  };
+
+  assert.deepEqual(ciColor(fixtures.greenWhileImageRuns), {
+    color: 'green', text: 'CI green (1)', failedNames: [],
+  });
+  assert.deepEqual(ciColor(fixtures.queuedWhileImagePasses), {
+    color: 'run', text: 'CI running (1)', failedNames: [],
+  });
+  assert.deepEqual(ciColor(fixtures.greenWhileImageFails), {
+    color: 'green', text: 'CI green (1)', failedNames: [],
+  });
+  assert.deepEqual(ciColor(fixtures.vercelOnly), {
+    color: 'none', text: 'no checks', failedNames: [],
+  });
+  assert.deepEqual(canMerge(candidate({
+    pr: { ci: { ...ciColor(fixtures.vercelOnly), headSha: HEAD } },
+  })), { ok: false, why: 'check green' });
+  assert.deepEqual(ciColor(fixtures.greenWhileImageFails, []), {
+    color: 'red', text: 'CI red (1)', failedNames: ['coolify-image'],
+  });
+  assert.deepEqual(canMerge(candidate({
+    pr: { ci: { ...ciColor(fixtures.greenWhileImageRuns), headSha: HEAD } },
+  })), { ok: true, why: '' });
 });
 
 test('prVerdictFacts parses the head from line two and counts every verdict comment', () => {
@@ -109,6 +151,32 @@ test('a newer verdict for another head does not displace the verdict on the curr
   assert.deepEqual([facts.verdictOnHead.round, facts.verdictOnHead.go, facts.verdictOnHead.head], [1, true, 'abc12345']);
 });
 
+test('review rounds use the highest verdict number when a missing round leaves two R4 comments', () => {
+  const comments = [
+    { body: 'R1 — GO\nhead abc12345' },
+    { body: 'R2 — NO-GO\nhead def12345' },
+    { body: 'R4 — GO\nhead abc12345' },
+    { body: 'R4 — NO-GO\nhead def12345' },
+  ];
+
+  const facts = prVerdictFacts(comments, HEAD);
+  assert.equal(facts.verdictRounds, 4);
+  assert.equal(facts.verdictRounds + 1, 5, 'the next review is R5, never a duplicate R4');
+});
+
+test('a fixer push contributes its round even though it is not a verdict', () => {
+  const comments = [
+    { body: 'R8 — NO-GO\nhead cd7140bf' },
+    { body: 'fix R10 pushed, head ebb45493' },
+  ];
+
+  const facts = prVerdictFacts(comments, 'ebb45493abcdef0123456789abcdef0123456789');
+  assert.equal(facts.verdictRounds, 10);
+  assert.equal(facts.verdicts.length, 1);
+  assert.equal(facts.verdictOnHead, null);
+  assert.equal(facts.verdict.round, 8);
+});
+
 test('a fixture whose GO comment names another head is rejected as verdict head', () => {
   const comments = [{ body: 'R1 — GO\nhead def12345', createdAt: '2026-08-30T10:00:00.000Z' }];
   const verdictFacts = prVerdictFacts(comments, HEAD);
@@ -128,7 +196,7 @@ test('a verdict without a valid line-two head is never a verdict on the current 
   });
   assert.equal(facts.verdict, null);
   assert.equal(facts.verdictOnHead, null);
-  assert.equal(facts.verdictRounds, 1);
+  assert.equal(facts.verdictRounds, 3);
 });
 
 test('bodyFix rewrites closing-keyword ticket references without changing other lines', () => {

@@ -38,7 +38,9 @@ import {
   planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
   launchFailureHolds, quarantinedLanes,
 } from './auto-dispatch.mjs';
-import { bodyFix, canMerge, prVerdict as latestPrVerdict, prVerdictFacts } from './merge.mjs';
+import {
+  bodyFix, canMerge, ciColor, MERGE_ATTEMPTS, prVerdict as latestPrVerdict, prVerdictFacts, REQUIRED_CHECKS,
+} from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
 import { judgeLanes } from './lane-judge.mjs';
 import { applyReadyAt } from './ready.mjs';
@@ -1309,12 +1311,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
 
 // --------------------------------------------------------------- merge sweep
 
-const MERGE_ATTEMPTS = 3;
 const MERGE_ACTIVE_STAGES = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
-// The one refusal the board can clear itself: `main` requires branches to be
-// up to date before merging (branch protection, `strict`). One update a sweep,
-// and the attempts cap bounds what one head can cost.
-const STALE_BASE = /not up to date|out.of.date|base branch was modified|behind/i;
 
 function mergeKey(ticket, head) {
   return `${ticket}:merge:${String(head ?? '').slice(0, 8)}`;
@@ -1382,10 +1379,9 @@ function mergeEntry(item, group, { at, result, error = null, attempts }) {
   };
 }
 
-// A merge refusal that only proves the snapshot's head is gone (the board's
-// own update-branch, or a fixer pushing mid-merge). Its entries close the old
-// head's budget so later sweeps neither retry nor alarm on a dead head (#16).
-const SUPERSEDED = 'superseded — branch updated, a new head follows';
+// A merge refusal that proves the snapshot's head is gone because a fixer
+// pushed mid-merge. Its entry closes the old head's budget so later sweeps
+// neither retry nor alarm on a dead head (#16).
 const HEAD_MOVED = /head branch was modified/i;
 const MERGING_STALE_MS = 5 * 60 * 1000;
 
@@ -1442,9 +1438,6 @@ async function mergeSweep(sprints, facts = null) {
 
   const cards = await listPipelineCards();
   const plannedMergeGroups = mergeGroups(sprints, cards);
-  // Every merge that lands makes every other ready PR behind, and each update
-  // costs a fresh pr-ci and a fresh review round. One branch per sweep.
-  let updatedThisSweep = false;
   for (const group of plannedMergeGroups) {
     const held = (group.pr.labels ?? [])
       .some(label => String(label?.name ?? label).toLowerCase() === 'hold-merge')
@@ -1464,7 +1457,10 @@ async function mergeSweep(sprints, facts = null) {
     const strict = group.items.find(({ unit }) =>
       !(unit.labels ?? []).some(label => String(label?.name ?? label).toLowerCase() === 'no-review'));
     const decision = canMerge({ pr: group.pr, unit: (strict ?? group.items[0]).unit });
-    if (!decision.ok) continue;
+    if (!decision.ok) {
+      rows.push(mergeTableRow(group, decision.why));
+      continue;
+    }
 
     const keys = group.items.map(({ unit }) => mergeKey(unit.ticket, group.pr.headSha));
     // A stale active attempt was just resolved from facts. Retrying it in this
@@ -1478,11 +1474,14 @@ async function mergeSweep(sprints, facts = null) {
       // The terminal failure remains visible through its recent journal row —
       // and the owner hears it once, so a dead merge is never 45 min of silence.
       // The switch silences it too: a board that merges nothing gives up nothing.
+      const last = previous.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+      const superseded = String(last?.error ?? '').startsWith('superseded');
+      rows.push(mergeTableRow(group, superseded
+        ? last.error
+        : `gave up after ${MERGE_ATTEMPTS} attempts — ${last?.error ?? 'no reason recorded'}`));
       if (config.autoDispatch) {
-        const last = previous.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
-        // A superseded budget is the board's own bookkeeping for a head it
-        // replaced itself — the new head merges on its own budget, nothing
-        // was given up (#16).
+        // A superseded budget belongs to a head replaced by a concurrent push;
+        // the new head merges on its own budget, so nothing was given up (#16).
         if (!String(last?.error ?? '').startsWith('superseded')) {
           await alarmOwner(`merge-gaveup:${group.pr.number}:${String(group.pr.headSha).slice(0, 8)}`,
             `the board gave up merging PR #${group.pr.number} after ${MERGE_ATTEMPTS} attempts: ${last?.error ?? 'no reason recorded'}`);
@@ -1543,56 +1542,9 @@ async function mergeSweep(sprints, facts = null) {
       const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
       await writeResult('merge-failed', why);
       console.log(`merge: PR #${group.pr.number} failed at ${String(group.pr.headSha).slice(0, 8)} — ${why}`);
-      // Refused because the branch fell behind main: the board clears that
-      // itself — no lane. The push re-triggers pr-ci and the next review round,
-      // and the new head starts a fresh attempt budget.
-      if (!updatedThisSweep && STALE_BASE.test(why)) {
-        updatedThisSweep = true;
-        const upd = await execCmd(bins.gh, ['pr', 'update-branch', String(group.pr.number), '--repo', repo], 60000);
-        console.log(`merge: PR #${group.pr.number} is behind main — ${upd.code === 0
-          ? 'branch updated; the check and the review run again'
-          : 'update-branch failed: ' + (upd.stderr || upd.out)}`);
-        if (upd.code === 0) {
-          // Issue #16: the head the board just replaced no longer exists.
-          // Close its budget so the sweeps until the snapshot refreshes
-          // neither retry nor raise the gave-up alarm on a dead head.
-          await writeResult('merge-failed', SUPERSEDED, MERGE_ATTEMPTS);
-          prSource.at = 0;
-          // The board's own update changes no PR diff — only main was pulled
-          // in, and that combination is exactly what pr-ci re-checks on the
-          // new head. Carrying the GO forward spares a full review round on a
-          // lane (6 rounds burned this way on the night of 30→31.08). Only
-          // the head the update itself produced inherits; a no-review PR
-          // carries nothing — it merges on the green check alone.
-          const verdict = group.pr.verdictOnHead;
-          if (strict && verdict?.go === true) {
-            const seen = await execCmd(bins.gh,
-              ['pr', 'view', String(group.pr.number), '--repo', repo, '--json', 'headRefOid'], 60000);
-            let newHead = null;
-            if (seen.code === 0) {
-              try { newHead = JSON.parse(seen.out ?? '')?.headRefOid ?? null; } catch { /* not JSON */ }
-            }
-            if (newHead && String(newHead).toLowerCase() !== String(group.pr.headSha).toLowerCase()) {
-              const round = (Number(group.pr.verdictRounds) || Number(verdict.round) || 0) + 1;
-              const body = `R${round} — GO\nhead ${newHead}\n\n`
-                + `Carried by the board from R${verdict.round} — GO on ${String(group.pr.headSha).slice(0, 8)}: `
-                + 'update-branch changed no PR diff; the combination with main is what pr-ci re-checks on this head.';
-              const posted = await execCmd(bins.gh,
-                ['pr', 'comment', String(group.pr.number), '--repo', repo, '--body', body], 60000);
-              console.log(`merge: PR #${group.pr.number} ${posted.code === 0
-                ? `carries GO to ${String(newHead).slice(0, 8)} after update-branch`
-                : 'could not carry its GO — ' + (posted.stderr || posted.out)}`);
-            }
-          }
-        }
-        // The table says what happened, not what was tried: an update the board
-        // could not make must never read there as a repaired branch.
-        rows.push(mergeTableRow(group, upd.code === 0
-          ? 'behind main — branch updated'
-          : 'behind main — update-branch failed'));
-      } else if (HEAD_MOVED.test(why)) {
+      if (HEAD_MOVED.test(why)) {
         // "Head branch was modified": the PR's true head is already newer
-        // than this snapshot's — same dead head, no update-branch needed.
+        // than this snapshot's — same dead head, no branch mutation needed.
         await writeResult('merge-failed', 'superseded — the PR head moved past this snapshot', MERGE_ATTEMPTS);
         prSource.at = 0;
       }
@@ -1863,25 +1815,6 @@ const lanesSource = makeSource('lanes', 45000, async () => {
 
 // ------------------------------------------------------------- GitHub
 
-function ciColor(rollup) {
-  const items = rollup ?? [];
-  if (!items.length) return { color: 'none', text: 'no checks', failedNames: [] };
-  let fail = 0, run = 0, ok = 0;
-  const failedNames = [];
-  for (const it of items) {
-    const v = String(it.conclusion || it.state || it.status || '').toUpperCase();
-    if (['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'].includes(v)) {
-      fail++;
-      failedNames.push(String(it.name ?? it.context ?? it.workflowName ?? 'check'));
-    }
-    else if (['IN_PROGRESS', 'QUEUED', 'PENDING', 'WAITING', 'REQUESTED'].includes(v)) run++;
-    else ok++;
-  }
-  if (fail) return { color: 'red', text: `CI red (${fail})`, failedNames };
-  if (run) return { color: 'run', text: `CI running (${run})`, failedNames };
-  return { color: 'green', text: `CI green (${ok})`, failedNames };
-}
-
 // Every GitHub source asks the identity gate first: a pinned identity that
 // cannot be confirmed makes the source fail visibly (problems on the page,
 // stale sources hold the unit cards) instead of reading as someone else.
@@ -1910,7 +1843,7 @@ const prSource = makeSource('pull-requests', 60000, async () => {
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
       author: p.author?.login ?? null,
-      ci: { ...ciColor(p.statusCheckRollup), headSha },
+      ci: { ...ciColor(p.statusCheckRollup, REQUIRED_CHECKS), headSha },
       ...verdictFacts,
     };
   });
