@@ -141,6 +141,8 @@ test('three freed develop lanes without proof fail once per round and notify Stu
     assert.equal(final.stage, 'stuck');
     assert.equal(final.consecutiveFails, 3);
     assert.match(final.stageHistory.at(-1).reason, /no open or merged PR on feat\/1516 after alpha\/lane-1 freed/);
+    assert.equal(final.stageHistory.filter(h => h.stage === 'ticketed' && /no open or merged PR/.test(h.reason ?? '')).length, 2, 'the first two no-proof judgments landed the PR-less unit in ticketed');
+    assert.equal(final.stageHistory.some(h => h.stage === 'development' && /no open or merged PR/.test(h.reason ?? '')), false);
     await until(async () => board.output().includes('--- notifyStuck ---'));
     await new Promise(resolve => setTimeout(resolve, 600));
     assert.equal(count(board.output(), '--- notifyStuck ---'), 1);
