@@ -1164,7 +1164,7 @@ test('live open and merged PR lists refresh together across the board-owned merg
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    assert.ok(seen.includes('merged — merged in PR #1632 — waiting for the ticket to close'), seen.join('\n'));
+    assert.ok(seen.includes('merged — merged in PR #1632 — sprint waits for no closed QA run'), seen.join('\n'));
     assert.ok(!seen.includes('ci_pr — PR closed without a merge — close the ticket or reopen the PR'), seen.join('\n'));
     const ghCalls = await calls(callsFile);
     const openReads = ghCalls.filter(args => args[0] === 'pr' && args[1] === 'list' && args.includes('open')).length;
