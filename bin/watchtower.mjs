@@ -802,6 +802,7 @@ async function closeSprintSweep(sprints) {
         ['issue', 'close', String(ticket.ticket), '--repo', config.repo, '--comment', comment], 60000);
       if (outcome.code === 0) {
         console.log(`sprint close: ticket #${ticket.ticket} closed`);
+        unitIssuesSource.at = 0;
       } else {
         const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
         failures.push(`#${ticket.ticket}: ${why}`);
@@ -816,6 +817,7 @@ async function closeSprintSweep(sprints) {
         ['issue', 'close', String(sprint.umbrella), '--repo', config.repo, '--comment', summary], 60000);
       if (outcome.code === 0) {
         console.log(`sprint close: umbrella #${sprint.umbrella} closed`);
+        unitIssuesSource.at = 0;
         closeSprintFailures.delete(cardId);
         if (config.telegramOn) {
           try { await notifyOwner(summary); }
