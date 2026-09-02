@@ -1,128 +1,71 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyReadyAt, readyForAcceptance } from '../bin/ready.mjs';
+import { readyBlocker, readyForAcceptance } from '../bin/ready.mjs';
 
-function readySprint() {
-  return {
+const run = (ticket, title, createdAt, closedAt) => ({
+  ticket, title, qaRun: true, labels: ['qa-run'], createdAt,
+  open: !closedAt, closedAt: closedAt ?? null,
+});
+
+const finding = (ticket, mergedAt, overrides = {}) => ({
+  ticket, title: `QA finding ${ticket}`, labels: ['qa'], open: true,
+  merged: mergedAt ? { number: ticket + 100, mergedAt } : null,
+  ...overrides,
+});
+
+test('readyBlocker replays sprints 1863 and 1803 from the latest closed QA walk', () => {
+  const sprint1863 = {
     units: [
-      { ticket: 4101, merged: { number: 501 } },
-      { ticket: 4102, merged: { number: 502 } },
+      { ticket: 1867, merged: { number: 1877, mergedAt: '2026-09-02T02:37:09Z' } },
+      { ticket: 1868, merged: { number: 1869, mergedAt: '2026-09-02T07:25:00Z' } },
     ],
     qaTickets: [
-      {
-        ticket: 4191,
-        labels: ['qa'],
-        createdAt: '2026-08-30T10:00:00.000Z',
-        open: true,
-        merged: { number: 591 },
-      },
-      {
-        ticket: 4192,
-        labels: ['QA-RUN'],
-        createdAt: '2026-08-30T11:00:00.000Z',
-        open: false,
-        closedAt: '2026-08-30T11:30:00.000Z',
-      },
+      run(1882, 'QA R2 — CABINET-ADD-FIX-002', '2026-09-02T07:56:00Z', '2026-09-02T11:37:05Z'),
+      run(1883, 'QA R2 duplicate', '2026-09-02T08:09:00Z', '2026-09-02T08:17:00Z'),
+      finding(1885, '2026-09-02T10:43:00Z'),
     ],
   };
-}
+  assert.equal(readyBlocker(sprint1863), null, 'the later-created duplicate is not the latest closed walk');
+  assert.equal(readyForAcceptance(sprint1863), true);
 
-test('ready for acceptance requires each of its four conditions independently', () => {
-  assert.equal(readyForAcceptance(readySprint()), true);
-
-  const unitNotMerged = readySprint();
-  unitNotMerged.units[0].merged = null;
-  assert.equal(readyForAcceptance(unitNotMerged), false, 'every work unit must be merged');
-
-  const findingNotFinished = readySprint();
-  findingNotFinished.qaTickets[0].merged = null;
-  assert.equal(readyForAcceptance(findingNotFinished), false, 'every QA finding must be merged or closed');
-
-  const latestWalkOpen = readySprint();
-  latestWalkOpen.qaTickets[1].open = true;
-  latestWalkOpen.qaTickets[1].closedAt = null;
-  assert.equal(readyForAcceptance(latestWalkOpen), false, 'the latest QA run must be closed');
-
-  const olderWalkOpen = readySprint();
-  olderWalkOpen.qaTickets.unshift({
-    ticket: 4190,
-    labels: ['qa-run'],
-    createdAt: '2026-08-30T09:00:00.000Z',
-    open: true,
-  });
-  assert.equal(readyForAcceptance(olderWalkOpen), false, 'every QA ticket must be merged or closed');
-
-  const findingAfterWalk = readySprint();
-  findingAfterWalk.qaTickets.push({
-    ticket: 4193,
-    labels: ['qa'],
-    createdAt: '2026-08-30T11:01:00.000Z',
-    open: false,
-    closedAt: '2026-08-30T11:20:00.000Z',
-  });
-  assert.equal(readyForAcceptance(findingAfterWalk), false, 'a QA finding created after the latest walk requires another walk');
+  const sprint1803 = {
+    units: [{ ticket: 1686, merged: { number: 1741, mergedAt: '2026-09-01T16:23:00Z' } }],
+    qaTickets: [
+      run(1826, 'QA R1 — CAF3-TAIL-001', '2026-09-01T01:17:00Z', '2026-09-02T05:50:30Z'),
+      finding(1829, '2026-08-31T23:41:00Z'),
+      finding(1856, '2026-09-02T05:23:00Z'),
+      finding(1857, null, { open: false, closedAt: '2026-09-02T05:30:00Z' }),
+    ],
+  };
+  assert.equal(readyBlocker(sprint1803), null, 'findings filed during the walk do not matter once their fixes predate its close');
+  assert.equal(readyForAcceptance(sprint1803), true);
 });
 
-test('readyAt is applied once, cleared by a post-walk QA ticket, and reset after the next walk', () => {
-  const original = { id: 'sprint-4', title: 'Sprint Four', readyAt: null };
-  const first = applyReadyAt(original, readySprint(), '2026-08-30T12:00:00Z');
-  assert.equal(original.readyAt, null, 'the pure helper does not mutate pipeline state');
-  assert.deepEqual(first, {
-    card: { ...original, readyAt: '2026-08-30T12:00:00.000Z' },
-    becameReady: true,
-    cleared: false,
+test('readyBlocker names the next fact or hand-cut QA ticket the sprint needs', () => {
+  const base = () => ({
+    units: [{ ticket: 4101, merged: { number: 501, mergedAt: '2026-09-02T09:00:00Z' } }],
+    qaTickets: [run(4192, 'QA R2 — Sprint Four', '2026-09-02T10:00:00Z', '2026-09-02T11:00:00Z')],
   });
 
-  const kept = applyReadyAt(first.card, readySprint(), '2026-08-30T12:30:00Z');
-  assert.equal(kept.card.readyAt, first.card.readyAt);
-  assert.equal(kept.becameReady, false, 'a later sweep does not ring again');
-  assert.equal(kept.cleared, false);
+  const unitOpen = base();
+  unitOpen.units[0].merged = null;
+  assert.equal(readyBlocker(unitOpen), 'unit #4101 not merged');
 
-  const incompleteFacts = readySprint();
-  incompleteFacts.units[0].merged = null;
-  const preserved = applyReadyAt(kept.card, incompleteFacts, '2026-08-30T12:30:30Z');
-  assert.equal(readyForAcceptance(incompleteFacts), false);
-  assert.equal(preserved.card.readyAt, kept.card.readyAt, 'an unrelated false condition does not erase prior readiness');
-  assert.equal(preserved.becameReady, false);
-  assert.equal(preserved.cleared, false);
+  const findingOpen = base();
+  findingOpen.qaTickets.unshift(finding(4191, null));
+  assert.equal(readyBlocker(findingOpen), 'finding #4191 open');
 
-  const afterWalk = readySprint();
-  afterWalk.qaTickets.push({
-    ticket: 4193,
-    labels: ['qa'],
-    createdAt: '2026-08-30T11:05:00.000Z',
-    open: false,
-    closedAt: '2026-08-30T11:20:00.000Z',
-  });
-  const cleared = applyReadyAt(kept.card, afterWalk, '2026-08-30T12:31:00Z');
-  assert.equal(cleared.card.readyAt, null);
-  assert.equal(cleared.becameReady, false);
-  assert.equal(cleared.cleared, true);
+  const walkOpen = base();
+  walkOpen.qaTickets[0] = run(4192, 'QA R2 — Sprint Four', '2026-09-02T10:00:00Z', null);
+  assert.equal(readyBlocker(walkOpen), 'QA run #4192 open');
 
-  afterWalk.qaTickets.push({
-    ticket: 4194,
-    qaRun: true,
-    labels: ['qa-run'],
-    createdAt: '2026-08-30T13:00:00.000Z',
-    open: false,
-    closedAt: '2026-08-30T13:30:00.000Z',
-  });
-  const reset = applyReadyAt(cleared.card, afterWalk, '2026-08-30T14:00:00Z');
-  assert.equal(reset.card.readyAt, '2026-08-30T14:00:00.000Z');
-  assert.equal(reset.becameReady, true, 'a later closed walk creates a fresh notification edge');
-  assert.equal(reset.cleared, false);
-});
+  const noWalk = base();
+  noWalk.qaTickets = [];
+  assert.equal(readyBlocker(noWalk), 'no closed QA run');
 
-test('readiness is not guessed without a QA run or ticket creation times', () => {
-  const noWalk = readySprint();
-  noWalk.qaTickets = noWalk.qaTickets.filter(ticket => !ticket.labels.includes('QA-RUN'));
-  assert.equal(readyForAcceptance(noWalk), false);
-
-  const noWalkTime = readySprint();
-  delete noWalkTime.qaTickets[1].createdAt;
-  assert.equal(readyForAcceptance(noWalkTime), false);
-
-  const noFindingTime = readySprint();
-  delete noFindingTime.qaTickets[0].createdAt;
-  assert.equal(readyForAcceptance(noFindingTime), false);
+  const fixedAfterWalk = base();
+  fixedAfterWalk.qaTickets.unshift(finding(4193, '2026-09-02T11:01:00Z'));
+  assert.equal(readyBlocker(fixedAfterWalk),
+    'finding #4193 merged after QA R2 closed — no QA R3 ticket: cut it');
+  assert.equal(readyForAcceptance(fixedAfterWalk), false);
 });

@@ -11,6 +11,7 @@
 import path from 'node:path';
 import { readJsonSoft, writeJsonAtomic } from './state-file.mjs';
 import { lanesLine } from './sprint-facts.mjs';
+import { readyBlocker } from './ready.mjs';
 import {
   BadRequest, send, sendText, readBody,
   clipText, toonTable, agentParams,
@@ -265,7 +266,6 @@ function normCard(raw) {
     summary: str(src.summary, LIMIT.summaryOnDisk).trim(),
     stage,
     createdAt,
-    readyAt: isoOr(src.readyAt, null),
     stageHistory,
     counters,
     consecutiveFails: int(src.consecutiveFails),
@@ -606,7 +606,6 @@ async function createCard(body) {
     summary: checkedSummary(body.summary),
     stage: 'spec',
     createdAt: now,
-    readyAt: null,
     stageHistory: [{ stage: 'spec', enteredAt: now, leftAt: null }],
     counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
     consecutiveFails: 0,
@@ -1037,22 +1036,6 @@ export async function listPipelineCards() {
   return st.cards;
 }
 
-// Readiness is computed by the board from sprint facts, but the one-shot clock
-// belongs to the persistent card. Null deliberately clears it when a newer QA
-// ticket invalidates the earlier walk.
-export async function setCardReadyAt(id, readyAt) {
-  let next = null;
-  if (readyAt != null) {
-    next = isoOr(readyAt, null);
-    if (!next) throw new BadRequest('readyAt must be an ISO timestamp or null');
-  }
-  return commit(st => {
-    const card = need(st.cards, id);
-    card.readyAt = next;
-    return card;
-  });
-}
-
 function cardExtras(c, all = []) {
   const extra = { shadow: null };
   if (sprintMap.has(c.id)) extra.sprint = sprintMap.get(c.id);
@@ -1085,13 +1068,10 @@ function unitTitle(u) {
 }
 
 function unitTargetStage(u) {
-  // Merged is delivered to main, not accepted: the unit is done once its
-  // ticket is closed after the merge (decision 13) — the PR's auto-close does
-  // not count. For a rollout unit that close follows the production probe.
-  // A QA finding closed with no fix behind it is accepted the same way.
+  // A merged unit remains merged until both its ticket and the sprint umbrella
+  // are closed. A QA finding closed without a merge is already finished.
   if (u.accepted) return 'done';
-  // On main, waiting: for the rest of the sprint, for the sprint's one QA run
-  // (runbook §7 — not a column, decision 19), for the acceptance close.
+  // On main, waiting for the rest of the sprint and its clean QA walk.
   if (u.merged) return 'merged';
   // CI/PR holds the PR from open to merge: CI runs and the reviewer reads the
   // same head at the same time (decision 20 — the review is not a wait after
@@ -1103,7 +1083,7 @@ function unitTargetStage(u) {
   return null;
 }
 
-export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage = '' } = {}) {
+export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage = '', blocker = null } = {}) {
   const mine = rows.filter(r => r.kind !== 'merge' && Number(r.ticket) === Number(u.ticket));
   const verb = u.qaRun ? 'QA run' : 'building';
   const live = mine.find(r => /^launch/.test(String(r.state)) && r.judged == null);
@@ -1127,7 +1107,7 @@ export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage
     return `sprint is ${sprintStage} — no scheduler serves this ticket`;
   }
   if (u.accepted) return u.pr ? `ticket closed — PR #${u.pr.number} is still open: close it by hand` : '';
-  if (u.merged) return `merged in PR #${u.merged.number} — waiting for the ticket to close`;
+  if (u.merged) return `merged in PR #${u.merged.number} — ${blocker ? `sprint waits for ${blocker}` : 'sprint closing'}`;
 
   if (u.pr) {
     const verdict = u.pr.verdictOnHead;
@@ -1263,14 +1243,10 @@ function unitPlan(cards, sprints) {
       const statusCard = card ?? { stage: 'ticketed', stageHistory: [], links: { pr: '' } };
       const text = fresh ? normalStatus(unitStatus(u, statusCard, {
         rows: AUTO_DISPATCH.rows, dispatchOn: AUTO_DISPATCH.on, sprintStage: sprint.stage,
+        blocker: readyBlocker(s),
       })) : null;
       const target = (fresh && card?.stage !== 'stuck') ? unitTargetStage(u) : null;
       let move = card && target && ROAD_ORDER.indexOf(target) > ROAD_ORDER.indexOf(card.stage) ? target : null;
-      // One step back that is a fact, not a failure (decision 18): a card that
-      // reached done on its ticket's auto-close — seen before the merge behind
-      // it was — goes back to Merged. Only while the sprint is not done: an
-      // accepted sprint stays as it was.
-      if (card && !move && card.stage === 'done' && target === 'merged' && u.merged && !u.accepted && sprint.stage !== 'done') move = target;
       // A verdict newer than the review badge closes the badge: the reader has
       // spoken, whichever way (decision 20).
       const head = str(u.pr?.headSha, LIMIT.slotish).trim();
@@ -1323,7 +1299,7 @@ function unitPlan(cards, sprints) {
         continue;
       }
       // Do not bounce a same-head failure back into CI/PR and reset its streak.
-      // A current-head GO, merge or acceptance is observable success and is
+      // A current-head GO, merge or close is observable success and is
       // the point where the consecutive-failure streak can end. A green check
       // alone may predate a later lane/review no-proof and cannot clear it.
       if ((reviewRecorded && noGo) || (ciRecorded && u.pr?.ci?.color === 'red')) move = null;
@@ -1336,11 +1312,9 @@ function unitPlan(cards, sprints) {
       }
     }
     // The sprint's own stage follows its units: development once any unit has
-    // started; QA once every unit is merged (or closed) — the scope is
-    // delivered, what remains is the acceptance of each unit and the findings
-    // the reviews left behind (decisions 11, 13); done once every unit is
-    // accepted, the QA tickets are closed and the umbrella is closed — the
-    // umbrella's close is the pass declared. Forward only, facts only.
+    // started; merged once every unit is merged (or closed); done once every
+    // merged ticket and the umbrella are closed and all QA tickets are done.
+    // Forward only, facts only.
     if (units.length && !s.stale?.length && sprint.stage !== 'stuck') {
       const allAccepted = units.every(u => u.accepted);
       const qaDone = qa.every(u => u.merged || !u.open);
@@ -1373,6 +1347,7 @@ export async function syncSprintUnits(sprints) {
       const sprintStage = state.cards.find(c => c.id === card.parent)?.stage ?? '';
       const text = step.fresh ? normalStatus(unitStatus(step.u, card, {
         rows: AUTO_DISPATCH.rows, dispatchOn: AUTO_DISPATCH.on, sprintStage,
+        blocker: readyBlocker(sprints.get(card.parent)),
       })) : null;
       if (!canWriteUnitStatus(card, text) || text === normalStatus(card.status.text)) return;
       card.status = text ? { text, at: now } : { text: '', at: null };
@@ -1388,7 +1363,6 @@ export async function syncSprintUnits(sprints) {
           summary: '',
           stage: 'ticketed',
           createdAt: now,
-          readyAt: null,
           stageHistory: [{ stage: 'ticketed', enteredAt: now, leftAt: null }],
           counters: { localFails: 0, ciFails: 0, reviewFails: 0 },
           consecutiveFails: 0,
@@ -1411,9 +1385,11 @@ export async function syncSprintUnits(sprints) {
       const card = state.cards.find(c => c.id === step.id);
       if (!card) continue;
       if (step.kind === 'sprint-stage') {
+        const before = snapshotNotify(card);
         if (ROAD_ORDER.indexOf(step.to) > ROAD_ORDER.indexOf(card.stage)) {
           enterStage(card, step.to, now); card.consecutiveFails = 0; moved++;
         }
+        rememberNotifications(before, card);
         continue;
       }
       if (step.kind === 'question' || step.kind === 'review-fail' || step.kind === 'ci-fail') {
@@ -1474,7 +1450,6 @@ function agentRow(card, now) {
     id: card.id,
     title: card.title,
     stage: card.stage,
-    readyAt: card.readyAt,
     clock: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     fails: failCell(card),
     review: card.review?.running ? { running: true, round: card.review.round, since: card.review.since, by: card.review.by || '' } : null,
@@ -1620,7 +1595,6 @@ async function buildAgentCard(card, withSpec = false) {
     title: card.title,
     stage: card.stage,
     created: card.createdAt,
-    readyAt: card.readyAt,
     clockTotal: fmtDur(cl.total) + (cl.running ? '' : ' (stopped)'),
     clockByStage: STAGES.filter(s => cl.byStage[s.key])
       .map(s => `${s.key} ${fmtDur(cl.byStage[s.key])}`).join(', ') || '-',
@@ -1688,7 +1662,6 @@ function renderToonCard(c) {
     `title: ${c.title}`,
     `stage: ${c.stage}`,
     `created: ${c.created}`,
-    `ready-at: ${c.readyAt ?? '-'}`,
     `clock: ${c.clockTotal}`,
     `clock-by-stage: ${c.clockByStage}`,
     `fails: ${c.fails}`,
