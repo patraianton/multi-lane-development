@@ -433,7 +433,7 @@ import('node:fs').then(({ existsSync }) => {
     });
     assert.match(
       board.output(),
-      /auto-dispatch: FAILED U1 #1516 -> hostA\/lane-1[\s\S]*auto-dispatch: LAUNCHED U1 #1516 -> hostB\/lane-2/,
+      /auto-dispatch: FAILED develop R1 U1 #1516 -> hostA\/lane-1[\s\S]*auto-dispatch: LAUNCHED develop R2 U1 #1516 -> hostB\/lane-2/,
     );
     assert.doesNotMatch(board.output(), /idle lanes: ALARM[^\n]*U1 #1516/);
     const api = (await getJson(board.base, '/api/pipeline?format=json')).body;

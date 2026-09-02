@@ -559,9 +559,11 @@ async function emitNotifications(card, events) {
   const s = BOARD.senders;
   for (const kind of events) {
     try {
-      if (kind === 'artifact' && s.artifactReady) await s.artifactReady(card);
-      else if (kind === 'stuck' && s.stuck) await s.stuck(card, stuckDigest(card));
-      else if (kind === 'done' && s.done) await s.done(card);
+      let sent = false;
+      if (kind === 'artifact' && s.artifactReady) { await s.artifactReady(card); sent = true; }
+      else if (kind === 'stuck' && s.stuck) { await s.stuck(card, stuckDigest(card)); sent = true; }
+      else if (kind === 'done' && s.done) { await s.done(card); sent = true; }
+      if (sent) console.log(`telegram: ${kind} sent (${card.title})`);
     } catch (e) {
       console.error(`telegram notify ${kind} failed: ${String(e?.message || e)}`);
     }
