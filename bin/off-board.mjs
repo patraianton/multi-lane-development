@@ -70,8 +70,8 @@ export function offBoardFindings({ cards = [], prs = [], issues = [], lanes = []
       detail: i.qa ? 'label qa' : (i.branch ? 'branch ' + i.branch : 'unit-shaped ticket'),
       reason: refs.length
         ? `a ticket in work that references ${refs.map(n => '#' + n).join(' ')} but spawned no card — none of those is a sprint on the board`
-        : 'a ticket in work that references no umbrella — the board only spawns cards for tickets that name their umbrella (body or comment)',
-      fix: 'write the umbrella number into the ticket ("continuation of #NNNN"); an after-sprint fix gets the qa label as well — TICKETING.md §7',
+        : 'a ticket in work that references no umbrella — the board only spawns cards for tickets that say Part of #<umbrella> (body or comment)',
+      fix: 'write Part of #<umbrella> into the ticket; an after-sprint fix gets the qa label as well — TICKETING.md §7',
     });
   }
 

@@ -81,6 +81,118 @@ function failureFacts({ ci = null, comments = [] } = {}) {
   };
 }
 
+const DROP_UMBRELLA = 1863;
+const DROP_TICKET = 1898;
+const DROP_SPRINT_ID = 'cabinet-add-fix';
+const DROP_CARD_ID = 'cabinet-add-fix-stray';
+const DROP_TITLE = 'U1 #1898 — stray statistics';
+const DROP_SPRINT_TITLE = 'CABINET-ADD-FIX-002 sprint';
+
+function dropCards({ stage = 'ticketed', lane = '', pr = '' } = {}) {
+  const enteredAt = '2026-09-02T19:10:15.000Z';
+  const base = {
+    spec: '', createdAt: enteredAt, counters: {}, consecutiveFails: 0,
+    lane: '', status: { text: '', at: null },
+  };
+  return [{
+    ...base,
+    id: DROP_SPRINT_ID,
+    title: DROP_SPRINT_TITLE,
+    stage: 'ticketed',
+    stageHistory: [{ stage: 'ticketed', enteredAt, leftAt: null }],
+    links: { ticket: `https://github.com/acme/web/issues/${DROP_UMBRELLA}` },
+  }, {
+    ...base,
+    id: DROP_CARD_ID,
+    title: DROP_TITLE,
+    stage,
+    lane,
+    parent: DROP_SPRINT_ID,
+    ticket: DROP_TICKET,
+    unit: 'U1',
+    stageHistory: [{ stage, enteredAt, leftAt: null }],
+    links: {
+      ticket: `https://github.com/acme/web/issues/${DROP_TICKET}`,
+      branch: `feat/${DROP_TICKET}`,
+      pr,
+    },
+  }];
+}
+
+function dropFacts({ stale = false, seen = true } = {}) {
+  const facts = {
+    lanes: [],
+    prs: [],
+    mergedPrs: [],
+    unitIssues: { [DROP_UMBRELLA]: [] },
+    ciJobs: {},
+    ciRunners: [],
+    umbrellaStates: { [DROP_UMBRELLA]: 'OPEN' },
+    staleSources: stale ? ['tickets'] : [],
+  };
+  if (seen) facts.seenTickets = [DROP_TICKET];
+  return facts;
+}
+
+async function startDropBoard({ stage, lane, pr, stale, seen } = {}) {
+  return startBoard({
+    config: { source: 'probe' },
+    files: {
+      'pipeline-cards.json': { cards: dropCards({ stage, lane, pr }) },
+      'sprint-facts.json': dropFacts({ stale, seen }),
+    },
+    env: dir => ({
+      WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+      WATCHTOWER_SPRINT_SWEEP_MS: '200',
+    }),
+  });
+}
+
+test('a fresh sweep drops an untouched unit whose seen ticket no longer names the sprint', async () => {
+  const board = await startDropBoard();
+  try {
+    const data = await until(board.base,
+      current => current.cards.some(card => card.id === DROP_SPRINT_ID)
+        && !current.cards.some(card => card.id === DROP_CARD_ID),
+      { pathName: '/pipeline/data' });
+    assert.deepEqual(data.cards.map(card => card.id), [DROP_SPRINT_ID]);
+    assert.equal(data.cards[0].stage, 'ticketed', 'dropping the stray unit does not move its empty sprint');
+    assert.equal(data.cards.some(card => card.id === DROP_CARD_ID), false,
+      'the spawned branch name does not prove that work started');
+
+    await settle(500);
+    const line = `card ${DROP_TITLE}: dropped — ticket #${DROP_TICKET} no longer names sprint ${DROP_SPRINT_TITLE}`;
+    assert.equal(board.output().split(line).length - 1, 1, 'the sync logs exactly one drop step');
+    assert.equal(board.output().includes(`card ${DROP_SPRINT_TITLE}:`), false,
+      'the drop plan has no sprint-stage step');
+  } finally {
+    await board.stop();
+  }
+});
+
+for (const [guard, options] of [
+  ['the card has left ticketed', { stage: 'development' }],
+  ['the card has a lane', { lane: 'radar/lane-1' }],
+  ['the card has a PR', { pr: 'https://github.com/acme/web/pull/1898' }],
+  ['the sprint facts are stale', { stale: true }],
+  ['the ticket was not read this sweep', { seen: false }],
+]) {
+  test(`drop planning keeps the unit when ${guard}`, async () => {
+    const board = await startDropBoard(options);
+    try {
+      await until(board.base,
+        current => Boolean(current.cards.find(card => card.id === DROP_SPRINT_ID)?.sprint),
+        { pathName: '/pipeline/data' });
+      await settle(400);
+      const data = await getJson(board.base, '/pipeline/data');
+      assert.ok(data.body.cards.some(card => card.id === DROP_CARD_ID));
+      assert.doesNotMatch(board.output(), /dropped — ticket #1898 no longer names sprint/);
+    } finally {
+      await board.stop();
+    }
+  });
+}
+
 test('a sprint card spawns unit cards from its tickets and the facts move them', async () => {
   const board = await startBoard({
     config: { source: 'probe' },

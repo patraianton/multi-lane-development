@@ -44,7 +44,7 @@ import {
 import { readRules, cutRules } from './rules.mjs';
 import { judgeLanes } from './lane-judge.mjs';
 import { readyForAcceptance } from './ready.mjs';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
+import { sprintFactsFor, umbrellaRefs, parseUnitBranch, parseUnitDeps, parseUnitDepsMerged, fleetLane, fleetSlot } from './sprint-facts.mjs';
 import { makeArtifactProbe } from './artifact-answers.mjs';
 import { parseLavish } from './lavish-config.mjs';
 import {
@@ -563,6 +563,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: new Map(Object.entries(f.ciJobs ?? {}).map(([k, v]) => [Number(k), v])),
       ciRunners: f.ciRunners ?? [],
       umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
+      seenTickets: new Set((Array.isArray(f.seenTickets) ? f.seenTickets : []).map(Number).filter(Number.isFinite)),
       mainCi: f.mainCi ?? null,
       openIssues: f.openIssues ?? [],
       staleSources: f.staleSources ?? [],
@@ -593,6 +594,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciJobs: ciJobsSource.value ?? new Map(),
       ciRunners: ciRunnersSource.value ?? [],
       umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
+      seenTickets: unitIssuesSource.ok ? seenTickets : new Set(),
       // Fails open by construction: a failed tick is null, and null is never
       // red, so one GitHub hiccup releases the hold instead of freezing work.
       mainCi: mainCiSource.ok ? (mainCiSource.value ?? null) : null,
@@ -2005,8 +2007,9 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   });
 });
 
-// Open unit tickets: a sprint's scope is the set of open issues
-// that reference its umbrella by number ("#1300") in the title or body. The
+// Open unit tickets: a sprint's scope is the set of open issues whose title,
+// body or comments say "Part of #1300", "Continuation of #1300", or start a
+// line with "Umbrella: #1300". A bare number is only a cross-reference. The
 // umbrella body itself is NOT read as a scope — it freezes on the day it is
 // written; a live ticket has an observable open/closed state instead. Issues
 // labelled `umbrella` are umbrellas, not units; issues labelled `wave-next`
@@ -2016,14 +2019,18 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
 // umbrella is whatever the unit tickets reference (the label is optional —
 // #1515 carries none), so the state of every referenced issue is kept.
 let umbrellaStates = new Map();
+let seenTickets = new Set();
 // Every open issue that is neither an umbrella nor parked, with what it
-// references (body AND comments — a "continuation of #1515" written as a
-// comment counts, 29.08): the off-board watch reads this list.
+// deliberately names (body AND comments count): the off-board watch reads
+// this list.
 let openWorkIssues = [];
 const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const repo = config.repo;
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
-  if (!repo) return byUmbrella;
+  if (!repo) {
+    seenTickets = new Set();
+    return byUmbrella;
+  }
   const gate = await githubGate();
   if (gate) throw new Error(`held: ${gate}`);
   // Closed units are read too: a sprint card shows a finished unit as done,
@@ -2039,9 +2046,8 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
     if (labels.includes('umbrella')) { states.set(it.number, issueState.get(it.number)); continue; }
     if (labels.includes('wave-next')) continue;
-    const refs = new Set();
     const text = [it.title, it.body ?? '', ...(it.comments ?? []).map(c => c.body ?? '')].join('\n');
-    for (const m of text.matchAll(/#(\d{3,5})\b/g)) refs.add(Number(m[1]));
+    const refs = new Set(umbrellaRefs(text));
     refs.delete(it.number);
     const qaRun = labels.includes('qa-run');
     const branch = parseUnitBranch(it.body) || `feat/${it.number}`;
@@ -2073,6 +2079,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   }
   for (const n of byUmbrella.keys()) if (issueState.has(n)) states.set(n, issueState.get(n));
   umbrellaStates = states;
+  seenTickets = new Set(work.map(issue => issue.number));
   openWorkIssues = work;
   return byUmbrella;
 });

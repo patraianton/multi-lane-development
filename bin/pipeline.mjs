@@ -1311,6 +1311,15 @@ function unitPlan(cards, sprints) {
         plan.push({ kind: 'refresh', id: card.id, u, fresh, lane, pr, branch, slot, unit, move, resetFails, reviewDone, verdictAt });
       }
     }
+    const sprintTickets = new Set([...units, ...qa].map(u => u.ticket));
+    if (!s.stale?.length && s.seenTickets instanceof Set) {
+      for (const card of cards) {
+        if (card.parent !== sprintId || sprintTickets.has(card.ticket)) continue;
+        if (card.stage !== 'ticketed' || card.lane !== '' || card.links.pr !== '') continue;
+        if (!s.seenTickets.has(card.ticket)) continue;
+        plan.push({ kind: 'drop', id: card.id, ticket: card.ticket, sprintId });
+      }
+    }
     // The sprint's own stage follows its units: development once any unit has
     // started; merged once every unit is merged (or closed); done once every
     // merged ticket and the umbrella are closed and all QA tickets are done.
@@ -1384,6 +1393,13 @@ export async function syncSprintUnits(sprints) {
       }
       const card = state.cards.find(c => c.id === step.id);
       if (!card) continue;
+      if (step.kind === 'drop') {
+        const sprint = state.cards.find(c => c.id === step.sprintId);
+        const index = state.cards.indexOf(card);
+        state.cards.splice(index, 1);
+        lines.push(`card ${card.title}: dropped — ticket #${step.ticket} no longer names sprint ${sprint.title}`);
+        continue;
+      }
       if (step.kind === 'sprint-stage') {
         const before = snapshotNotify(card);
         if (ROAD_ORDER.indexOf(step.to) > ROAD_ORDER.indexOf(card.stage)) {

@@ -14,6 +14,13 @@ export function umbrellaOf(link) {
   return m ? Number(m[1]) : null;
 }
 
+// A unit names its sprint deliberately. Bare issue numbers are cross-references,
+// not membership; comments count because callers join all ticket text first.
+export function umbrellaRefs(text) {
+  return [...String(text ?? '').matchAll(/(?:\b(?:part of|continuation of)\s+|^\s*umbrella:\s*)#(\d{3,5})\b/gim)]
+    .map(match => Number(match[1]));
+}
+
 // "SALON-U5: migration 133" → "U5"; "U16 rollout" → "U16"; else ''.
 export function unitLabel(title) {
   const m = /\bU(\d{1,3})\b/i.exec(String(title ?? ''));
@@ -170,12 +177,14 @@ export function ciSlotSummary(runners = []) {
 // prs / mergedPrs: [{ number, url, branch, ci?, draft?, mergedAt? }];
 // umbrellaStates: Map(umbrella number -> 'OPEN' | 'CLOSED') from the same issue
 //   list, or null when unknown — a sprint is done only once its umbrella is closed;
+// seenTickets: Set of open work ticket numbers read in this sweep; absent means
+//   none were observed and cannot prove that a unit left a sprint;
 // unitIssues: Map(umbrella number -> [{ number, title, url, state, closedAt, branch, deps, labels, qa }]) —
 //   deps = the ticket numbers the unit's body says it depends on (parseUnitDeps);
 //   qa = the issue carries the `qa` label: a QA ticket (the findings a sprint's
 //   reviews left behind), listed apart from the work units as `qaTickets`.
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
-export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], umbrellaStates = null, staleSources = [], at = null } = {}) {
+export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], umbrellaStates = null, seenTickets = new Set(), staleSources = [], at = null } = {}) {
   const out = new Map();
   const ciSlots = ciSlotSummary(ciRunners);
   for (const card of cards ?? []) {
@@ -359,6 +368,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
     out.set(card.id, {
       umbrella,
       umbrellaOpen,
+      seenTickets: seenTickets instanceof Set ? seenTickets : new Set(),
       units: work,
       qaTickets,
       lanes: bound,

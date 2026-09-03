@@ -41,6 +41,22 @@ test('a ticket in work is one shaped like a unit; off the board when it referenc
   assert.match(f[1].reason, /references #1499 but spawned no card/);
 });
 
+test('a bare issue number is no umbrella reference and the finding advertises the membership phrase', () => {
+  const issues = [{
+    number: 1898,
+    title: 'CI change',
+    body: 'The gate held PR #1863 for 2 h.',
+    branch: 'feat/1898',
+    refs: [],
+  }];
+  const [finding] = offBoardFindings({ cards, issues });
+  assert.equal(finding.ref, '#1898');
+  assert.match(finding.reason, /references no umbrella/);
+  assert.match(finding.reason, /Part of #<umbrella>/);
+  assert.match(finding.fix, /Part of #<umbrella>/);
+  assert.doesNotMatch(finding.fix, /continuation of/i);
+});
+
 test('a busy lane is on the board by the branch a card carries or the TASK file it reads', () => {
   const lanes = [
     { host: 'mac', lane: 'lane-6', busy: true, branch: 'feat/salon-u01-readiness' },
