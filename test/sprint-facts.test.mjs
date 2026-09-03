@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sprintFactsFor, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane, fleetSlot, parseUnitDepsMerged } from '../bin/sprint-facts.mjs';
+import { sprintFactsFor, umbrellaRefs, parseUnitBranch, parseUnitDeps, unitLabel, umbrellaOf, lanesLine, runnerHost, ciSlotSummary, fleetLane, fleetSlot, parseUnitDepsMerged } from '../bin/sprint-facts.mjs';
 
 test('the ticket body yields the pinned branch; titles yield the unit label', () => {
   assert.equal(parseUnitBranch('**Base:** `main` @ `bd69`.\n**Branch:** `feat/salon-u05-migration-133`\n**Protected area:** DB'),
@@ -16,6 +16,26 @@ test('the ticket body yields the pinned branch; titles yield the unit label', ()
   assert.equal(unitLabel('a ticket without a unit'), '');
   assert.equal(umbrellaOf('https://github.com/acme/web/issues/1515'), 1515);
   assert.equal(umbrellaOf('https://github.com/acme/web/pull/12'), null);
+});
+
+test('only deliberate membership phrases name a sprint umbrella', () => {
+  assert.deepEqual(umbrellaRefs('the gate held PR #1863 for 2 h'), []);
+  assert.deepEqual(umbrellaRefs('Part of #1863.'), [1863]);
+  assert.deepEqual(umbrellaRefs('continuation of #1863'), [1863]);
+  assert.deepEqual(umbrellaRefs('Umbrella: #1863'), [1863]);
+  assert.deepEqual(umbrellaRefs('the umbrella: #1863 was closed'), []);
+  assert.deepEqual(umbrellaRefs('#1863 regression'), []);
+  assert.deepEqual(umbrellaRefs('Part of #1863 (QA R2).\ndepends on: #1880'), [1863]);
+});
+
+test('sprint facts carry only tickets seen in this sweep and default to none', () => {
+  const card = { id: 'c1', links: { ticket: 'https://github.com/acme/web/issues/1863' } };
+  const absent = sprintFactsFor([card]).get('c1').seenTickets;
+  assert.ok(absent instanceof Set);
+  assert.deepEqual([...absent], []);
+
+  const supplied = sprintFactsFor([card], { seenTickets: new Set([1898]) }).get('c1').seenTickets;
+  assert.deepEqual([...supplied], [1898]);
 });
 
 test('the ticket body yields its dependencies: every "depends on" line, none is nothing', () => {
