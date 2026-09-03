@@ -198,8 +198,7 @@ finished-and-green #1481 lay ready for 8.5 h.
 
 A finding from a unit's review that is judged not worth a round **now** does not go into a
 "tails" note and does not stay in the sprint log: it goes into a **QA ticket** — an issue
-labelled `qa` that references the umbrella — the number in the body or in a comment, the
-board reads both. One QA ticket per finding worth fixing
+labelled `qa` whose body or a comment says `Part of #<umbrella>`. One QA ticket per finding worth fixing
 (a fix is a PR like any other, bound by branch); findings that are cosmetics may share
 one ticket, closed when the decision to drop them is written. The board puts a QA ticket
 in the `qa` column the day it is written and holds the sprint in `qa` after its last unit
@@ -272,8 +271,8 @@ process. Three ways onto the board, and no fourth:
 
 | What | How it gets a card |
 | --- | --- |
-| A unit of a sprint | its ticket names the umbrella (`#NNNN` in the body or a comment) and pins its branch (§2.3); the board spawns the unit card itself |
-| A fix after the sprint — an acceptance finding, a review leftover, an owner's remark | a **QA ticket**: the umbrella's number in the ticket + the label `qa` (§2.11); the card lands in the QA column of that sprint, even after the umbrella is closed |
+| A unit of a sprint | its ticket says `Part of #NNNN` (first line, or a comment) and pins its branch (§2.3); the board spawns the unit card itself |
+| A fix after the sprint — an acceptance finding, a review leftover, an owner's remark | a **QA ticket**: `Part of #<umbrella>` in the ticket (body or comment) + the label `qa` (§2.11); the card lands in the QA column of that sprint, even after the umbrella is closed |
 | Work that belongs to no sprint | a card of its own on the board (`+ Card` or `POST /pipeline/card/create`) with the ticket attached — and if it is more than one unit, it is a sprint: spec → grill → tickets |
 
 A PR is on the board through its ticket's pinned branch (or `links.pr` on a hand card);
