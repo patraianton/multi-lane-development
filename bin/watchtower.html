@@ -72,6 +72,7 @@
   .hbtn.on { border-color: var(--focus); color: var(--focus); }
   .hbtn.plus { font-size: 13px; font-weight: 700; padding: 0 8px; }
   .hbtn.gear { font-size: 12px; padding: 0 7px; }
+  .view-switch { display: inline-flex; align-items: center; gap: 4px; }
 
   /* ---- "add a card" bar ---- */
   .handbar {
@@ -148,6 +149,7 @@
     display: block; flex: 1 1 auto; min-height: 0; overflow: auto;
     padding: 11px 14px 20px; scrollbar-gutter: stable;
   }
+  .pipeline > [hidden] { display: none !important; }
 
   /* Sprints that have split into unit cards live here, above the columns:
      a sprint does not move on its own — its stage follows its units — and
@@ -336,6 +338,50 @@
   .sprint-band .sprint-card-detail { min-width: 0; }
   .sprint-band .sprint-card-detail[hidden] { display: none; }
   .sprint-band .sprint-card-detail .pcard { margin: 7px 0 0; }
+
+  /* Finished sprint families keep the band's compact one-line language, then
+     open to a read-only clock table. Nothing in this zone can change a card. */
+  .history-zone { display: none; gap: 10px; width: 100%; max-width: 1840px; min-width: 0; }
+  .history-zone.on { display: grid; }
+  .history-zone .history-item { min-width: 0; }
+  .history-zone .sprint-brief {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; padding: 9px 12px;
+    border: 1px solid var(--line); border-left: 3px solid var(--sprint); border-radius: 9px; cursor: pointer;
+    background: linear-gradient(145deg, var(--panel-lift), var(--panel) 54%, #0f1924);
+    box-shadow: 0 6px 16px var(--shadow-deep), inset 0 1px rgba(255, 255, 255, .035);
+  }
+  .history-zone .sprint-brief:hover { border-color: var(--line-hot); }
+  .history-zone .hand-card .sprint-brief { cursor: default; }
+  .history-zone .sprint-brief .caret {
+    display: inline-block; width: 0; height: 0; border-left: 5px solid currentColor;
+    border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform 120ms ease;
+  }
+  .history-zone .history-item.open .caret { transform: rotate(90deg); }
+  .history-zone .sprint-brief .name { min-width: 0; color: var(--ink); font-weight: 750; font-size: 13px; overflow-wrap: anywhere; }
+  .history-zone .sprint-brief .stat { color: var(--ink-mid); font: 10px var(--mono); white-space: nowrap; }
+  .history-zone .sprint-brief .stat b { color: var(--ink); font-weight: 700; }
+  .history-zone .sprint-brief .stat.qa b { color: var(--working); }
+  .history-zone .sprint-brief .hint { margin-left: auto; color: var(--ink-dim); font: 9px var(--mono); white-space: nowrap; }
+  .history-zone .clk { color: var(--ink-dim); font: 700 10px/1.2 var(--mono); }
+  .history-zone .history-detail {
+    min-width: 0; margin: 6px 0 0; padding: 6px 10px 9px; overflow-x: auto;
+    border: 1px solid var(--line-soft); border-radius: 7px; background: rgba(8, 13, 19, .42);
+  }
+  .history-zone .history-table { width: 100%; min-width: 520px; border-collapse: collapse; table-layout: fixed; }
+  .history-zone .history-table td {
+    padding: 6px 7px; vertical-align: top; border-bottom: 1px solid var(--line-soft);
+    color: var(--ink-mid); font: 10px/1.35 var(--mono); overflow-wrap: anywhere;
+  }
+  .history-zone .history-table tr:last-child td { border-bottom: 0; }
+  .history-zone .history-table .history-unit { width: 34%; color: var(--ink); }
+  .history-zone .history-table .history-unit b { color: var(--focus); }
+  .history-zone .stage-times { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+  .history-zone .stage-time {
+    display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 5px;
+    border: 1px solid var(--line-soft); border-radius: 5px; background: rgba(17, 27, 38, .72);
+  }
+  .history-zone .stage-name { color: var(--ink-mid); font-size: 9px; }
+
   .stuck-zone {
     display: none; margin-bottom: 13px; padding: 9px 10px 10px;
     border: 1px solid #6a2224; border-radius: 9px;
@@ -751,6 +797,10 @@
 <header>
   <h1>Watchtower <span class="proj" id="project"></span></h1>
   <div class="num" id="pipe-counts"></div>
+  <nav class="view-switch">
+    <button data-view="board" class="hbtn on" type="button">Board</button>
+    <button data-view="history" class="hbtn" type="button">History</button>
+  </nav>
   <div class="flag" id="board-warn" hidden></div>
   <div class="swept" id="swept">swept never</div>
   <span class="spacer"></span>
@@ -779,6 +829,7 @@
   <div class="dispatch-zone" id="dispatch-zone"></div>
   <div class="journal-zone collapsed" id="journal-zone"></div>
   <div class="pboard" id="pboard"></div>
+  <div class="history-zone" id="history-zone" hidden></div>
 </div>
 
 <!-- The gear: the project whose herdr windows feed the facts and window names
@@ -935,7 +986,35 @@ const LINK_FIELDS = ['ticket', 'branch', 'pr', 'artifact'];
 let pipeSeen = '';
 let pipeTimer = null;
 let lastPipe = null;
+let view = 'board';
 const openCards = new Set();
+const openHistory = new Set();
+
+// history-partition start
+function splitBoardHistory(cards) {
+  const all = Array.isArray(cards) ? cards : [];
+  const finishedAt = card => {
+    const segments = Array.isArray(card && card.stageHistory) ? card.stageHistory : [];
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i] && segments[i].stage === 'done') {
+        const at = Date.parse(segments[i].enteredAt);
+        return Number.isFinite(at) ? at : 0;
+      }
+    }
+    return 0;
+  };
+  const roots = all.filter(card => card && card.stage === 'done' && !card.parent)
+    .map((card, index) => ({ card, index, finished: finishedAt(card) }))
+    .sort((a, b) => b.finished - a.finished || a.index - b.index)
+    .map(item => item.card);
+  const rootIds = new Set(roots.map(card => card.id));
+  const children = all.filter(card => card && rootIds.has(card.parent));
+  const board = all.filter(card => card && !rootIds.has(card.id) && !rootIds.has(card.parent));
+  const history = roots.concat(children);
+  return { board, history };
+}
+// history-partition end
+
 // What the owner unfolded in this browser: sprints by id, the off-board zone,
 // the auto-dispatch and journal zones. Absent = folded (the default, owner 29.08).
 let folds = { sprints: {}, offboard: true, dispatch: true, journal: true };
@@ -1035,6 +1114,14 @@ function fmtDur(ms) {
   return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
 }
 
+// qa-words start
+function qaWords(n, open) {
+  if (!n) return 'QA: none';
+  const findings = n + ' finding' + (n === 1 ? '' : 's');
+  return open ? 'QA: ' + findings + ' · ' + open + ' open' : 'QA: ' + findings + ' · all closed';
+}
+// qa-words end
+
 // How long a card spends in one column: every visit any card on the board
 // ever paid to that stage, a visit still open counted up to now. The average
 // says where a sprint's hours actually go — a column that is full is not the
@@ -1117,6 +1204,83 @@ function calcClocks(c) {
     }
   }
   return { total, totalFrom, byStage };
+}
+
+function historyFinishedAt(c) {
+  const segments = Array.isArray(c.stageHistory) ? c.stageHistory : [];
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i] && segments[i].stage === 'done') return segments[i].enteredAt || '';
+  }
+  return c.createdAt || '';
+}
+
+function historyFinishedWords(c) {
+  const at = historyFinishedAt(c);
+  const parsed = Date.parse(at);
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : '-';
+}
+
+function historyFailures(cards) {
+  return cards.reduce((sum, card) => {
+    const counts = card.counters || {};
+    return sum + (Number(counts.localFails) || 0) + (Number(counts.ciFails) || 0)
+      + (Number(counts.reviewFails) || 0);
+  }, 0);
+}
+
+function historyStageClocks(c) {
+  const clocks = calcClocks(c);
+  const stages = ROAD.concat(['stuck']).filter(stage => clocks.byStage[stage]);
+  return '<div class="stage-times"><span class="history-sep">·</span>' + stages.map(stage => {
+    const slot = clocks.byStage[stage];
+    return '<span class="stage-time"><span class="stage-name">' + esc(STAGE_TITLE[stage] || stage) + '</span>'
+      + clockSpan('clk', slot.base, slot.from) + '</span>';
+  }).join('') + '</div>';
+}
+
+function historyChildRow(c) {
+  const unit = c.unit || 'unit';
+  const ticket = Number(c.ticket) || 0;
+  const prefix = unit + ' #' + ticket;
+  let title = String(c.title || '').trim();
+  if (title.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+    title = title.slice(prefix.length).replace(/^\s*(?:[—–:-]\s*)?/, '');
+  }
+  return '<tr><td class="history-unit"><b>' + esc(prefix) + '</b>' + (title ? ' ' + esc(title) : '') + '</td>'
+    + '<td>' + historyStageClocks(c) + '</td></tr>';
+}
+
+function historyRow(c, history) {
+  const children = history.filter(child => child.parent === c.id);
+  const sprint = children.length > 0;
+  const clocks = calcClocks(c);
+  const open = sprint && openHistory.has(c.id);
+  const base = '<span class="name">' + esc(c.title) + '</span>'
+    + '<span class="stat">· finished <b>' + esc(historyFinishedWords(c)) + '</b></span>'
+    + '<span class="stat">· total ' + clockSpan('clk', clocks.total, clocks.totalFrom) + '</span>';
+  if (!sprint) {
+    return '<div class="history-item hand-card" style="--sprint: ' + sprintHue(c.id) + '">'
+      + '<div class="sprint-brief">' + base
+      + '<span class="stat">· <b>' + historyFailures([c]) + '</b> failures on the way</span>'
+      + '<span class="stat">· hand card</span></div></div>';
+  }
+
+  const qa = children.filter(child => child.unit === 'QA');
+  const units = children.filter(child => child.unit !== 'QA');
+  const facts = c.sprint && typeof c.sprint === 'object' ? c.sprint : null;
+  const qaTickets = Array.isArray(facts && facts.qaTickets) ? facts.qaTickets : [];
+  const qaOpen = qaTickets.filter(ticket => ticket.open && !ticket.merged).length;
+  return '<div class="history-item' + (open ? ' open' : '') + '" style="--sprint: ' + sprintHue(c.id) + '">'
+    + '<div class="sprint-brief" data-history-toggle="' + esc(c.id) + '" role="button" tabindex="0" aria-expanded="'
+    + (open ? 'true' : 'false') + '" title="' + (open ? 'close the sprint history' : 'open the sprint history') + '">'
+    + '<span class="caret"></span>' + base
+    + '<span class="stat">· <b>' + units.length + '</b> units</span>'
+    + '<span class="stat qa">· <b>' + esc(qaWords(qa.length, qaOpen)) + '</b></span>'
+    + '<span class="stat">· <b>' + historyFailures(children) + '</b> failures on the way (local/ci/review)</span>'
+    + '<span class="hint">· click to open</span></div>'
+    + (open ? '<div class="history-detail"><table class="history-table"><tbody>'
+      + children.map(historyChildRow).join('') + '</tbody></table></div>' : '')
+    + '</div>';
 }
 
 function hasCardStatus(c) {
@@ -1458,7 +1622,7 @@ function sprintBandBrief(c) {
     + '<span class="stat"><b>' + active + '</b> in flight</span>'
     + (counts.queued ? '<span class="stat"><b>' + counts.queued + '</b> queued</span>' : '')
     + (qa.length || s.umbrellaOpen != null
-      ? '<span class="stat qa' + (qaOpen ? '' : ' clean') + '"><b>QA ' + qaOpen + '</b>/' + qa.length
+      ? '<span class="stat qa' + (qaOpen ? '' : ' clean') + '"><b>' + esc(qaWords(qa.length, qaOpen)) + '</b>'
         + (s.umbrellaOpen == null ? '' : ' · umbrella ' + (s.umbrellaOpen ? 'open' : 'closed')) + '</span>'
       : '')
     + '<span class="stat"><b>' + (s.free || []).length + '</b>/' + (Number(s.laneCount) || 0) + ' lanes free</span>'
@@ -1796,32 +1960,42 @@ function renderPipeline(d) {
   const snap = snapshotInputs();
   usesSubscriptions = Boolean(d.usesSubscriptions);
   const cards = d.cards ?? [];
-  const stuck = cards.filter(c => c.stage === 'stuck');
+  const { board, history } = splitBoardHistory(cards);
+  const stuck = board.filter(c => c.stage === 'stuck');
+  const historyRoots = history.filter(c => !c.parent);
+  const boardView = view === 'board';
 
   // The header counts what this view is about: cards on the road, cards that
   // are done, and cards that are looping.
-  const moving = cards.filter(c => !['stuck', 'done'].includes(c.stage)).length;
+  const moving = board.filter(c => !['stuck', 'done'].includes(c.stage)).length;
   const ob = d.offBoard && typeof d.offBoard === 'object' ? d.offBoard : {};
   const obList = Array.isArray(ob.findings) ? ob.findings : [];
   const swept = d.swept && typeof d.swept === 'object' ? d.swept : { age: '-', stuck: false };
   $('swept').textContent = 'swept ' + swept.age + ' ago';
   $('swept').classList.toggle('stale', swept.stuck === true);
-  $('pipe-counts').innerHTML = '<b>' + cards.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
-    + stuck.length + '</b> stuck · <b>'
-    + cards.filter(c => c.stage === 'done').length + '</b> done'
-    + (obList.length ? ' · <b class="ob-count">' + obList.length + '</b> off the board' : '');
+  $('pipe-counts').innerHTML = boardView
+    ? '<b>' + board.length + '</b> cards · <b>' + moving + '</b> moving · <b>'
+      + stuck.length + '</b> stuck · <b>'
+      + board.filter(c => c.stage === 'done').length + '</b> done'
+      + (obList.length ? ' · <b class="ob-count">' + obList.length + '</b> off the board' : '')
+    : '<b>' + historyRoots.length + '</b> finished sprint' + (historyRoots.length === 1 ? '' : 's');
+  for (const button of document.querySelectorAll('.view-switch [data-view]')) {
+    button.classList.toggle('on', button.dataset.view === view);
+  }
 
   // A sprint that has split into unit cards is shown in the band above the
   // columns, not in a column.
-  const bandIds = new Set(cards.filter(c => c.sprint && cards.some(u => u.parent === c.id)).map(c => c.id));
+  const bandIds = new Set(board.filter(c => c.sprint && board.some(u => u.parent === c.id)).map(c => c.id));
   const band = $('sprint-band');
+  band.hidden = !boardView;
   band.classList.toggle('on', bandIds.size > 0);
   band.innerHTML = bandIds.size
     ? '<h2>Sprint' + (bandIds.size === 1 ? '' : 's') + ' — ' + bandIds.size + ' in flight · stage follows the unit cards below</h2>'
-      + '<div class="band-stack">' + cards.filter(c => bandIds.has(c.id)).map(sprintBandPanel).join('') + '</div>'
+      + '<div class="band-stack">' + board.filter(c => bandIds.has(c.id)).map(sprintBandPanel).join('') + '</div>'
     : '';
 
   const zone = $('stuck-zone');
+  zone.hidden = !boardView;
   zone.classList.toggle('on', stuck.length > 0);
   zone.innerHTML = stuck.length
     ? '<h2>Stuck — ' + stuck.length + ' card' + (stuck.length === 1 ? '' : 's')
@@ -1831,6 +2005,7 @@ function renderPipeline(d) {
 
   // Off the board: what is being built without a card, each with its fix.
   const obZone = $('offboard-zone');
+  obZone.hidden = !boardView;
   obZone.classList.toggle('on', obList.length > 0 || Boolean(ob.skipped));
   obZone.classList.toggle('collapsed', folds.offboard);
   obZone.innerHTML = obList.length || ob.skipped
@@ -1850,6 +2025,7 @@ function renderPipeline(d) {
   const ad = d.autoDispatch && typeof d.autoDispatch === 'object' ? d.autoDispatch : {};
   const adRows = Array.isArray(ad.rows) ? ad.rows : [];
   const dzZone = $('dispatch-zone');
+  dzZone.hidden = !boardView;
   dzZone.classList.toggle('on', adRows.length > 0);
   dzZone.classList.toggle('collapsed', folds.dispatch);
   dzZone.innerHTML = adRows.length
@@ -1869,12 +2045,13 @@ function renderPipeline(d) {
       }).join('')
     : '';
 
+  $('pboard').hidden = !boardView;
   $('pboard').style.setProperty('--pcols', String(ROAD.length));
   const dwellNow = Date.now();
-  const dwellCards = cards.filter(c => !bandIds.has(c.id));
+  const dwellCards = board.filter(c => !bandIds.has(c.id));
   const reviewAvg = reviewDwell(dwellCards, dwellNow);
   $('pboard').innerHTML = ROAD.map(key => {
-    const list = cards.filter(c => columnOf(c.stage) === key && !bandIds.has(c.id));
+    const list = board.filter(c => columnOf(c.stage) === key && !bandIds.has(c.id));
     const dwell = key === 'done' ? null : stageDwell(dwellCards, COLUMN_STAGES[key] ?? [key], dwellNow);
     const rv = key === 'ci_pr' ? reviewAvg : null;
     return '<div class="pcol ' + esc(key) + '"><h2>' + esc(STAGE_TITLE[key])
@@ -1887,11 +2064,37 @@ function renderPipeline(d) {
       + '</div>';
   }).join('');
 
+  const historyZone = $('history-zone');
+  historyZone.hidden = boardView;
+  historyZone.classList.toggle('on', !boardView);
+  historyZone.innerHTML = historyRoots.length
+    ? historyRoots.map(c => historyRow(c, history)).join('')
+    : '<div class="empty">no finished sprint yet</div>';
+
   wirePipeline(d);
   restoreInputs(snap);
 }
 
 function wirePipeline(data) {
+  for (const button of document.querySelectorAll('.view-switch [data-view]')) {
+    button.onclick = () => {
+      view = button.dataset.view === 'history' ? 'history' : 'board';
+      if (lastPipe) renderPipeline(lastPipe);
+    };
+  }
+  for (const row of document.querySelectorAll('#history-zone [data-history-toggle]')) {
+    const toggle = () => {
+      const id = row.dataset.historyToggle;
+      if (openHistory.has(id)) openHistory.delete(id); else openHistory.add(id);
+      if (lastPipe) renderPipeline(lastPipe);
+    };
+    row.onclick = toggle;
+    row.onkeydown = ev => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      ev.preventDefault();
+      toggle();
+    };
+  }
   for (const el of document.querySelectorAll('#sprint-band [data-sprint-toggle]')) {
     el.onclick = (ev) => { ev.stopPropagation(); toggleSprintFold(el.dataset.sprintToggle); };
   }
