@@ -1448,6 +1448,12 @@ export async function syncSprintUnits(sprints) {
 // One card in six fields — the sweep an agent does over the whole pipeline.
 // Everything long (the spec, the comments, the history) is behind ?full=1 or
 // /api/pipeline/card/<id>, exactly as on /api/board.
+export function qaWords(n, open) {
+  if (!n) return 'QA: none';
+  const findings = `${n} finding${n === 1 ? '' : 's'}`;
+  return open ? `QA: ${findings} · ${open} open` : `QA: ${findings} · all closed`;
+}
+
 function failCell(card) {
   const c = card.counters;
   const bits = [];
@@ -1496,6 +1502,24 @@ async function buildAgentPipeline(cards, full, port) {
   const now = Date.now();
   const rows = cards.map(c => agentRow(c, now));
   const stuck = cards.filter(c => c.stage === 'stuck');
+  const history = cards.filter(c => c.stage === 'done' && !c.parent).map(c => {
+    const children = cards.filter(child => child.parent === c.id);
+    const qa = children.filter(child => child.unit === 'QA');
+    const facts = sprintMap.get(c.id);
+    const openQa = (facts?.qaTickets ?? []).filter(ticket => ticket.open && !ticket.merged).length;
+    const done = [...c.stageHistory].reverse().find(segment => segment.stage === 'done');
+    const ownFailures = c.counters.localFails + c.counters.ciFails + c.counters.reviewFails;
+    const childFailures = children.reduce((n, child) => n + child.counters.localFails
+      + child.counters.ciFails + child.counters.reviewFails, 0);
+    return {
+      name: c.title,
+      finished: done?.enteredAt ?? c.createdAt,
+      total: fmtDur(clocks(c, now).total),
+      units: children.filter(child => child.unit !== 'QA').length,
+      qa: qaWords(qa.length, openQa),
+      failures: children.length ? childFailures : ownFailures,
+    };
+  }).sort((a, b) => Date.parse(b.finished) - Date.parse(a.finished));
   const view = {
     pipeline: `http://127.0.0.1:${port}`,
     generated: new Date(now).toISOString(),
@@ -1508,6 +1532,7 @@ async function buildAgentPipeline(cards, full, port) {
       failures: cards.reduce((n, c) =>
         n + c.counters.localFails + c.counters.ciFails + c.counters.reviewFails, 0),
       units: cards.filter(c => c.parent).length,
+      history: history.length,
       offBoard: OFF_BOARD.findings.length,
       idleLanes: IDLE_LANES.findings.length,
       autoDispatch: AUTO_DISPATCH.rows.length,
@@ -1520,6 +1545,7 @@ async function buildAgentPipeline(cards, full, port) {
       fails: failCell(c),
       waiting: fmtDur(clocks(c, now).byStage.stuck ?? 0),
     })),
+    history,
     offBoard: OFF_BOARD.findings.map(f => ({
       kind: f.kind, ref: f.ref, title: clipText(f.title || '-', full), reason: f.reason, fix: f.fix,
     })),
@@ -1548,11 +1574,13 @@ function renderToonPipeline(v) {
     `pipeline: ${v.pipeline}`,
     `generated: ${v.generated}`,
     `swept: ${v.swept.at ?? 'never'} (age ${v.swept.age})`,
-    `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done}, failures ${s.failures}`,
+    `summary: cards ${s.cards}, stuck ${s.stuck}, done ${s.done}, failures ${s.failures}, history ${s.history}`,
     toonTable('cards', v.cards, ['id', 'title', 'stage', 'clock', 'fails'],
       'no cards in the pipeline'),
     toonTable('stuck', v.stuck, ['id', 'title', 'fails', 'waiting'],
       'no card is stuck'),
+    toonTable('history', v.history, ['name', 'finished', 'total', 'units', 'qa', 'failures'],
+      'no finished sprint yet'),
     toonTable('off-board', v.offBoard, ['kind', 'ref', 'title', 'reason', 'fix'],
       v.offBoardSkipped ? `watch skipped — ${v.offBoardSkipped}` : 'nothing is built off the board'),
     toonTable('idle-lanes', v.idleLanes, ['card', 'free', 'queued', 'since'],
@@ -1575,6 +1603,7 @@ function renderToonPipeline(v) {
     + ' stuck — three failures in a row, waiting for a human');
   help.push('clock is the delivery time; done is terminal and does not count'
     + ' — a finished card shows "(stopped)"');
+  help.push('history: finished sprints and hand cards, one row each — the record of how long a sprint took; the same cards still appear in cards');
   help.push('off-board: what is being built without a card — open PRs no card carries, tickets in work that name no umbrella, busy lanes on unknown branches');
   help.push('idle-lanes: a lane assigned to a sprint is free while a unit of that sprint is'
     + ' queued with nothing in its way — lanes are for code and nothing else holds them;'
