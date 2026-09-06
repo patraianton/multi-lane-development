@@ -1,0 +1,17 @@
+{
+  "memoryFiles": ["AGENTS.md"],
+  "budgetTokens": 5000,
+  "skillsDir": ".agents/skills",
+  "minGapEvidence": 2,
+  "maxTranscripts": "all",
+  "analysis": { "agent": "claude", "model": "claude-sonnet-5", "effort": "medium" },
+  "synthesis": { "agent": "claude", "model": "claude-opus-5", "effort": "high" },
+  "discovery": {
+    "harnesses": ["claude", "codex"],
+    "since": "30d",
+    "cloneRoots": ["C:/Users/panto/projects/_conveyor/MLD"],
+    "minUserTurns": 2
+  },
+  "jobs": 3,
+  "timeoutSeconds": 600
+}
