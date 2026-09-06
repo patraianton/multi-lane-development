@@ -19,3 +19,4 @@ reports/
 .env.*
 !.env.example
 .lavish/
+CLAUDE.md
