@@ -82,14 +82,21 @@ see the working copy; edit the rules, commit, and the next task carries the new 
 
 - The verdict is plain text in a PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
   the head line, or with another head, it is not a verdict.
-- The board merges with `gh pr merge --squash` when required `pr-ci` is green on the exact head, GO is on that
-  head, the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge` label. `pr-ci` builds the PR
+- The board merges with `gh pr merge --squash` when both required checks — `pr-ci` **and** `pr-ci-full` — are green
+  on the exact same head, GO is on that head, the PR is not draft, GitHub says mergeable, and the ticket has no
+  `hold-merge` label. An ordinary push runs `pr-ci` scoped (the affected tests only); the full pipeline — build,
+  every test, the browser smoke — runs only on a PR labelled `full-ci`, and `pr-ci-full` is its receipt on the
+  head. **The board adds the `full-ci` label itself** the moment a card is ready to merge and only that evidence is
+  missing (`merge.mjs:needsFullCiLabel`, the merge sweep); the label sticks, so later pushes run full too, and the
+  table says `full-ci label added — waiting for the full run`. A `pr-ci-full` that is red, pending or not reported
+  yet is *waiting*, never a red check: no fix task, no merge attempt spent, no stuck card. A full run that really
+  fails turns `pr-ci` red, and that is an ordinary red check. `pr-ci` builds the PR
   head, never the combination with `main` (`pr-ci.yml:37`, `:134`, `:426` use `head.sha`); with `strict` off the
   first build of a combination is `main`'s own run; red main → the board holds every main-based task and dispatches
   the `main-fix` ticket the cutter cuts (RULES cutter 7, decision 19). The squash subject and body go to `gh` as a
   file, never on the command line.
-- On a `no-review` ticket the GO requirement is dropped — the green check on the exact head, not draft, mergeable
-  and no `hold-merge` are enough. A `NO-GO` on that head still blocks the merge and gets its fix round: dropped is
+- On a `no-review` ticket the GO requirement is dropped — both green checks on the exact head, not draft, mergeable
+  and no `hold-merge` are enough (the board labels it `full-ci` on the same conditions). A `NO-GO` on that head still blocks the merge and gets its fix round: dropped is
   the requirement, never a standing stop order. On a PR shared by several tickets every one of them must carry
   `no-review`, and `hold-merge` on any of them still wins.
 - `NO-GO`, a red check or a conflict → a fix task on the same branch; then the reviewer runs again on the new head.
