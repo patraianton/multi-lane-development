@@ -27,7 +27,8 @@ _Avoid_: card (the pre-pipeline Watchtower used card = window; that meaning is r
 **Stage**:
 A pipeline column a card is in: Spec, Grilled, Ticketed, Development, Local check, CI/PR,
 Done — plus Stuck, where a card lands after its third consecutive failure and waits for a
-founder. Ticketed is the CTO writing the GitHub tickets (one per work unit) after the grill;
+founder. Ticketed is the CTO writing the GitHub tickets after the grill — one work ticket for the
+whole sprint (owner, 2026-09-04), plus the umbrella and the QA round-1 ticket;
 the card leaves it for Development only with a ticket link attached.
 _Avoid_: column (UI term)
 
@@ -70,8 +71,8 @@ pushed desktop data and delivered hooks was removed; local source mode reads her
 A GitHub issue the CTO creates in the product repo after the grill, under the CTO's own
 GitHub App identity, during the Ticketed stage. The **umbrella ticket** is the durable,
 public record of the finished spec — its link on the card (`links.ticket`) is what opens
-the way to Development; a **unit ticket** is one grill unit's work order, bound to the
-umbrella (docs/TICKETING.md).
+the way to Development; a **unit ticket** is a work order bound to the umbrella — a sprint is cut
+as one work ticket, so it normally has exactly one (docs/history/TICKETING.md).
 _Avoid_: issue (when speaking of the pipeline artifact), card (the board entity)
 
 **Founder**:

@@ -1,275 +1,235 @@
-# Multi-Lane Development
+# MLD — the board that runs product sprints
 
-A delivery pipeline for a coding-agent fleet, served by one process (`bin/watchtower.mjs` — the board, still called Watchtower inside the code and the services).
+MLD is one Node process (`bin/watchtower.mjs`, no dependencies, Node ≥ 22) on the owner's Windows PC at
+`http://127.0.0.1:4878`, scheduling a fleet of Codex lanes that build the product repo
+`Baltic-OrangesLV/vincheck-latvia` (autopase.lv). It reads facts — busy lanes, open pull requests, GitHub tickets —
+moves cards by them, puts work on free lanes, starts reviews, merges, counts failures and rings the owner. Nobody
+else starts a lane, a review or a merge. This page is the whole process; a sprint runs it top to bottom, once.
 
-The page is the **pipeline**: persistent **cards** in the board's own state. A founder writes a spec; the card then moves spec → grilled → ticketed → development → local check → CI/PR → merged → done, while live data (windows, lanes, branches, PRs) attaches to it. The original **windows view** — every herdr window of a project in columns, with a lane strip — was cut from the page on 2026-08-29 (decision 12); its data still feeds the pipeline (window names on cards and `/api/board` for agents) and is not drawn.
+| Who | Does |
+|---|---|
+| the partner (Lena) | writes the spec, answers the questions page |
+| the MLD session | spec intake — grill, questions page, tickets — plus `hold-merge` merges and the watch |
+| the board | everything from `ticketed` on: dispatch, review, fix, merge, QA, sprint close |
+| 8 Codex lanes | one task per run: write the ticket, review a PR head, fix one round, walk QA on production |
+| the owner | answers owner questions, unsticks cards, gets one line when the sprint closes |
 
-**Since 2026-08-30 the board is the scheduler**: it dispatches every lane task, starts reviews, merges and alarms by itself. How it works and how to run it: [`docs/BOARD.md`](docs/BOARD.md); the rules every agent gets: [`docs/RULES.md`](docs/RULES.md); the design: [`docs/specs/2026-08-30-board-is-the-scheduler.md`](docs/specs/2026-08-30-board-is-the-scheduler.md). Older contracts live in [`docs/history/`](docs/history/).
+A card sits in one stage at a time and the road is one-way:
+`spec → grilled → ticketed → development → local_check → ci_pr → merged → done`.
+`stuck` is not a stage of the road — it means a human has to look.
 
-A **card** is not a herdr **window**. Windows are evidence of work; cards are the work items. Terms are pinned in [`CONTEXT.md`](CONTEXT.md).
+## 1. The spec arrives, and is grilled
 
-This repository grew from the windows board through several waves. Older contracts live under [`docs/history/`](docs/history/). This README describes the code and current contracts as they stand. It does not claim a production run or a production test.
-
----
-
-## Pipeline stages
-
-The step-by-step instruction for every stage is one file: [`docs/history/RUNBOOK.md`](docs/history/RUNBOOK.md).
-
-A card sits in one stage at a time. The road is one-way:
-
-`spec → grilled → ticketed → development → local_check → ci_pr → merged → done`
-
-| Stage | Meaning |
-| --- | --- |
-| `spec` | A founder has written what is wanted; nothing is decided yet |
-| `grilled` | The CTO has interrogated the spec and folded the answers back in |
-| `ticketed` | The CTO is writing the GitHub tickets — one per work unit — before any development starts |
-| `development` | Code is being written on the assigned lane |
-| `local_check` | The local check runs on the same lane |
-| `ci_pr` | A pull request is open and CI runs on an assigned slot |
-| `qa` | The findings the reviews left behind are dealt with before anything is called done |
-| `done` | Terminal; the PR is merged, the card is finished |
-| `stuck` | Three failures in a row — a human has to look |
-
-`ticketed` records the phase between the grill and the code: the CTO writes the GitHub tickets (one per work unit) there, and the board refuses `ticketed → development` until the card carries a `links.ticket`. Entering `ticketed` from `grilled` requires the linked review artifact, if there is one, to be marked answered — the board marks it itself when founder answers appear ([`docs/history/GRILL.md`](docs/history/GRILL.md) §2).
-
-A **sprint** — a card whose `links.ticket` is an umbrella issue — splits into **unit cards** once it has left `grilled` and its unit tickets exist: one card per ticket, bound to the sprint, moved by facts alone (busy lane → `development`, the lane running the project's local check → `local_check`, PR open → `ci_pr`, PR merged → `qa`, ticket closed after the merge → `done` — merged is delivered, not accepted; the PR's own "Closes #N" does not count). The sprint card then leaves the columns for the **sprint band** above them, and its own stage follows the units: `development` once any unit has started, `qa` once every unit is merged or closed, `done` once every unit is accepted, its **QA tickets** — issues labelled `qa` that reference the umbrella, where the reviews' leftover findings are written — are closed and the umbrella is closed. A QA ticket is a card of its own in the QA column from the day it is written. Details: [`docs/API.md`](docs/API.md) (Unit cards).
-
-`stuck` is not a step of the road. A **failure** (`local`, `ci`, or `review`) sends the card back to `development` and raises that kind's counter plus `consecutiveFails`. The third consecutive failure sends it to `stuck` instead. A failure can only be reported from a stage where something actually ran (`development`, `local_check`, `ci_pr`, `qa`). From `spec`, `grilled` or `ticketed` it is a 400: nothing has been built yet.
-
-A successful step along the road resets `consecutiveFails` to zero. So does a human pulling the card out of `stuck` (`POST /pipeline/card/unstuck`). A judged fix ("the head changed") or review ("a verdict exists") does **not** reset it — only a develop PR, a closed qa-run ticket or a current-head GO counts as progress, so a review→fix carousel still reaches `stuck` on the third NO-GO.
-
-Each card keeps spec text, flat comments, links (`ticket`, `branch`, `pr`, `artifact`), lane, subscription, slot, per-stage clocks, and failure counters in `state/pipeline-cards.json`. The **clock** on the list is delivery time: every segment except `done`, which is terminal — a finished card shows `(stopped)`.
-
-**Status** is one sentence the board writes on every unit card of a served sprint — what it is doing or waiting for (`status.text`, `status.at`). It is not the stage and nobody writes it by hand.
-
-How a card is created, moved, failed, commented, and updated: [`docs/API.md`](docs/API.md).
-
----
-
-## Moving parts
-
-Each piece is a small Node process with no extra packages.
-
-| Piece | Process | What it does |
-| --- | --- | --- |
-| **Board server** | `bin/watchtower.mjs` | Serves the page, `/api/*`, and pipeline mutations. Listens on `127.0.0.1:4878`. |
-| **Telegram sender** | `bin/telegram-bot.mjs` | The board sends artifact-ready and done doorbells to the founders' group, plus stuck, idle-lane and ready-for-acceptance alarms to the owner. It never polls Telegram. |
-| **Artifact instance** | `deploy/lavish-worker/`, `bin/lavish-publish.mjs`, `bin/lavish-deploy.mjs` | Self-hosted Lavish on Cloudflare Workers: a published grill page gets a stable public HTTPS URL where the founders annotate; the CLI publishes, polls the answers in, and can set `links.artifact` on the card in the same command. See [`docs/ARTIFACT.md`](docs/ARTIFACT.md). |
-
-The grill itself (Artifact page, collecting founder answers, writing the GitHub tickets under the CTO's GitHub App) is work the CTO window does — ticket-writing is the `ticketed` stage, and `links.ticket` is what lets the card enter `development`. This repository stores the Artifact and ticket as `links` on the card and notifies Telegram when `links.artifact` first lands. It does not contain the CTO agent.
-
-Contract: [`docs/TELEGRAM.md`](docs/TELEGRAM.md).
-
----
-
-## Quick start
-
-Requirements for a local windows board: Node.js, herdr. Optional: `gh` (logged in) for pull requests and issues, and an ssh key for hosts that run build lanes. The Linux install kit requires Node.js 22 or newer; see [Deploy on a Linux host](#deploy-on-a-linux-host).
+The partner sends the spec to the owner over Telegram. The session copies it to
+`C:\Users\panto\projects\_conveyor\autopase.lv\specs\<SPRINT>\SPEC.md` with a `MANIFEST.sha256` beside it, then creates
+the card and moves it to `grilled`:
 
 ```
-node bin/watchtower.mjs
+POST /pipeline/card/create   {"title":"<SPRINT> — <what the sprint delivers>","spec":"<the SPEC.md text>"}
+POST /pipeline/card/move     {"id":"<card id>","to":"grilled"}
 ```
 
-The board serves `http://127.0.0.1:4878` and the page polls every three seconds. On Windows, `bin\watchtower.cmd` starts the same server and opens the page (`--open`). To run without a console window (autostart on logon), `bin\watchtower-hidden.vbs`.
+`<SPRINT>` is upper case, hyphenated, `<AREA>-<WHAT>-<NNN>` with a three-digit serial counting sprints in that area
+— `AUTOPASE-SEARCH-UX-005`, `AUTOPASE-MANUAL-PUBLICATION-001`. `MANIFEST.sha256` is `sha256sum` run in the sprint
+folder over `SPEC.md` and every attachment shipped with it (`sha256sum SPEC.md > MANIFEST.sha256`); it exists so a
+lane or a later session can prove with `sha256sum -c MANIFEST.sha256` that the spec it reads is the spec that arrived.
 
-Another port: set `WATCHTOWER_PORT` before starting (the older `AUTOPASE_BOARD_PORT` is still read as a fallback). Default is 4878.
+Five lenses then interrogate the spec in parallel, each against the product code at `origin/main`: complexity and
+slicing · acceptance subjects · external dependencies and money · landmines, read from `docs/history/LESSONS.md` and
+from the `GRILL-OUTCOME.md` files of earlier sprints in the same specs folder · the user path and how the result is
+proven on production. Every blocker has the shape "the spec says X, but `file:line` on
+main says Y" — a finding without a code citation is an opinion. A spec that arrives finished and owner-approved is
+grilled exactly like a draft: approval of the behaviour is not approval of the technical cut. The result is
+`GRILL-OUTCOME.md` beside the spec — blockers folded in as mandatory amendments, the work breakdown, the questions,
+and any drift between the spec's stated base commit and today's `origin/main` written down as a stated fact.
 
-If `ssh` or `gh` are not on the default path, point at them with `WATCHTOWER_SSH` and `WATCHTOWER_GH`. A second instance, or tests, can keep their own files with `WATCHTOWER_STATE_DIR` instead of `state/`.
+## 2. One questions page, and the owner zone
 
-The Telegram sender is imported by the board. Its self-test makes no network call:
+Every question for the owner or the partner goes on **one** Lavish page — multiple choice, no free text, the first
+option is the default decision. Questions reach the owner this way and no other: never mid-sprint, never in a
+separate message, never a second page.
 
-```
-node bin/telegram-bot.mjs --selftest
-```
-
-The test suite is plain `node --test` with no packages: `npm test`.
-
----
-
-## Pick a project on first run
-
-On the first run the board asks which project to watch. It groups the windows herdr currently has by project — the worktree root (`~/.herdr/worktrees/<project>/…`) or the repository the window sits in — and shows each one with how many windows it has. Pick a project and the board shows every window and every worktree of it. There is also **All windows**, which applies no filter at all.
-
-The choice is saved to `state/autopase-board.json`. The gear in the header opens the same screen again — to change the project and to restore windows you have hidden.
-
-Until a project is chosen, slow sources (ssh, `gh`) are not asked, and `/api/board` lists `project: no project chosen yet` under `problems`.
-
----
-
-## Off the board
-
-Everything being built is on the board — the watch (`bin/off-board.mjs`) checks it after every sprint sweep: an open PR no card carries, a ticket in work that names no umbrella, a busy lane on a branch no card carries. Findings stand in the amber **Off the board** zone above the columns and in `/api/pipeline` (`off-board` table), each with its fix.
-
-## Sources
-
-The server reads these on their own timers; the windows they describe are no longer drawn (decision 12) but still feed the cards and `/api/board`.
-
-| What | Source | How often |
-| --- | --- | --- |
-| Windows, tabs, agent state | `herdr api snapshot`, `herdr workspace list`, `herdr agent list` — or the last probe snapshot when `source` is `"probe"` | every 3 s locally |
-| The rule behind a state | `herdr agent explain <pane>` | every 12 s (local herdr only) |
-| Model, account, effort, context, PR numbers on screen | `herdr pane read <pane> --source visible` | every 12 s (local herdr only) |
-| Lanes on an hzlane host | `ssh … hzlane status` | every 45 s |
-| Lanes in a Mac kitchen | `ssh mac` — branch of each `<kitchen>/lane-*` folder plus live `codex exec` working directories | every 45 s |
-| Open PRs and CI colour | `gh pr list --repo <repo>` | every 60 s |
-| Umbrella issues and questions | `gh issue list --label umbrella` + `gh issue view` | every 120 s |
-| Umbrella number of a program | `<specsDir>/<PROGRAM>/PROGRAM-STATE.md`, line `umbrella: #NNNN` | every 30 s |
-| The window's last words | Claude session log (`*.jsonl`); else the previous session; else the last meaningful line on screen | every 3 s (by file mtime) |
-
-Every source refreshes on its own timer, so one dead source does not take the board down — it shows up as "sources not answering" / `problems`. In `probe` mode a snapshot older than `probeStaleSec` (default 60) is flagged `probe stale since …`.
-
-What herdr itself exposes: [`docs/herdr-api.md`](docs/herdr-api.md).
-
----
-
-## Agent API and `wt`
-
-Agents read the board without a browser. The page lives on `/data` and can change with the layout; agents read `/api/board` and `/api/pipeline`, whose fields are pinned.
+The session writes that page itself as `grill-outcome.html` from `GRILL-OUTCOME.md` — a **single-file** HTML page
+with every asset inlined (sibling files are not served), each question its own element with its options listed
+inside it, because a founder answers by annotating an element and an unannotatable question cannot be answered.
+Publish it, which also rings the doorbell:
 
 ```
-node bin/wt.mjs                 live windows board as short text
-node bin/wt.mjs --full          long texts in full, no clipping
-node bin/wt.mjs --json          the same shape as plain JSON
-node bin/wt.mjs --card <name>   one window in full
-node bin/wt.mjs pipeline        the delivery pipeline as short text
-node bin/wt.mjs pipeline --json
-node bin/wt.mjs card <id>       one pipeline card in full
-node bin/wt.mjs --help
+node bin/lavish-publish.mjs publish grill-outcome.html --card <card id>
 ```
 
-On Windows, `bin\wt.cmd` is the same command. `wt` computes nothing itself — it asks the running server. If the server is down it says so and exits 1.
-
-HTTP (default port 4878):
-
-```
-GET /api/board
-GET /api/board?format=json
-GET /api/board?full=1
-GET /api/board/card/<name>
-GET /api/pipeline
-GET /api/pipeline?format=json
-GET /api/pipeline?full=1
-GET /api/pipeline/card/<id>
-```
-
-`format` is `toon` (short text) or `json`. `full=1` lifts clipping on the list views. Unknown parameters, empty values, or the same parameter twice answer 400 with a hint.
-
-Field-by-field contract, pipeline mutations, and errors: [`docs/API.md`](docs/API.md).
-
----
-
-## Auth
-
-Founder sign-in: removed 31.08 — git history keeps it; the board is open on `127.0.0.1`.
-
----
-
-## Configuration
-
-Built-in defaults live in `bin/watchtower.mjs` (`DEFAULTS`). Overrides go in `state/autopase-board.json`, which is not in git:
-
-```json
-{
-  "project": "my-project",
-  "allWindows": false,
-  "hide": ["marketing"],
-  "repo": "acme/web",
-  "specsDir": "C:\\path\\to\\specs",
-  "askWords": ["QUESTION FOR THE CTO", "QUESTION FOR THE OWNER"],
-  "answerWords": ["CTO ANSWER", "OWNER SAYS"],
-  "hosts": {
-    "builder": { "target": "root@203.0.113.10", "key": "id_ed25519", "kind": "hzlane" },
-    "mac":     { "target": "mac", "kind": "mac", "kitchen": "~/kitchens/my-project", "connectTimeoutSec": 30 }
-  },
-  "source": "local",
-  "probeStaleSec": 60,
-  "subscriptions": ["cx1", "initech", "hz1"],
-  "telegram": {
-    "botToken": "123456:ABC…",
-    "chatId": "-1001234567890",
-    "ownerChatId": "1001",
-    "founders": [
-      { "name": "Ada", "tgUserId": 1001, "tag": "@ada", "owner": true },
-      { "name": "Bob", "tgUserId": 1002, "tag": "@bob", "owner": false }
-    ]
-  }
-}
-```
-
-- `project` / `allWindows` — set by the onboarding screen.
-- `hide` — windows never shown, by folder name or window label.
-- `repo` — `owner/name` for `gh`. Empty means GitHub is skipped.
-- `specsDir` — optional; without it there are no umbrella numbers.
-- `askWords` / `answerWords` — exact protocol markers your windows and issues use, in whatever language the team types. Until an answer marker appears after a question in the umbrella issue, the question counts as open.
-- `hosts` — where code is built. `kind: "hzlane"` asks `hzlane status` over ssh; `kind: "mac"` reads `<kitchen>/lane-*` folders and live `codex exec` processes. `connectTimeoutSec` (default 10) is ssh's handshake limit — raise it for a host behind a mesh VPN that drops the first packets.
-- `source` — `"local"` talks to herdr on this machine; `"probe"` uses the last posted snapshot. Lanes, PRs and CI still come from this host.
-- `subscriptions` — names the owner may assign with `POST /pipeline/assign-subscription`.
-- `telegram` — send-only notifications. `chatId` is the founders' group and `ownerChatId` is the owner's private chat. Missing, or present without `botToken` → no sends, one log line at start-up.
-
-The board also writes `state/autopase-seen.json` (when each pane was first seen in its current state — herdr does not keep that), `state/autopase-cards.json` (hidden and hand-typed window cards), `state/pipeline-cards.json`, and reads `state/probe-snapshot.json` when `source` is `"probe"`.
-
----
-
-## Deploy on a Linux host
-
-The board and herdr run on the same machine in the current setup; no probe executable pushes desktop data to a server. The systemd files remain available for a Linux installation, and probe source mode remains for loading a posted snapshot in tests or compatible deployments.
-
-Layout:
+It prints the public `…/session/<16-hex-key>` URL and sets `links.artifact`; on a card in `grilled` whose artifact
+link was empty, that first set is what tags both founders in the Telegram group — publishing and ringing the
+doorbell are one command. `--key <16hex>` republishes to the same URL. The credentials are the `lavish` block
+(`publicBaseUrl`, `apiToken`) in `state/autopase-board.json`, which is not in git. The board reads the page's state
+every 30 s and marks the card answered as soon as founder annotations exist; the card cannot leave `grilled` before
+that mark. Answers that arrived another way — Telegram, a call — are recorded by hand:
 
 ```
-/opt/watchtower/          application tree — overwrite on every update
-/opt/watchtower/state/    persistent state — must survive updates
-/etc/watchtower.env       environment overrides (created once)
-/etc/systemd/system/watchtower.service
+POST /pipeline/card/artifact-answered   {"id":"<card id>","answers":1,"by":"<who answered>"}
 ```
 
-From the machine that holds the repository:
+**The owner zone — the one definition.** The owner decides, never the pipeline: money; strategy; anything outgoing
+to external parties; the live bot and production environment variables or external access. Those questions carry
+**no default** — a deadline produces a reminder, not an assumed answer. Production database writes are *not* an
+owner checkpoint: they run under the backup regime (a verified restore net, a restore point taken right before the
+write) and the owner is informed after a restore, never asked before a write. Every other reversible product
+question the pipeline decides itself, in favour of the end user.
+
+## 3. Answers become tickets — one work ticket per sprint
+
+The founders' annotations are the authoritative answers; fold them into the spec first. Then write three issues in
+the product repo. These formats are the same text as the `cutter` section of `docs/RULES.md`, which the lanes are
+handed; the two must always agree.
+
+- **The umbrella issue** — what the sprint delivers, the line `grill passed:`, the spec bundle path, and the line
+  `Rules: docs/RULES.md @ <sha>` (`<sha>` = `git log -1 --format=%h -- docs/RULES.md` in this repo).
+- **One work ticket for the whole sprint** — one ticket, one lane, one PR, start to finish (owner's rule,
+  2026-09-04; a sprint is never cut into units, the eight-way cut of 03.09 cost 22 hours, and later QA findings
+  fold into one fix ticket the same way). First line `Part of #<umbrella>`; then the whole scope, in the files it
+  names; `depends on: none` unless another sprint's open PR must land first; a `Branch:` line only when
+  `feat/<ticket>` will not do; never `Closes #`, `Fixes #` or `Resolves #` in the instructions.
+- **The QA round-1 ticket** copied verbatim from `docs/QA-TICKET.md` — its viewport list and live-cabinet clause
+  are the point of it — label `qa-run`, first line `Part of #<umbrella>`, `depends on: #<work ticket>`.
+
+Acceptance criteria are commands with expected output, at least one of them red on `main` today; a visible result
+names the mock path and the verbatim spec line. A ticket touching migrations, schema, auth, deploy/env, payments or
+the scraper gets the label `hold-merge`; one that repairs a red `main` gets `main-fix`; one that changes only
+styles, texts or documentation may get `no-review`, but never together with `hold-merge` — `hold-merge` wins; one
+that needs no build may get `no-build`, which lets it run on the light lane (lane-3, `docs/FLEET.md`).
+
+Finish by hanging the **umbrella's** issue URL on the card and moving it — the board reads the umbrella number out
+of that URL, so it must be a full `…/issues/<n>` link, not a number and not the work ticket:
 
 ```
-rsync -a --exclude state/ --exclude .git/ ./ root@HOST:/opt/watchtower/
+POST /pipeline/card/update   {"id":"<card id>","links":{"ticket":"https://github.com/Baltic-OrangesLV/vincheck-latvia/issues/1923"}}
+POST /pipeline/card/move     {"id":"<card id>","to":"ticketed"}
 ```
 
-Then on the host:
+From here the board takes over. Nothing is built off the board: an open PR no card carries, a ticket in work naming
+no umbrella, or a busy lane on an unknown branch all show up in the amber **Off the board** zone.
+
+## 4. The board dispatches the lane
+
+The board builds `TASK-<ticket>.md` — a header (`Lane:`, `Branch:`, `Base:`, `Role:`, `Check:`,
+`Rules: docs/RULES.md @ <sha>`), then the `common` section plus the role's section of `docs/RULES.md` **as
+committed in this repo**, then the ticket verbatim — copies it to the lane's kitchen over `scp` and starts the
+lane. The lanes never see the working copy: edit the rules, commit, and the next task carries the new sha; no
+committed `docs/RULES.md` means nothing is dispatched at all, and the board says so on the page. Branch is the
+ticket's `Branch:` line, else `feat/<ticket number>`; base is `origin/main`. While `main`'s own `pr-ci` is red the
+board holds every task that would branch from `main` — reviews, fixes and merges keep running, because they are
+what makes `main` green again. An unknown or stale answer from GitHub is not red.
+
+When lanes are short the queue order is **review, fix, develop**: an open PR is finished before a new one starts.
+A lane belongs to whoever launched the task on it — before stopping a lane read its `TASK-<n>.md`, because a task
+you did not launch is not yours to stop; write on the ticket instead. (On 2026-08-30 a sprint window's stop script
+killed the board's own task on hostinger/lane-4 by lane number.) Hand-run work takes a reserved lane
+(`reserved` in `state/fleet-launch.json`) and never competes with the board for a free one.
+
+## 5. CI on every push — two modes
+
+An ordinary push to the PR runs the **scoped** gate: check `pr-ci`, the affected tests only, 7–10 minutes. The
+**full** pipeline — build, every test, the browser smoke, 35–50 minutes — runs only on a PR labelled `full-ci`, and
+check `pr-ci-full` is its receipt on that head. The board adds the `full-ci` label itself the moment a card it will
+merge is ready and only that evidence is missing. A `pr-ci-full` that is red, pending or not reported yet is
+**waiting**, never a red check: no fix task, no merge attempt spent, no stuck card. A full run that really fails
+turns `pr-ci` red, and that is an ordinary red check.
+
+## 6. Review, fix, merge
+
+The verdict is one plain-text PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without the
+head line, or with another head, it is not a verdict. A `NO-GO`, a red check or a conflict sends a fix round to the
+same branch; the reviewer then runs again on the new head. One live lane per PR head — a fix waits while a review
+of that head runs, and the other way round.
+
+The board merges with `gh pr merge --squash` when **both** `pr-ci` and `pr-ci-full` are green on the exact same
+head, the GO is on that head, the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge`. On a
+`no-review` ticket the GO requirement is dropped; a `NO-GO` on that head still blocks. On a PR shared by several
+tickets every one of them must carry `no-review`, and `hold-merge` on any of them still wins. A merge GitHub refuses is
+journalled with GitHub's own message; after three attempts the owner gets one line. **`hold-merge` PRs are merged
+by the session, by hand**, on green + GO — green meaning both checks on the current head. The board never adds
+`full-ci` to a `hold-merge` PR, so add it first and wait for the full run:
+`gh pr edit <n> -R Baltic-OrangesLV/vincheck-latvia --add-label full-ci`.
+
+## 7. The QA walk, then the close
+
+Once the work is merged the board sends the `qa-run` ticket to a Mac lane — a real headed browser on **production**,
+every locale and viewport the ticket lists, content counted rather than status codes. Cabinet surfaces are walked in
+the **live** cabinet as the QA account, never on the internal preview page, and the account is left clean.
+
+One finding = one ticket, filed at once, labelled `qa`; the exact title and body format is the `qa` role text in
+`docs/RULES.md`, which the walker is handed with its task. Those tickets are the **record** of the round, not the
+work order.
+
+The **fix** for a round is one ticket, the same rule as the sprint: the session folds the round's findings into a
+single `qa` ticket titled `QA R<n> findings — one fix on one lane (folds #…)`, whose body lists `Folds: #…` and
+appends every folded body verbatim as the spec, and closes those tickets as folded so the board runs one lane once
+instead of a serial chain of them. A finding already carried by an open PR with a GO stays separate. The folded
+ticket walks the full road — PR, review, board merge — before the next QA round. Round 3 still finding defects →
+`QUESTION` → the card goes `stuck`.
+
+A sprint closes when the work is merged, every QA finding is merged or closed, a QA walk is closed clean and
+nothing merged after that walk. **The board closes the remaining merged tickets, then the umbrella, itself**, and it
+is the board — not the session — that sends the closing line with the numbers to the owner's private Telegram chat.
+Whenever the session itself has to report to the owner — an incident, an answer he asked for — it uses that same
+shape: one line, numbers, plain words, no ticket numbers and no board jargon.
+
+## When something goes wrong
+
+Each card counts `consecutiveFails`: +1 on a `NO-GO`, a red check, or a lane freed without its proof. Only real
+progress breaks the streak — a develop PR, a closed `qa-run` ticket, a GO on the current head — so a review→fix
+carousel stops itself on the third `NO-GO`. Three in a row, or any ticket comment starting with `QUESTION`, sends
+the card to `stuck` and one Telegram line to the owner. That line is a **notification, not a question** — the board
+tells the owner a card stopped; it never asks him anything. The owner is asked exactly once per sprint, on the
+intake questions page of §2, and never again while the sprint runs. The session reads the ticket, fixes what
+stopped the card and unsticks it from the page or with
 
 ```
-bash /opt/watchtower/deploy/setup.sh
+POST /pipeline/card/unstuck   {"id":"<card id>"}
 ```
 
-`setup.sh` is idempotent. It requires Node.js 22 or newer already on `PATH`. It does not install Node, a reverse proxy, or TLS certificates. The board listens on `127.0.0.1:4878`; put a reverse proxy with TLS in front if anyone outside this host should open the page.
+and the board sends it again. The board also reports idle lanes, `main` turning red and green again, and a merge it
+gave up on. It only sends; nothing polls the bot.
 
-Units in `deploy/`:
+## Running the board
 
-| Unit | Command | Installed by `setup.sh`? |
-| --- | --- | --- |
-| `watchtower.service` | `node bin/watchtower.mjs` | Yes |
+`node bin/watchtower.mjs` serves the page and `/api/*` on `127.0.0.1:4878`, and the page polls every 3 s;
+`bin\watchtower-hidden.vbs` is the same with no console window (a Scheduled Task starts it at logon).
+`node bin/wt.mjs pipeline` asks the running server for the pipeline as short text. Tests are plain `npm test`.
 
-Operator guide: [`docs/DEPLOY.md`](docs/DEPLOY.md).
+Settings live in `state/autopase-board.json` (not in git, re-read every 30 s). `autoDispatch` is the only switch —
+`false` and the board only says what it would do. `repo`, `specsDir`, `hosts`, `lanes`, `ciSlots` describe the
+fleet; `check` is the local check written into task files; `telegram: { botToken, chatId, ownerChatId }` is the
+founders' group and the owner's private chat; `github: { account, tokenFile }` pins the identity every `gh` call
+runs as. That one **fails closed**: a missing or empty token file, or `gh api user` answering with another login,
+holds every GitHub sweep — sources, merges, dispatch — and alarms the owner; nothing ever falls back to whatever
+account the keyring holds (on 31.08 the keyring's active account turned out to be a banned one and every sweep
+died silently for hours). To rotate the token write the new one into the same file
+(`gh auth token -u <account> > state/github-token.txt`, `state/` is not in git); the board picks it up within 30 s,
+no restart. `state/fleet-launch.json` says which lane lives on which host and how it is launched.
 
----
+**Switching it on:** `npm test` green and `docs/RULES.md` committed; exactly one process on 4878
+(`netstat -ano | findstr :4878`) with the Scheduled Task registered; **`"autoDispatch": true` in
+`state/autopase-board.json`** — with it false the board narrates and sends nothing, and the dispatch rows read
+`would dispatch`, so check it every time (`grep autoDispatch state/autopase-board.json`, or `autoDispatchOn` in
+`GET /api/pipeline`); the `telegram` block and `check` in the same file, and `browser: true` on the Mac host in
+`state/fleet-launch.json`; the product repo with GitHub auto-merge off, no PR armed and stale tickets parked behind
+the label `wave-next` (the board ignores it) so the **Off the board** zone is empty.
 
-## Docs and decisions
+The board and herdr run on the same machine and no probe executable pushes desktop data anywhere, though the
+probe source mode remains for loading a posted snapshot in tests. The systemd units in `deploy/` install the same
+one process on a Linux host; it still listens on `127.0.0.1:4878`, so put TLS in front of it if anyone outside
+that host is to open the page.
 
-| File | Contents |
-| --- | --- |
-| [`CONTEXT.md`](CONTEXT.md) | Language: card, window, stage, slot, subscription, Status, lane, spec, grill, Artifact, probe, ticket, founder |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Earlier roadmap |
-| [`docs/API.md`](docs/API.md) | Agent API, pipeline mutations, and compatibility contracts |
-| [`docs/history/GRILL.md`](docs/history/GRILL.md) | The grill: lens method, outcome, Lavish-on-Cloudflare requirements |
-| [`docs/ARTIFACT.md`](docs/ARTIFACT.md) | The artifact pipeline: deploying the Lavish worker to Cloudflare, publishing, polling answers |
-| [`docs/TELEGRAM.md`](docs/TELEGRAM.md) | Send-only Telegram notifications and config |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Linux install |
-| [`docs/herdr-api.md`](docs/herdr-api.md) | What herdr provides and what it accepts back |
+## The rest of the repo
 
-Architecture notes:
-
-- [`docs/adr/0001-watchtower-becomes-the-pipeline.md`](docs/adr/0001-watchtower-becomes-the-pipeline.md) — the pipeline is built into Watchtower, not as a second app or on GitHub Issues
-- [`docs/adr/0002-board-server-lives-on-hetzner.md`](docs/adr/0002-board-server-lives-on-hetzner.md) — historical remote-host design; the current setup instead keeps the board and herdr on one machine without the removed probe executable
-- [`docs/adr/0004-grill-outcome-becomes-one-github-ticket.md`](docs/adr/0004-grill-outcome-becomes-one-github-ticket.md) — one GitHub ticket after the grill, written by the CTO's GitHub App
-
----
-
-## License
+- `AGENTS.md` — the job file for the session watching the board: what to check before accepting a sprint.
+- `docs/RULES.md` — the road text the lanes receive, pasted into every task file. **Its path and its six
+  `<!-- role: … -->` markers are read by code — never rename the file, never drop a marker.**
+- `docs/FLEET.md` — the servers, the 8 lanes and the CI slots; named on the board page itself.
+- `docs/API.md` — the HTTP contract: `/api/board`, `/api/pipeline`, card mutations, field shapes.
+- `docs/QA-TICKET.md`, `docs/ARTIFACT.md`, `docs/TELEGRAM.md` — the QA ticket template, the Lavish worker on
+  Cloudflare, the Telegram config; runtime error messages point at these exact paths.
+- `docs/history/`, `docs/adr/`, `docs/specs/` — archive: how things used to work, and why. Not required reading.
 
 MIT — see [`LICENSE`](LICENSE). Watchtower started as a fork of [sheepdog](https://github.com/patraianton/sheepdog).

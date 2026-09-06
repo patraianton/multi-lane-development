@@ -210,24 +210,26 @@ A card sits in one stage at a time:
 | --- | --- |
 | `spec` | a founder has written what is wanted; nothing is decided yet |
 | `grilled` | the CTO has interrogated the spec and folded the answers back in |
-| `ticketed` | the CTO is writing the GitHub tickets — one per work unit — before any development starts |
+| `ticketed` | the CTO is writing the GitHub tickets — one work ticket for the whole sprint — before any development starts |
 | `development` | code is being written on the assigned lane |
 | `local_check` | the local check runs on the same lane |
 | `ci_pr` | a PR is open and CI runs on the assigned slot |
-| `qa` | the findings the reviews left behind are dealt with — nothing is done while a QA ticket is open |
+| `merged` | the PR is on `main`; the sprint waits here for its QA walk and for the tickets to be closed |
 | `done` | terminal; the PR is merged, the card is finished |
 | `stuck` | three failures in a row — the loop itself is the problem, a human has to look |
 
 The road is one-way: `spec → grilled → ticketed → development → local_check →
-ci_pr → qa → done`. Nothing else is a move. `ticketed` records the
+ci_pr → merged → done` (`bin/pipeline.mjs` `STAGES`, `MOVES`). There is no `qa`
+stage: it was removed with decision 19, and a card stored in `qa` is read back as
+`merged`, or as `ticketed` if it is a QA ticket's own card. Nothing else is a move. `ticketed` records the
 phase between the grill and the code: after the grill the CTO writes the GitHub
-tickets (one per work unit) there, and the board refuses `ticketed →
+tickets (one work ticket for the whole sprint) there, and the board refuses `ticketed →
 development` until the card carries a `links.ticket` — entering `ticketed` from
 `grilled` is free. A **failure** (`local`, `ci` or
 `review`) puts the card back into `development` and raises both its own
 counter and `consecutiveFails`; the third consecutive failure sends it to `stuck`
 instead. A failure can only be reported from a stage where something was actually
-run — `development`, `local_check`, `ci_pr`, `qa`. From `spec`,
+run — `development`, `local_check`, `ci_pr`. From `spec`,
 `grilled` or `ticketed` it is a 400: nothing has been built yet, and answering it
 would carry the card into `development` around the grill and the tickets. Any stage passed successfully resets `consecutiveFails` to zero, and so
 does a human pulling the card out of `stuck` — the decision buys the card a fresh
@@ -283,7 +285,7 @@ listed one per row — `unit` (from the title, e.g. `U5`), `ticket`, `branch`
 the lane sits on the branch but nothing runs), `pr` (open PR with its CI, or
 `#N merged`), `state` (`queued`, `on lane`, `lane idle`, `pr open`, `pr
 green`, `pr red`, `merged`, `closed`) and `deps` — the tickets the unit's body
-says it depends on (every `depends on` line, TICKETING.md §2.4), each with the
+says it depends on (every `depends on` line, docs/history/TICKETING.md §2.4), each with the
 state of the unit it names (`#1527 U9 pr red, #1529 U11 merged`; `none`). In
 JSON a unit card carries them as `unitFacts.deps`: `{ ticket, unit, state,
 met }` — `met` is true once that unit is merged or its ticket closed, null for
@@ -300,7 +302,7 @@ id), `ticket`, `unit`, `links.ticket` / `links.branch` from the ticket,
 `links.pr` and `lane` refreshed from the facts every sweep, `sprint-of` in the
 card view. They start at `ticketed` and are walked forward by facts alone —
 busy lane → `development`, the lane running the project's local check →
-`local_check`, PR open → `ci_pr`, PR merged → `qa`, ticket closed after the
+`local_check`, PR open → `ci_pr`, PR merged → `merged`, ticket closed after the
 merge → `done` — never backwards, never out of `stuck`, and not at all while a
 source is stale.
 
@@ -317,7 +319,7 @@ findings, skipped }` and `/api/pipeline` an `off-board[N]{kind,ref,title,reason,
 table plus `summary.offBoard` — what is being built without a card: an open PR
 no card carries (`pr`), a ticket in work that names no umbrella (`ticket`), a
 busy lane on a branch no card carries (`lane`). `skipped` names the stale
-source when the watch did not run. EXECUTION.md "Off the board (the watch)".
+source when the watch did not run. docs/history/EXECUTION.md "Off the board (the watch)".
 
 **Idle lanes (decision 15).** `/pipeline/data` carries `idleLanes: { at, findings }`
 and `/api/pipeline` an `idle-lanes[N]{card,free,queued,since}` table plus
@@ -342,15 +344,16 @@ the table. A judged, failed or refused entry keeps the hold beside it.
 
 **QA tickets (decision 11).** An issue labelled `qa` that references the
 umbrella is not scope: it is where the findings a sprint's reviews left behind
-are written (TICKETING.md §2.11). The board lists it apart from the units as
+are written (docs/history/TICKETING.md §2.11). The board lists it apart from the units as
 `qaTickets` (`sprint.qa` / `sprint.qaOpen` in the counts, the `qa` table in the
-card view), spawns it as a card titled `QA #N — …` straight into `qa`, and moves
-it to `done` when the ticket is closed. The sprint itself goes `qa` once every
-unit is merged or closed, and `done` by facts once every unit is accepted, its
+card view), spawns it as a card titled `QA #N — …` at `ticketed` like any other
+unit card, and moves it to `done` when the ticket is closed. The sprint itself
+goes `merged` once every unit is merged or closed, and `done` by facts once every
+unit is accepted, its
 QA tickets are closed **and the umbrella is closed** (`sprint.umbrellaOpen`;
 unknown — an umbrella outside the last 300 issues — never reads as closed). The
-umbrella's close is the pass declared; `qa → done` by hand remains for a sprint
-without unit tickets.
+umbrella's close is the pass declared; `merged → done` by hand remains for a
+sprint without unit tickets.
 Deleting the sprint card deletes its unit cards. The list view's `summary`
 counts them under `units`.
 

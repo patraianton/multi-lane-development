@@ -9,7 +9,7 @@
 #                             MUST survive updates — exclude from rsync/scp,
 #                             never rsync --delete without excluding state/
 #
-# Copy the repository onto /opt/watchtower first (see docs/DEPLOY.md), then:
+# Copy the repository onto /opt/watchtower first (see docs/history/DEPLOY.md), then:
 #   bash /opt/watchtower/deploy/setup.sh
 #
 # Expects Node.js 22 or newer already on PATH. Does not install Node, a
@@ -73,7 +73,7 @@ require_unit_src() {
 
 require_app_tree() {
   if [[ ! -f "${APP_DIR}/bin/watchtower.mjs" ]]; then
-    die "${APP_DIR}/bin/watchtower.mjs is missing. Copy the repository onto ${APP_DIR} first (exclude state/ — see docs/DEPLOY.md), then re-run this script."
+    die "${APP_DIR}/bin/watchtower.mjs is missing. Copy the repository onto ${APP_DIR} first (exclude state/ — see docs/history/DEPLOY.md), then re-run this script."
   fi
 }
 

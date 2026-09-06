@@ -1,22 +1,62 @@
-# Project agent memory
+# MLD — the board-watcher's job file
 
-MLD: this file is the always-loaded memory for agents working in this repo.
-It is kept short on purpose - every line here is paid on every session.
+You are the session that watches the board — a Windows scheduled service built from this repo
+(`mld-board`, port 4878) that runs sprints by itself. You take specs in, answer for everything
+machine-local, unstick what the board cannot, and report to the owner. The whole process — stages,
+roles, the road a card walks — is `README.md`; this file is your job only and never repeats that road.
 
-## Sprint start checklist (owner's order, 2026-09-05: run every time, in this order, before accepting a sprint)
+## Owner rules (non-negotiable)
 
-Measure now; never trust yesterday's log or a handover. Each step is one command; a failed step is fixed before the next.
+- **Sprint = ONE work ticket, one lane, one PR** (owner, 2026-09-04). QA findings come back as one
+  fix ticket. Never cut a sprint into a heap of unit tickets — doing that once cost 22 hours.
+- **CI has two modes** (since 2026-09-05): an ordinary push runs the scoped `pr-ci` (~7–10 min); the
+  full pipeline runs only on a PR labelled `full-ci` and reports as `pr-ci-full` (~35–50 min). A merge
+  needs BOTH green on the current head; a red or pending `pr-ci-full` is *waiting* — no fix, no stuck.
+- **`hold-merge` PRs** (migrations, schema, auth, deploy/env, payments, scraper): the SESSION merges
+  them on green + GO, adding `full-ci` first if it is missing. The board never merges or labels these.
+- **Questions to the owner go only through the Lavish page** at sprint intake: multiple choice, first
+  option = the default; money, production and anything outgoing are marked `owner` and get no default.
+  Nowhere else, never mid-sprint. A `stuck` line in Telegram is the board notifying him, not asking.
+- **Reporting to the owner**: one line with numbers, plain language — no ticket numbers, no jargon.
 
-1. **Board alive.** `curl -s http://127.0.0.1:4878/api/pipeline | head -5` — `swept` age under 5 min; `tail -30 state/board.log`. Dead → `schtasks /Run /TN mld-board`, then re-check the port.
-2. **Nothing in flight.** Summary line reads `stuck 0` and every card is `done`; finished sprints sit in History. A silent non-done card is the first thing to fix.
-3. **GitHub token.** `GITHUB_TOKEN` in `.env.local` is usually dead. Use `export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | grep -m1 '^password=' | cut -d= -f2-)`; `gh api user --jq .login` must answer.
+## Before you accept (checks 1–7)
+
+Owner's order 2026-09-05 — every time, in this order. Measure now; never trust yesterday's log or a
+handover. A failed step is fixed before the next one. These are Bash commands: run them in the Bash
+tool (Git Bash). The one exception is the Mac `ssh` in check 6, which only works from PowerShell.
+
+1. **Board alive and armed.** `curl -s http://127.0.0.1:4878/api/pipeline | head -5` — `swept` age under 5 min; `tail -30 state/board.log`. Dead → `schtasks /Run /TN mld-board`, then re-check the port. Then `grep autoDispatch state/autopase-board.json` must read `true`: with it false the board only narrates and every dispatch row says `would dispatch`.
+2. **Nothing in flight.** The summary reads `stuck 0`, every card is `done`, finished sprints sit in History. A silent non-done card is the first thing to fix.
+3. **GitHub token.** The `GITHUB_TOKEN` in `.env.local` is usually dead — take the live one from the credential store: `export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | grep -m1 '^password=' | cut -d= -f2-)`; `gh api user --jq .login` must answer.
 4. **Product repo clean.** `gh pr list -R Baltic-OrangesLV/vincheck-latvia --state open` (no board PRs left), `gh run list -R … --branch main --limit 3` (main green), `gh issue list -R … --state open --limit 40` (read what is queued, incl. `qa` leftovers).
-5. **CI capacity.** `gh api repos/Baltic-OrangesLV/vincheck-latvia/actions/runners --jq '.runners[]|"\(.name)\t\(.status)\t\(.busy)"'` — all online, none busy; `gh run list … --workflow pr-ci --limit 5` with durations. Two modes since Sep 2026: an ordinary PR push runs the SCOPED gate (~7–10 min, check `pr-ci`); the FULL pipeline (build + all tests + browser smoke, ~35–50 min, check `pr-ci-full`) runs only on a PR labelled `full-ci`. Judge the queue by the FULL rounds — a full round far past 50 min means the queue is the bottleneck; scoped rounds are too short to tell.
+5. **CI capacity.** `gh api repos/Baltic-OrangesLV/vincheck-latvia/actions/runners --jq '.runners[]|"\(.name)\t\(.status)\t\(.busy)"'` — all online, none busy; `gh run list … --workflow pr-ci --limit 5` with durations. Judge the queue by the FULL rounds only — far past 50 min means the queue is the bottleneck; scoped rounds are too short to tell.
 6. **Lanes free.** lanes-01: `ssh -i ~/.ssh/id_ed25519 root@2.29.10.164 'hzlane status'` (lane-1..3); hostinger: `ssh -i ~/.ssh/autopase_hostinger_codex_ed25519 root@187.77.109.226 'hzlane status'` (lane-4..5); Mac only from PowerShell: `ssh mac 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane status'` (lane-6..8; zsh has no `timeout`). Reserved lanes: `reservedReason` in `state/fleet-launch.json`.
-7. **Codex answers.** Live probe per host with the model the launcher uses (`grep "codex exec -m" /usr/local/bin/hzlane`, gpt-6-astra since 2026-09-05), never a log line: lanes-01 `CODEX_HOME=/root/.codex-homes/hz3 codex exec -m gpt-6-astra --skip-git-repo-check "Reply with the single word OK"` (hostinger: `hz4`; Mac: no `CODEX_HOME`, PATH prefix as above). A quota error = that host is out for the sprint; "requires a newer version of Codex" = upgrade the CLI on that host (`npm i -g @openai/codex@latest`; on codex-dev add `--prefix /usr`).
-8. **Product code for the grill.** Worktree `~/.herdr/worktrees/autopase.lv/autopase-cto`: `git fetch origin main`, read with `git show origin/main:<path>` and `git grep <pattern> origin/main -- <paths>`. Compare the spec's "verified base" SHA with `origin/main` and note the drift.
-9. **Spec intake.** Copy the spec to `C:\Users\panto\projects\_conveyor\autopase.lv\specs\<SPRINT>\SPEC.md` + `MANIFEST.sha256`. Then the road in `docs/RULES.md` (cutter) and `docs/ARTIFACT.md`: card `POST /pipeline/card/create` → `grilled`; grill by Workflow against real code → `GRILL-OUTCOME.md` beside the spec; one Lavish page with every owner/partner question (multiple choice, first = default; money/production/outgoing = `owner`, no default) → `links.artifact` (the board rings the founders itself); after the answers → umbrella + **one** work ticket (the whole sprint, one lane, one PR — owner's rule of 2026-09-04, never units) + the QA ticket from `docs/QA-TICKET.md` (`qa-run`) → `links.ticket` → `ticketed`. The board does the rest.
-10. **While it runs.** A round every 15 min (`/api/pipeline` + `board.log` tail): each card either moves or shouts. `hold-merge` PRs (migrations, schema, auth, deploy/env, payments, scraper) are merged by the session on green + GO — green means BOTH `pr-ci` and `pr-ci-full` green on the current head; if the PR has no `full-ci` label yet, add it first (`gh pr edit <n> -R Baltic-OrangesLV/vincheck-latvia --add-label full-ci`) and wait for the full run. The board adds that label itself only for the PRs it merges, never for `hold-merge` ones. The board closes the sprint itself; the owner gets one line with numbers.
+7. **Codex answers.** Live probe per host with the model the launcher uses (`grep "codex exec -m" /usr/local/bin/hzlane`, gpt-6-astra since 2026-09-05), never a log line: lanes-01 `CODEX_HOME=/root/.codex-homes/hz3 codex exec -m gpt-6-astra --skip-git-repo-check "Reply with the single word OK"` (hostinger: `hz4`; Mac: no `CODEX_HOME`, PATH prefix as above). A quota error = that host is out for the sprint; "requires a newer version of Codex" = upgrade the CLI there (`npm i -g @openai/codex@latest`; on codex-dev add `--prefix /usr`).
+
+## Intake (8–9)
+
+8. **Product code for the grill.** In the product worktree: `git fetch origin main`, then read with `git show origin/main:<path>` and `git grep <pattern> origin/main -- <paths>`. Compare the spec's "verified base" SHA against `origin/main`; write the drift you find into `GRILL-OUTCOME.md` as a stated fact, so the ticket is cut against today's code and not the spec's memory of it.
+9. **Spec intake.** Copy the spec into the specs folder as `SPEC.md` + `MANIFEST.sha256`, then follow `README.md` §1–§3 end to end. The board takes over at `ticketed`.
+
+## While it runs
+
+A round every 15 minutes — `/api/pipeline` plus a `board.log` tail: every card either moves or shouts.
+In the same round run `gh pr list -R Baltic-OrangesLV/vincheck-latvia --label hold-merge --state open`:
+those PRs are yours to merge by the rule above; nobody else will and the board will not remind you.
+A card in `stuck` is the board telling you it stopped, not asking you anything — read its status line
+and the ticket, fix the cause, then unstick it (`POST /pipeline/card/unstuck {"id":"<card id>"}`); an
+unstick without a fix walks straight back. The board closes the sprint itself and sends the owner his
+one line; you report in that same shape whenever you report at all.
+
+## Machine-local corner — this PC only, none of it in the repo
+
+- Specs in: `C:\Users\panto\projects\_conveyor\autopase.lv\specs\<SPRINT>\`
+- Reports out: `C:\Users\panto\projects\_conveyor\MLD\reports\`
+- Product code worktree: `~/.herdr/worktrees/autopase.lv/autopase-cto`
+- Lanes and their keys: check 6 is the only list — never keep a second copy.
+- Commit identity — this repo: `patraianton <315426724+patraianton@users.noreply.github.com>`, no
+  `Co-Authored-By`, English only. Product repo: `legalpanda7-beep <legalpanda7@gmail.com>` — Vercel
+  refuses to deploy a commit from an author it does not know (2026-09-06).
 
 ## Learnings
 
@@ -24,7 +64,5 @@ Measure now; never trust yesterday's log or a handover. Each step is one command
 
 ## Maintaining this file
 
-Keep this file for knowledge useful to almost every future agent session in this project.
-Do not repeat what the codebase already shows; point to the authoritative file or command instead.
-Prefer rewriting or pruning existing entries over appending new ones.
-When updating this file, preserve this bar for all agents and keep entries concise.
+Keep only what almost every session needs; point at the authoritative file instead of repeating it.
+Rewrite and prune rather than append. Stay under 70 lines.

@@ -1,5 +1,8 @@
 # BOARD — how the board works and how to run it
 
+> Archived 2026-09-06. The live process page is `README.md` in the repo root; everything still normative
+> from this file lives there. Kept as the record of the board's shape on 2026-09-06.
+
 The board is one Node process (`bin/watchtower.mjs`, no dependencies, Node ≥ 22) on the owner's Windows PC,
 `http://127.0.0.1:4878`. It is the scheduler of a coding-agent fleet: it reads facts (lanes, PRs, tickets),
 moves cards by those facts, puts work on free lanes, starts reviews, merges, counts failures and alarms the
@@ -59,7 +62,7 @@ Branch = the ticket's `Branch:` line, else `feat/<ticket number>`. Base = `origi
 dependency's open PR. An existing branch is continued from.
 
 A ticket labelled `hold-merge` is never merged by the board (migrations, schema, auth, deploy/env, payments, the
-scraper — the cutter labels them); the owner merges it by hand. A ticket labelled `no-build` may go to the light
+scraper — the cutter labels them); the MLD session merges it by hand. A ticket labelled `no-build` may go to the light
 lane (lane-3). A ticket labelled `main-fix` is dispatched even while `main` is red — it is the ticket that repairs it.
 A ticket labelled `no-review` (styles, texts or documentation only — RULES.md, cutter 7) gets no reviewer and
 merges on the green check alone (§5); `hold-merge` always wins over it.

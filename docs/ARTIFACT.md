@@ -1,6 +1,6 @@
 # The artifact pipeline: self-hosted Lavish on Cloudflare
 
-This file is the operator guide for the grill review artifact (docs/GRILL.md
+This file is the operator guide for the grill review artifact (docs/history/GRILL.md
 §3–§5). A grill outcome is published as a Lavish review page with a stable
 public HTTPS URL served from Cloudflare, so the partner can annotate it from
 anywhere — the owner's desktop and its tunnel can be off. Publishing and
