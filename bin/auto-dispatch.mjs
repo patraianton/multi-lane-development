@@ -14,6 +14,7 @@
 
 import path from 'node:path';
 import { startableOnBoard } from './idle-lanes.mjs';
+import { isEvidenceCheck } from './merge.mjs';
 
 const ACTIVE = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
 // A host whose launch failed is excluded for this long. Other hosts can take
@@ -548,9 +549,14 @@ function dependencyBlockers(unit, cardId, cards) {
   return blockers;
 }
 
+// `pr-ci-full` is the receipt of the full run, not a test: it is red on every
+// head until the board labels the PR and the full pipeline finishes, so it
+// never belongs in the red-check list a fixer is sent to repair (merge.mjs,
+// EVIDENCE_CHECKS). A full run that genuinely fails turns `pr-ci` red, and
+// that name still reaches the fixer.
 function failedCheckNames(pr) {
   if (Array.isArray(pr?.ci?.failedNames) && pr.ci.failedNames.length) {
-    return pr.ci.failedNames.map(String);
+    return pr.ci.failedNames.map(String).filter(name => !isEvidenceCheck(name));
   }
   const rollup = [pr?.statusCheckRollup, pr?.checkRollup, pr?.rollup, pr?.checks, pr?.ci?.rollup]
     .find(Array.isArray) ?? [];
@@ -559,7 +565,8 @@ function failedCheckNames(pr) {
     const state = String(item?.conclusion ?? item?.state ?? item?.status ?? '').toUpperCase();
     if (!RED_CHECK.has(state)) continue;
     const name = item?.name ?? item?.context ?? item?.workflowName;
-    if (name != null && String(name)) names.push(String(name));
+    if (name == null || !String(name) || isEvidenceCheck(item?.name ?? item?.context)) continue;
+    names.push(String(name));
   }
   return names;
 }

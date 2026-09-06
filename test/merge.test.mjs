@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canMerge, ciColor, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
+import { canMerge, ciColor, isEvidenceCheck, needsFullCiLabel, prVerdict, prVerdictFacts } from '../bin/merge.mjs';
 
 const HEAD = 'abc12345abcdef0123456789abcdef0123456789';
 
@@ -79,18 +79,22 @@ test('canMerge accepts the flat CI fact shape', () => {
   assert.deepEqual(canMerge(value), { ok: true, why: '' });
 });
 
-test('ciColor gates on pr-ci alone unless the caller explicitly asks for every check', () => {
+test('ciColor gates on the two required checks unless the caller explicitly asks for every check', () => {
+  const full = { __typename: 'CheckRun', name: 'pr-ci-full', status: 'COMPLETED', conclusion: 'SUCCESS' };
   const fixtures = {
     greenWhileImageRuns: [
       { __typename: 'CheckRun', name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      full,
       { __typename: 'CheckRun', name: 'coolify-image', status: 'IN_PROGRESS', conclusion: '' },
     ],
     queuedWhileImagePasses: [
       { __typename: 'CheckRun', name: 'pr-ci', status: 'QUEUED', conclusion: '' },
+      full,
       { __typename: 'CheckRun', name: 'coolify-image', status: 'COMPLETED', conclusion: 'SUCCESS' },
     ],
     greenWhileImageFails: [
       { __typename: 'CheckRun', name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      full,
       { __typename: 'CheckRun', name: 'coolify-image', status: 'COMPLETED', conclusion: 'FAILURE' },
     ],
     vercelOnly: [
@@ -99,13 +103,13 @@ test('ciColor gates on pr-ci alone unless the caller explicitly asks for every c
   };
 
   assert.deepEqual(ciColor(fixtures.greenWhileImageRuns), {
-    color: 'green', text: 'CI green (1)', failedNames: [],
+    color: 'green', text: 'CI green (2)', failedNames: [],
   });
   assert.deepEqual(ciColor(fixtures.queuedWhileImagePasses), {
     color: 'run', text: 'CI running (1)', failedNames: [],
   });
   assert.deepEqual(ciColor(fixtures.greenWhileImageFails), {
-    color: 'green', text: 'CI green (1)', failedNames: [],
+    color: 'green', text: 'CI green (2)', failedNames: [],
   });
   assert.deepEqual(ciColor(fixtures.vercelOnly), {
     color: 'none', text: 'no checks', failedNames: [],
@@ -119,6 +123,64 @@ test('ciColor gates on pr-ci alone unless the caller explicitly asks for every c
   assert.deepEqual(canMerge(candidate({
     pr: { ci: { ...ciColor(fixtures.greenWhileImageRuns), headSha: HEAD } },
   })), { ok: true, why: '' });
+});
+
+test('the full-run receipt holds the merge yellow and never reads as a red check', () => {
+  const scoped = { __typename: 'CheckRun', name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS' };
+  const cases = [
+    ['no pr-ci-full run at all — the label is not on the PR yet', [scoped],
+      { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] }],
+    ['the full run is in flight', [scoped, { name: 'pr-ci-full', status: 'IN_PROGRESS', conclusion: '' }],
+      { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] }],
+    ['no full evidence on this head yet', [scoped, { name: 'pr-ci-full', conclusion: 'FAILURE' }],
+      { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] }],
+    ['both green', [scoped, { name: 'pr-ci-full', conclusion: 'SUCCESS' }],
+      { color: 'green', text: 'CI green (2)', failedNames: [] }],
+    ['the scoped gate is red', [{ name: 'pr-ci', conclusion: 'FAILURE' }, { name: 'pr-ci-full', conclusion: 'FAILURE' }],
+      { color: 'red', text: 'CI red (1)', failedNames: ['pr-ci'] }],
+  ];
+  for (const [name, rollup, expected] of cases) {
+    const value = ciColor(rollup);
+    assert.deepEqual(value, expected, name);
+    assert.equal(canMerge(candidate({ pr: { ci: { ...value, headSha: HEAD } } })).ok, value.color === 'green', name);
+  }
+});
+
+test('the board asks for the full run exactly when the card is ready to merge without it', () => {
+  const waiting = { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] };
+  const ready = candidate({ pr: { ci: { ...waiting, headSha: HEAD } } });
+  assert.equal(needsFullCiLabel(ready), true, 'GO on the head, mergeable, no label — label it');
+  assert.equal(needsFullCiLabel(candidate({
+    pr: { ci: { ...waiting, headSha: HEAD }, labels: [{ name: 'Full-CI' }] },
+  })), false, 'the label is already there');
+  assert.equal(needsFullCiLabel(candidate({
+    pr: { ci: { color: 'red', text: 'CI red (1)', failedNames: ['pr-ci'], headSha: HEAD } },
+  })), false, 'a red scoped gate belongs to a fixer first');
+  assert.equal(needsFullCiLabel(candidate({
+    pr: { ci: { ...waiting, headSha: HEAD }, verdictOnHead: null },
+  })), false, 'no verdict on the head — nothing is ready to merge');
+  assert.equal(needsFullCiLabel(candidate({
+    pr: { ci: { ...waiting, headSha: HEAD }, verdictOnHead: null }, unit: { labels: ['no-review'] },
+  })), true, 'a no-review ticket needs no verdict and still needs the full run');
+  for (const [name, overrides] of [
+    ['draft', { pr: { ci: { ...waiting, headSha: HEAD }, draft: true } }],
+    ['conflicting', { pr: { ci: { ...waiting, headSha: HEAD }, mergeable: 'CONFLICTING' } }],
+    ['hold-merge', { pr: { ci: { ...waiting, headSha: HEAD } }, unit: { labels: ['hold-merge'] } }],
+  ]) {
+    assert.equal(needsFullCiLabel(candidate(overrides)), false, name);
+  }
+});
+
+test('the full-run receipt never reaches the fixer as a failed check name', () => {
+  assert.equal(isEvidenceCheck('pr-ci-full'), true);
+  assert.equal(isEvidenceCheck('PR-CI-FULL'), true);
+  assert.equal(isEvidenceCheck('pr-ci'), false);
+  const rollup = [
+    { name: 'pr-ci', conclusion: 'FAILURE' },
+    { name: 'pr-ci-full', conclusion: 'FAILURE' },
+  ];
+  assert.deepEqual(ciColor(rollup).failedNames, ['pr-ci']);
+  assert.deepEqual(ciColor(rollup, []).failedNames, ['pr-ci'], 'even with every check asked for');
 });
 
 test('prVerdictFacts parses the head from line two and counts every verdict comment', () => {

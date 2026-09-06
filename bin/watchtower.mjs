@@ -39,7 +39,8 @@ import {
   launchFailureHolds, quarantinedLanes,
 } from './auto-dispatch.mjs';
 import {
-  canMerge, ciColor, MERGE_ATTEMPTS, prVerdict as latestPrVerdict, prVerdictFacts, REQUIRED_CHECKS,
+  canMerge, ciColor, FULL_CI_LABEL, MERGE_ATTEMPTS, needsFullCiLabel,
+  prVerdict as latestPrVerdict, prVerdictFacts, REQUIRED_CHECKS,
 } from './merge.mjs';
 import { readRules, cutRules } from './rules.mjs';
 import { judgeLanes } from './lane-judge.mjs';
@@ -1453,6 +1454,40 @@ function mergeEntry(item, group, { at, result, error = null, attempts }) {
 const HEAD_MOVED = /head branch was modified/i;
 const MERGING_STALE_MS = 5 * 60 * 1000;
 
+// The full pipeline (build, every test, the browser smoke) only runs on a PR
+// that carries the `full-ci` label, and its receipt — the `pr-ci-full` check —
+// is one of the two checks a merge needs. So the board puts the label on
+// itself, at the one moment it is worth a full run: the card is ready to merge
+// and only that evidence is missing. The label sticks, so this happens once
+// per PR; the guard below keeps a sweep every minute from asking GitHub again
+// while `gh pr list` still answers from its cache.
+const FULL_CI_LABEL_RETRY_MS = 10 * 60 * 1000;
+const fullCiLabelAsked = new Map();
+
+async function addFullCiLabel(pr) {
+  const number = Number(pr?.number);
+  if (!Number.isFinite(number) || !config.repo) return false;
+  const now = Date.now();
+  if (now - (fullCiLabelAsked.get(number) ?? 0) < FULL_CI_LABEL_RETRY_MS) return false;
+  fullCiLabelAsked.set(number, now);
+  if (!config.autoDispatch) {
+    dispatchNote(`merge: would label PR #${number} ${FULL_CI_LABEL} (autoDispatch: true in the settings to send)`);
+    return false;
+  }
+  const outcome = await execCmd(bins.gh,
+    ['pr', 'edit', String(number), '--repo', config.repo, '--add-label', FULL_CI_LABEL], 60000);
+  if (outcome.code !== 0) {
+    const why = outcome.stderr || outcome.out || `exit ${outcome.code}`;
+    console.log(`merge: could not label PR #${number} ${FULL_CI_LABEL}: ${why}`);
+    return false;
+  }
+  console.log(`merge: PR #${number} labelled ${FULL_CI_LABEL} — the full pipeline runs on this head`);
+  // The label is a merge fact: read the PRs again next tick instead of
+  // deciding this PR from a snapshot that predates the label.
+  prSource.at = 0;
+  return true;
+}
+
 // A single writer owns both launch and merge journal entries. This runs before
 // dispatch planning so the next journal read includes the result of the merge.
 async function mergeSweep(sprints, facts = null) {
@@ -1524,9 +1559,23 @@ async function mergeSweep(sprints, facts = null) {
     // one sibling without it keeps the verdict gate for their shared PR.
     const strict = group.items.find(({ unit }) =>
       !(unit.labels ?? []).some(label => String(label?.name ?? label).toLowerCase() === 'no-review'));
-    const decision = canMerge({ pr: group.pr, unit: (strict ?? group.items[0]).unit });
+    const mergeUnit = (strict ?? group.items[0]).unit;
+    const decision = canMerge({ pr: group.pr, unit: mergeUnit });
     if (!decision.ok) {
-      rows.push(mergeTableRow(group, decision.why));
+      // Everything but the full-run receipt is in place: ask for the full run
+      // here — this is the sweep that would otherwise wait for it forever.
+      const labelled = needsFullCiLabel({ pr: group.pr, unit: mergeUnit })
+        ? await addFullCiLabel(group.pr)
+        : false;
+      // "check green" says nothing while a run is still going: the table
+      // carries the checks' own word, so a card waiting for the full run says
+      // which check it waits for.
+      const running = decision.why === 'check green' && String(group.pr.ci?.color ?? '') === 'run'
+        ? String(group.pr.ci?.text ?? '').trim()
+        : '';
+      rows.push(mergeTableRow(group, labelled
+        ? `${FULL_CI_LABEL} label added — ${running || 'waiting for the full run'}`
+        : (running || decision.why)));
       continue;
     }
 

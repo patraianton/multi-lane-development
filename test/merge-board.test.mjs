@@ -390,6 +390,47 @@ test('merge-table rows explain UNKNOWN mergeability and a green-GO draft', async
   }
 });
 
+test('a card ready but for the full-run receipt is labelled full-ci and is not merged', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-full-ci-label-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    ].join('\n'));
+    // The scoped gate passed; `pr-ci-full` has no run of its own because the
+    // PR carries no `full-ci` label yet — the one blocker the board clears.
+    const waitingFacts = facts();
+    waitingFacts.prs[0].ci = { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [], headSha: HEAD };
+    board = await startBoard({
+      config: { source: 'probe', autoDispatch: true, repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': waitingFacts },
+      env: dir => ({
+        WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
+        WATCHTOWER_SPRINT_SWEEP_MS: '200',
+        WATCHTOWER_GH: fakeGh,
+      }),
+    });
+    await createTicketed(board);
+    await until(board.base, body => body.autoDispatch
+      ?.some(row => row.kind === 'merge' && String(row.state).startsWith('full-ci label added')));
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const ghCalls = await calls(callsFile);
+    const edits = ghCalls.filter(args => args[0] === 'pr' && args[1] === 'edit');
+    assert.deepEqual(edits, [['pr', 'edit', '1632', '--repo', 'acme/web', '--add-label', 'full-ci']],
+      'the label is asked for once, not on every sweep');
+    assert.ok(!ghCalls.some(args => args[0] === 'pr' && args[1] === 'merge'), 'nothing is merged without the receipt');
+    assert.match(board.output(), /merge: PR #1632 labelled full-ci/);
+    const journal = await readFile(path.join(board.dir, 'auto-dispatch.json'), 'utf8').catch(() => '{}');
+    assert.ok(!JSON.parse(journal).dispatched?.['1624:merge:abc12345'], 'no merge attempt is spent while the run is waited for');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
+
 test('a PR-side hold-merge produces only the owner table line and skips every pre-merge action', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-held-merge-tools-'));
   const callsFile = path.join(toolsDir, 'calls.jsonl');
@@ -1106,7 +1147,10 @@ test('live open and merged PR lists refresh together across the board-owned merg
       createdAt: '2026-08-30T10:00:00.000Z',
       updatedAt: '2026-08-30T10:00:01.000Z',
       mergedAt: '2026-08-30T10:00:02.000Z',
-      statusCheckRollup: [{ name: 'pr-ci', conclusion: 'SUCCESS' }],
+      statusCheckRollup: [
+        { name: 'pr-ci', conclusion: 'SUCCESS' },
+        { name: 'pr-ci-full', conclusion: 'SUCCESS' },
+      ],
       author: { login: 'lane' },
       comments: [{ body: `R1 — GO\nhead ${HEAD}`, createdAt: '2026-08-30T10:00:01.000Z' }],
     };
