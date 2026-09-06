@@ -961,7 +961,7 @@ export function planReviews({
       if (!servable(unit, unitCard)) continue;
       if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(pr.verdictOnHead?.head, head)) continue;
       // A no-review unit is skipped exactly like a head that already has its
-      // verdict: the board never plans a reviewer for it (BOARD.md §3).
+      // verdict: the board never plans a reviewer for it (README.md, queue order).
       if (labelsOf(unit).includes('no-review')) continue;
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;

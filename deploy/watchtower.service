@@ -1,6 +1,6 @@
 [Unit]
 Description=Watchtower board
-Documentation=file:///opt/watchtower/docs/DEPLOY.md
+Documentation=file:///opt/watchtower/docs/history/DEPLOY.md
 After=network.target
 
 [Service]

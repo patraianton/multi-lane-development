@@ -47,15 +47,15 @@ bans only. The ticket says what to build; these rules say how and what never.
 3. `VERDICT`: every behaviour item gets a test that is red before the fix and green after; every item is answered in the report `fixed` / `not a defect — why`.
 4. `CI`: read the failed check's log first; fix the cause; never retry blindly; never delete or skip a test to pass.
 5. `CONFLICT`: `git merge origin/main`; resolve only in files the ticket names; a conflict in anyone else's file → `QUESTION` (common 3).
-6. `Check:` until it is green on the exact head you push (the third red run in a row → `QUESTION`, common 3), then push at once: a run still queued or running on `Head:` is dead and your push cancels it (`pr-ci` cancel-in-progress, owner decision #1274); the repository's push-discipline note does not apply to a fix round (common 6). No `--force`, no empty commit; one PR comment `fix R<Round> pushed, head <sha>`.
+6. `Check:` until it is green on the exact head you push (the third red run in a row → `QUESTION`, common 3), then push at once: a run still queued or running on `Head:` is dead and your push cancels it (`pr-ci` cancel-in-progress, owner decision #1274); the repository's push-discipline note does not apply to a fix round (common 6). `pr-ci-full` is the board's business — never wait for it, never treat it as your red check. No `--force`, no empty commit; one PR comment `fix R<Round> pushed, head <sha>`.
 7. Report last line `DONE #<ticket> <PR url> <new head sha>`.
 
 <!-- role: qa -->
 ## qa — walks production; proof = your `qa-run` ticket closed
 1. Change no code, push nothing, open no PR. Production only, in the real browser the ticket names.
 2. Before walking, compare the deployed commit with `origin/main` as the ticket says; if it lags, wait up to 15 minutes, then walk what is deployed and say so in the report.
-3. Walk every surface, locale and viewport the ticket lists; count content, not status codes; screenshot beside the mock where the ticket names one; the console clean of errors. Cabinet units are walked in the live cabinet signed in as the QA account (`node ~/kitchens/autopase.lv/qa/qa-login.mjs` prints a single-use sign-in link); the preview page never stands in for the cabinet. Delete what you created there before closing.
-4. One finding = one ticket, at once: `gh issue create --label qa --title "QA <sprint>: <what the user sees>" --body "Part of #<umbrella> (QA R<n>).\nWhere: <URL, locale, viewport>\nExpected (ticket #<k>): …\nSeen: …\nEvidence: <screenshot path, numbers, console line>\nRepro: …"`. Unsure = still a ticket with `(unsure)` in the title. Nothing lives only in the report. Same-file findings chain behind each other (common 9).
+3. Walk every surface, locale and viewport the ticket lists; count content, not status codes; screenshot beside the mock where the ticket names one; the console clean of errors. Cabinet surfaces are walked in the live cabinet signed in as the QA account (`node ~/kitchens/autopase.lv/qa/qa-login.mjs` prints a single-use sign-in link); the preview page never stands in for the cabinet. Delete what you created there before closing.
+4. One finding = one ticket, at once: `gh issue create --label qa --title "QA <sprint>: <what the user sees>" --body "Part of #<umbrella> (QA R<n>).\nWhere: <URL, locale, viewport>\nExpected (ticket #<k>): …\nSeen: …\nEvidence: <screenshot path, numbers, console line>\nRepro: …"`. Unsure = still a ticket with `(unsure)` in the title. Nothing lives only in the report. Same-file findings chain behind each other (common 9). Your tickets are the record of the round; the fix for them is cut as one ticket by the cutter (cutter 4) — never fix anything yourself.
 5. Filed at least one finding and `n` < 3 → create the next round: `gh issue create --label qa-run --title "QA R<n+1> — <sprint>" --body "Part of #<umbrella>.\ndepends on: #<each finding you filed>\n<the walk section of your own ticket verbatim>"`. `n` = 3 with findings → post `QUESTION #<ticket> QA round 3 still finds defects` and stop.
 6. One comment on the umbrella: line 1 `QA R<n> — <k> findings`, then the table surface × locale × viewport × result.
 7. Report last line `DONE #<ticket> findings=<k>`; then `gh issue close <ticket>`. Checks skipped → write `STOPPED <reason>` as the last line and leave the ticket open.
@@ -64,15 +64,17 @@ bans only. The ticket says what to build; these rules say how and what never.
 ## cutter — turns a spec into tickets (the MLD session, on the owner's word)
 1. Read the spec and the code at `origin/main`; verify every factual claim of the spec against the code and cite `file:line`; a wrong fact is corrected in the ticket, never carried.
 2. Grill: five lenses against the real code; business questions to the partner on one Lavish page — multiple choice, first option = default, no free text; money, strategy, outgoing messages and production env get no default and the mark `owner`. Tickets only after the page is answered.
-3. Umbrella issue: the unit table, `grill passed:`, the spec bundle path, `Rules: docs/RULES.md @ <sha>`.
-4. One issue per unit, first line `Part of #<umbrella>`; ≤ 600 lines; ≤ 1 protected zone; `depends on: none | #N — why`; never a train; a `Branch:` line only when `feat/<ticket>` will not do; never `Closes #` in instructions.
+3. Umbrella issue: what the sprint delivers, `grill passed:`, the spec bundle path, `Rules: docs/RULES.md @ <sha>`.
+4. **One work ticket for the whole sprint** — never one per unit (owner, 2026-09-04): one ticket, one lane, one PR, start to finish. First line `Part of #<umbrella>`; the whole scope, in the files it names; `depends on: none` unless another sprint's open PR must land first; a `Branch:` line only when `feat/<ticket>` will not do; never `Closes #` in instructions. QA findings that come back are cut the same way — the walker files one ticket per finding as the record (`qa` 4), and you fold a round's findings into **one** fix ticket, label `qa`, title `QA R<n> findings — one fix on one lane (folds #…)`, body `Folds: #…` with every folded body appended verbatim as the spec; close the folded tickets as folded, leave separate only a finding already carried by an open PR with a GO, and point the next round's `qa-run` ticket at the fix ticket.
 5. Acceptance = commands with expected output, at least one red on `main` today. A visible result → the mock path and the verbatim spec line, or a production screenshot with "change only X".
 6. Landmines and defaults from the grill are pasted into the ticket as `question · default · deadline · addressee`.
-7. A ticket touching migrations, schema, auth, deploy/env, payments or the scraper gets the label `hold-merge`.
+7. A ticket touching migrations, schema, auth, deploy/env, payments or the scraper gets the label `hold-merge` —
+   the board never merges it; the MLD session merges it by hand on green + GO — green meaning both `pr-ci` and
+   `pr-ci-full` on that head, and the board never adds `full-ci` to a `hold-merge` PR, so the session adds it first.
    A ticket cut to repair a red `main` gets the label `main-fix` — the board holds every other task based on `main`
    while `main` is red, and dispatches this one.
-   A ticket that changes styles, texts or documentation only — no logic, none of the protected zones above — may
-   get the label `no-review`: the board plans no reviewer and merges it on one green check. Never together with
-   `hold-merge`; the QA walk still covers these units.
-8. The QA round-1 ticket is cut with the sprint from `docs/QA-TICKET.md`: label `qa-run`, `depends on:` every unit.
+   A ticket that changes styles, texts or documentation only — no logic, none of the protected zones above — may get
+   the label `no-review`: no reviewer, merged on the green checks alone. Never with `hold-merge`; QA still covers it.
+   A ticket that needs no build gets the label `no-build` — it may run on the light lane (lane-3, FLEET.md).
+8. The QA round-1 ticket is cut with the sprint from `docs/QA-TICKET.md`: label `qa-run`, `depends on:` the work ticket.
 9. Finish with `POST /pipeline/card/update { links.ticket }`; the board takes over at `ticketed`.
