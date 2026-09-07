@@ -92,6 +92,13 @@ handed; the two must always agree.
 - **The QA round-1 ticket** copied verbatim from `docs/QA-TICKET.md` — its viewport list and live-cabinet clause
   are the point of it — label `qa-run`, first line `Part of #<umbrella>`, `depends on: #<work ticket>`.
 
+**Every spec image goes into the ticket bodies inline** (owner's rule, 2026-09-07) — both the work ticket and the
+QA ticket carry every file the spec's `assets/` folder ships, each under its one-line meaning from the spec. The
+repo is private, so external links break: the images must be uploaded through the issue editor in the browser
+(user-attachments), not pasted as `raw.githubusercontent.com` URLs and not left as kitchen paths. The kitchen
+copy of `assets/` stays as the lanes' working copy; the inline gallery is what proves nothing was dropped —
+before moving the card to `ticketed`, count the `user-attachments` links in each body against `MANIFEST.sha256`.
+
 Acceptance criteria are commands with expected output, at least one of them red on `main` today; a visible result
 names the mock path and the verbatim spec line. A ticket touching migrations, schema, auth, deploy/env, payments or
 the scraper gets the label `hold-merge`; one that repairs a red `main` gets `main-fix`; one that changes only
