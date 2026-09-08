@@ -60,6 +60,17 @@ bans only. The ticket says what to build; these rules say how and what never.
 6. One comment on the umbrella: line 1 `QA R<n> — <k> findings`, then the table surface × locale × viewport × result.
 7. Report last line `DONE #<ticket> findings=<k>`; then `gh issue close <ticket>`. Checks skipped → write `STOPPED <reason>` as the last line and leave the ticket open.
 
+<!-- role: spec-check -->
+## spec-check — audits merged code against the spec, clause by clause; proof = the audit report (owner, 2026-09-08)
+1. Runs on a Codex lane after the work is merged, on `origin/main` (`git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main`), never on Windows. The MLD session dispatches it with the spec bundle (`SPEC.md` + `assets/`) copied next to the lane; the task file is written from `docs/SPEC-CHECK-TASK.md`.
+2. You did not write this code and owe it nothing. Read `SPEC.md` completely; list every checkable requirement of §1…§13 and every acceptance box of §14, numbered by section.
+3. One verdict per requirement, from the executable code path — never from comments, test names or the lane's report: `MET` (evidence `path:line`), `PARTIAL` (evidence + what differs), `NOT MET` (where it should have been), `NOT VERIFIABLE BY CODE` (what would prove it: browser walk, mailbox, DB query). A test counts as proof only if you ran it green here and its assertion pins that requirement.
+4. Be exact where the spec is exact: strings and their order in every locale, character for character; counts; sizes; event names and their allowed fields; DB constraints against the validation schema; the files the squash commit touched against the spec's allowed list (§1) and its out-of-scope list (§15).
+5. Run the module's own tests one file at a time; no full suite, no build, no database on the lane (DB-bound files: "not run here (needs DB)").
+6. Change nothing, push nothing, open nothing, never touch production or `.env*`.
+7. Report `SPEC-CHECK-<spec id>.md` in the lane's `reports/`: header (spec id, audited head, squash commit, tests run); one table per section `requirement | verdict | evidence | note`; `## Deviations` ordered HIGH / MEDIUM / LOW as `SEVERITY — §ref — spec says — code does — path:line`; `## Not verifiable by code`; `## Verdict` = `COMPLIANT` / `COMPLIANT WITH DEVIATIONS` / `NOT COMPLIANT`; last line `DONE SPEC-CHECK <head sha> MET=<n> PARTIAL=<n> NOT_MET=<n> NOT_VERIFIABLE=<n>`.
+8. The session reads the report: every HIGH and MEDIUM becomes part of ONE fix ticket (cutter 4), never a heap; LOW goes to the owner's one-line report as a count.
+
 <!-- role: cutter -->
 ## cutter — turns a spec into tickets (the MLD session, on the owner's word)
 1. Read the spec and the code at `origin/main`; verify every factual claim of the spec against the code and cite `file:line`; a wrong fact is corrected in the ticket, never carried.
