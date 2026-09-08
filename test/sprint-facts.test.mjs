@@ -374,3 +374,33 @@ test('"depends on (merged)" marks a unit that needs its dependencies merged, not
   assert.equal(parseUnitDepsMerged('**Depends on (merged):** #1575, #1576 — runs on the merged build'), true);
   assert.equal(parseUnitDepsMerged('nothing here'), false);
 });
+// The spec-check family (owner, 2026-09-08): the planner holds every review
+// until an `S<n> — GO` names the PR head, so the unit's PR copy must carry the
+// spec fields exactly as it carries the review ones — a live board lost them
+// here and held PR #2095 for an hour after its S1 — GO (2026-09-08).
+test('the unit PR copy carries the spec-check verdict on the head, rebuilt from the list when the head field is absent', () => {
+  const card = { id: 'cs', links: { ticket: 'https://github.com/acme/web/issues/2064' } };
+  const unitIssues = new Map([[2064, [
+    { number: 2082, title: 'QA R1 findings', url: 'u/2082', state: 'OPEN', branch: 'feat/2082', qa: true },
+    { number: 2070, title: 'CAB-U1: form', url: 'u/2070', state: 'OPEN', branch: 'feat/2070' },
+    { number: 2071, title: 'CAB-U2: stats', url: 'u/2071', state: 'OPEN', branch: 'feat/2071' },
+  ]]]);
+  const HEAD = '92c7aef39bf21ed0eee24dcf8a837db2d53ce277';
+  const OLD = '1111111111111111111111111111111111111111';
+  const go = { round: 1, go: true, head: HEAD };
+  const prs = [
+    // The live source supplies the head field itself.
+    { number: 2095, branch: 'feat/2082', headSha: HEAD, verdictOnHead: null, verdictRounds: 0, specVerdicts: [go], specVerdictOnHead: go, specRounds: 1 },
+    // An old fact file: only the list — rebuilt from the verdict that names the head.
+    { number: 2096, branch: 'feat/2070', headSha: HEAD, specVerdicts: [{ round: 1, go: false, head: OLD }, { round: 2, go: true, head: HEAD }] },
+    // A GO on another head is not a GO on this one.
+    { number: 2097, branch: 'feat/2071', headSha: HEAD, specVerdicts: [{ round: 1, go: true, head: OLD }] },
+  ];
+  const s = sprintFactsFor([card], { prs, unitIssues, at: '2026-09-08T18:00:00Z' }).get('cs');
+  const qa = s.qaTickets.find(u => u.ticket === 2082);
+  assert.deepEqual([qa.pr.specVerdictOnHead.go, qa.pr.specVerdictOnHead.head, qa.pr.specRounds, qa.pr.specVerdicts.length], [true, HEAD, 1, 1]);
+  const by = Object.fromEntries(s.units.map(u => [u.unit, u]));
+  assert.deepEqual([by.U1.pr.specVerdictOnHead.round, by.U1.pr.specVerdictOnHead.go, by.U1.pr.specRounds], [2, true, 2]);
+  assert.equal(by.U2.pr.specVerdictOnHead, null);
+  assert.equal(by.U2.pr.specRounds, 1);
+});
