@@ -168,6 +168,12 @@ One finding = one ticket, filed at once, labelled `qa`; the exact title and body
 `docs/RULES.md`, which the walker is handed with its task. Those tickets are the **record** of the round, not the
 work order.
 
+In parallel with the QA walk the session sends a **spec-check** to a Codex lane (owner, 2026-09-08): an auditor that
+did not write the code reads `SPEC.md` clause by clause against `origin/main` and returns one verdict per requirement
+with `file:line` evidence — role `spec-check` in `docs/RULES.md`, task template `docs/SPEC-CHECK-TASK.md`. Its HIGH and
+MEDIUM deviations fold into the same single fix ticket as the QA findings; a sprint is not closed on the author's own
+word alone.
+
 The **fix** for a round is one ticket, the same rule as the sprint: the session folds the round's findings into a
 single `qa` ticket titled `QA R<n> findings — one fix on one lane (folds #…)`, whose body lists `Folds: #…` and
 appends every folded body verbatim as the spec, and closes those tickets as folded so the board runs one lane once
