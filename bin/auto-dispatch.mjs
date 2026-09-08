@@ -538,6 +538,16 @@ function servable(unit, card) {
   return unit?.open !== false && card?.stage !== 'stuck';
 }
 
+// The QA walk of this sprint that is in progress: an open `qa-run` unit that
+// is on a lane right now (its lane is busy, or its card is in `development`).
+// A walk that is merely queued — the next round, which the cutter points at
+// the fold ticket — is not in progress and holds nothing.
+function openWalkOf(sprint, unit, cards, cardId) {
+  return [...(sprint?.units ?? []), ...(sprint?.qaTickets ?? [])]
+    .find(w => w && w.ticket !== unit?.ticket && isQaRun(w) && w.open !== false && !w.merged
+      && (Boolean(w.lane?.busy) || unitCardFor(cards, cardId, w.ticket)?.stage === 'development')) ?? null;
+}
+
 // The dependency rules mirror idle-lanes.startable, but retain the blockers
 // so a rejected unit can explain itself on the dispatch table. A parked unit
 // card is authoritative even when the slower source still describes its PR.
@@ -867,6 +877,18 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (entryBlocksDispatch(prev, now, launchingMs)) continue;
       const base = baseFor(u, s);
       if (base.error) { hold(base.error); continue; }
+      // The walker's per-finding tickets are the round's record, not work
+      // orders: the cutter folds them into ONE fix ticket once the walk closes
+      // (RULES cutter 4; owner 2026-09-04 — and 2026-09-08, when the board put
+      // #2101 on a lane one minute after the walker filed it). While a walk of
+      // this sprint is in progress, a `qa` unit waits on the dispatch table.
+      if (u.qa && !isQaRun(u)) {
+        const walk = openWalkOf(s, u, cards, card.id);
+        if (walk) {
+          hold(`QA walk #${walk.ticket} is in progress — its findings fold into one fix ticket when it closes (cutter 4)`);
+          continue;
+        }
+      }
       // `main` here covers develop and qa-run alike; a unit on a sibling's open
       // PR head is left alone, and `main-fix` is the ticket cut to repair main.
       if (mainRed && base.ref === 'main' && !labelsOf(u).includes('main-fix')) {
