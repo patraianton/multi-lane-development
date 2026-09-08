@@ -35,7 +35,7 @@ import {
 import { offBoardFindings } from './off-board.mjs';
 import { fixDebtFindings, idleLaneFindings, idleLedger, idleLine } from './idle-lanes.mjs';
 import {
-  planDispatchFull, planReviews, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
+  planDispatchFull, planReviews, planSpecChecks, recordDispatch, dispatchRows, baseLine, taskText, taskFileName, specDirFor, launchPlan, runLaunch,
   launchFailureHolds, quarantinedLanes,
 } from './auto-dispatch.mjs';
 import {
@@ -167,6 +167,10 @@ const DEFAULTS = {
   probeStaleSec: 60,
   // Sending is an explicit setting, re-read with the rest of this file.
   autoDispatch: false,
+  // The spec-check (owner, 2026-09-08): an auditor reads every PR head against
+  // the sprint's spec before any review, `full-ci` label or merge. `false`
+  // only for a board that must run the pre-2026-09-08 road.
+  specCheck: true,
   // Full local gate written into every task file unless a fleet host overrides it.
   check: 'bash ../ci-local-and-stamp.sh',
   // The GitHub identity the board acts as. Absent — gh runs on whatever
@@ -400,6 +404,7 @@ function applyConfig(raw) {
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
   config.autoDispatch = src.autoDispatch === true;
+  config.specCheck = src.specCheck !== false;
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
   config.github = parseGithubIdentity(src.github);
@@ -694,7 +699,7 @@ async function judgeDispatchedLanes(facts) {
   const dayMs = 24 * 60 * 60 * 1000;
   const shouldPrune = (key, e) => {
     const kind = e?.kind ?? String(key).split(':')[1] ?? 'develop';
-    if (kind === 'review' || kind === 'fix') {
+    if (kind === 'spec' || kind === 'review' || kind === 'fix') {
       return e?.judged != null
         && mergedBranches.has(String(e?.branch ?? ''))
         && nowMs - (Date.parse(e?.judgedAt ?? e?.at ?? '') || 0) > dayMs;
@@ -1263,20 +1268,29 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   }
   const fleet = await readJsonSoft(FLEET_LAUNCH_FILE, null);
   const reviewHolds = [];
-  const reviews = planReviews({ cards, sprints, ledger, fleet, at, holds: reviewHolds });
+  // Queue order (README §4): spec-check, review, fix, develop. The spec-check
+  // reads a head first; the reviewer waits for its `S<n> — GO` (owner, 2026-09-08).
+  const specChecks = config.specCheck
+    ? planSpecChecks({ cards, sprints, ledger, fleet, at, holds: reviewHolds })
+    : [];
+  const reviews = planReviews({
+    cards, sprints, ledger, fleet, at, holds: reviewHolds, specCheck: config.specCheck,
+    taken: specChecks.map(pair => pair.lane), takenTickets: specChecks.map(pair => pair.unit.ticket),
+  });
+  const reads = [...specChecks, ...reviews];
   const develop = planDispatchFull(cards, sprints, {
     ledger, at, fleet, facts,
-    takenLanes: reviews.map(pair => pair.lane),
-    takenTickets: reviews.map(pair => pair.unit.ticket),
+    takenLanes: reads.map(pair => pair.lane),
+    takenTickets: reads.map(pair => pair.unit.ticket),
     needsBuild: unit => !unit.labels?.some(label => String(label).toLowerCase() === 'no-build'),
   });
-  // Reviews reserve capacity first. planDispatchFull reserves those lanes
+  // Head reads reserve capacity first. planDispatchFull reserves those lanes
   // while assigning fixes before develops; spell out the final queue order so
   // the launch loop cannot depend on a producer's incidental ordering.
   const fixes = develop.pairs.filter(pair => pair.kind === 'fix');
   const developments = develop.pairs.filter(pair => pair.kind === 'develop');
   const seenTickets = new Set();
-  const pairs = [...reviews, ...fixes, ...developments].filter(pair => {
+  const pairs = [...reads, ...fixes, ...developments].filter(pair => {
     const ticket = String(pair.unit.ticket);
     if (seenTickets.has(ticket)) return false;
     seenTickets.add(ticket);
@@ -1332,7 +1346,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   }
   if (!config.autoDispatch) {
     for (const p of pairs) {
-      const kind = p.kind === 'review' ? ` review R${p.round}` : '';
+      const kind = p.kind === 'review' ? ` review R${p.round}` : (p.kind === 'spec' ? ` spec-check S${p.round}` : '');
       dispatchNote(`auto-dispatch: would dispatch ${p.unit.unit ? p.unit.unit + ' ' : ''}#${p.unit.ticket}${kind} -> ${p.lane} from ${baseLine(p.base)} (autoDispatch: true in the settings to send)`);
     }
     setAutoDispatch({ at, on: false, rows: rowsWithMerges(dispatchRows({ pairs, holds, ledger, at, state: 'would dispatch' })) });
@@ -1560,11 +1574,11 @@ async function mergeSweep(sprints, facts = null) {
     const strict = group.items.find(({ unit }) =>
       !(unit.labels ?? []).some(label => String(label?.name ?? label).toLowerCase() === 'no-review'));
     const mergeUnit = (strict ?? group.items[0]).unit;
-    const decision = canMerge({ pr: group.pr, unit: mergeUnit });
+    const decision = canMerge({ pr: group.pr, unit: mergeUnit, specCheck: config.specCheck });
     if (!decision.ok) {
       // Everything but the full-run receipt is in place: ask for the full run
       // here — this is the sweep that would otherwise wait for it forever.
-      const labelled = needsFullCiLabel({ pr: group.pr, unit: mergeUnit })
+      const labelled = needsFullCiLabel({ pr: group.pr, unit: mergeUnit, specCheck: config.specCheck })
         ? await addFullCiLabel(group.pr)
         : false;
       // "check green" says nothing while a run is still going: the table
@@ -1993,10 +2007,24 @@ const mainCiSource = makeSource('main-ci', 60000, async () => {
     '--workflow', 'pr-ci.yml', '--limit', '5',
     '--json', 'databaseId,conclusion,headSha,url,createdAt'], 60000);
   if (out === null) throw new Error('gh run list did not answer');
-  const run = JSON.parse(out)
-    .find(r => MAIN_CI_CONCLUSIONS.has(String(r?.conclusion ?? '').toLowerCase())) ?? null;
-  return run ? { ...run, red: String(run.conclusion).toLowerCase() === 'failure' } : null;
+  return newestMainCiRun(JSON.parse(out), mainCiSource.value ?? null);
 });
+
+// GitHub sometimes answers `gh run list` with a stale page — on 2026-09-08 one
+// call in three returned runs from 24–29 August, so the board announced "main
+// is green again at <an August commit>" five times while main was red. The
+// newest completed run by date is the answer, and a page older than what the
+// board already knows is not a new fact: the known run stands.
+export function newestMainCiRun(runs, known = null) {
+  const completed = (Array.isArray(runs) ? runs : [])
+    .filter(r => MAIN_CI_CONCLUSIONS.has(String(r?.conclusion ?? '').toLowerCase()))
+    .sort((a, b) => (Date.parse(b?.createdAt ?? '') || 0) - (Date.parse(a?.createdAt ?? '') || 0));
+  const run = completed[0] ?? null;
+  if (!run) return known ?? null;
+  const knownAt = Date.parse(known?.createdAt ?? '') || 0;
+  if (known && (Date.parse(run.createdAt ?? '') || 0) < knownAt) return known;
+  return { ...run, red: String(run.conclusion).toLowerCase() === 'failure' };
+}
 
 // Where each open PR's checks run: for PRs whose CI is queued or in progress,
 // the workflow runs on the head SHA and their jobs — job status, runner name,

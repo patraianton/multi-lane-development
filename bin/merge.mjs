@@ -103,35 +103,62 @@ export function ciColor(rollup, required = REQUIRED_CHECKS) {
 
 // Parse all review comments once so the page can show their history while the
 // scheduler separately uses only a verdict that names the current PR head.
+// Two verdict families live in the same comment stream: the reviewer's
+// `R<n> — GO|NO-GO` and the spec-check's `S<n> — GO|NO-GO` (owner,
+// 2026-09-08: the spec-check reads a head before any review or full run).
+// Both carry `head <sha>` on line 2; the spec family is returned under
+// `spec*` names and never mixes with the review family.
 export function prVerdictFacts(comments, headSha = null) {
   const verdicts = [];
   let verdict = null;
   let verdictOnHead = null;
   let verdictRounds = 0;
+  const specVerdicts = [];
+  let specVerdict = null;
+  let specVerdictOnHead = null;
+  let specRounds = 0;
 
   for (const comment of comments ?? []) {
     const body = String(comment?.body ?? '');
     const lines = body.split(/\r?\n/);
-    const match = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(lines[0].trim());
-    const fixMatch = /^fix\s+R(\d+)\s+pushed\b/i.exec(lines[0].trim());
+    const first = lines[0].trim();
+    const match = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(first);
+    const specMatch = /^S(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(first);
+    const fixMatch = /^fix\s+R(\d+)\s+pushed\b/i.exec(first);
     const round = Number(match?.[1] ?? fixMatch?.[1]);
     if (Number.isInteger(round)) verdictRounds = Math.max(verdictRounds, round);
-    if (!match) continue;
+    const specRound = Number(specMatch?.[1]);
+    if (Number.isInteger(specRound)) specRounds = Math.max(specRounds, specRound);
+    const hit = match ?? specMatch;
+    if (!hit) continue;
 
     const headMatch = /^head\s+([0-9a-f]{7,40})\b/i.exec(lines[1] ?? '');
     const entry = {
-      round: Number(match[1]),
-      go: match[2].toUpperCase() === 'GO',
+      round: Number(hit[1]),
+      go: hit[2].toUpperCase() === 'GO',
       head: headMatch?.[1] ?? null,
       at: comment?.createdAt ?? null,
       body,
     };
+    if (specMatch) {
+      specVerdicts.push(entry);
+      if (entry.head) specVerdict = entry;
+      if (prefixMatches(entry.head, headSha)) specVerdictOnHead = entry;
+      continue;
+    }
     verdicts.push(entry);
     if (entry.head) verdict = entry;
     if (prefixMatches(entry.head, headSha)) verdictOnHead = entry;
   }
 
-  return { verdicts, verdict, verdictOnHead, verdictRounds };
+  return { verdicts, verdict, verdictOnHead, verdictRounds, specVerdicts, specVerdict, specVerdictOnHead, specRounds };
+}
+
+// The spec-check's GO on this exact head. With `specCheck` on, a unit that is
+// not `no-review` neither reviews, labels `full-ci` nor merges without it.
+export function specGoOnHead(pr) {
+  const spec = pr?.specVerdictOnHead;
+  return Boolean(spec) && spec.go === true && prefixMatches(spec.head, pr?.headSha);
 }
 
 // Compatibility for callers that only need the latest headed verdict.
@@ -141,14 +168,17 @@ export function prVerdict(comments) {
 
 // Conditions are deliberately checked in scheduler order. `why` is stable
 // enough for both the dispatch table and focused policy tests.
-export function canMerge({ pr, unit } = {}) {
+// `specCheck` (the board's setting, default true there; false here only so the
+// fixtures written before 2026-09-08 still read as they did): the spec-check's
+// `S<n> — GO` on the head comes before the reviewer's GO.
+export function canMerge({ pr, unit, specCheck = false } = {}) {
   if (ciColorOf(pr) !== 'green') return { ok: false, why: 'check green' };
   if (!exactHead(ciHeadOf(pr), pr?.headSha)) return { ok: false, why: 'check head' };
-  return mergeReadyBesidesCi({ pr, unit });
+  return mergeReadyBesidesCi({ pr, unit, specCheck });
 }
 
 // Every merge condition except the checks, in the same order.
-function mergeReadyBesidesCi({ pr, unit } = {}) {
+function mergeReadyBesidesCi({ pr, unit, specCheck = false } = {}) {
   // A no-review ticket (styles, texts or documentation only — RULES.md,
   // cutter 7) merges on the green check alone: the GO requirement is dropped,
   // never a standing stop order — a NO-GO on this exact head is a fix round,
@@ -158,6 +188,9 @@ function mergeReadyBesidesCi({ pr, unit } = {}) {
   if (labelsOf(unit).includes('no-review')) {
     if (verdictOnHead && verdict.go === false) return { ok: false, why: 'NO-GO' };
   } else {
+    if (specCheck && !specGoOnHead(pr)) {
+      return { ok: false, why: pr?.specVerdictOnHead?.go === false ? 'SPEC NO-GO' : 'spec-check' };
+    }
     if (!verdictOnHead) return { ok: false, why: 'verdict head' };
     if (verdict.go !== true) return { ok: false, why: 'NO-GO' };
   }
@@ -176,8 +209,8 @@ function mergeReadyBesidesCi({ pr, unit } = {}) {
 // no-review), the PR is not draft, GitHub calls it mergeable, nothing holds
 // it, and the label is not there yet. A red `pr-ci` means a fixer owns this
 // head first: labelling it would only burn a full run on code about to change.
-export function needsFullCiLabel({ pr, unit } = {}) {
+export function needsFullCiLabel({ pr, unit, specCheck = false } = {}) {
   if (labelsOf(pr).includes(FULL_CI_LABEL)) return false;
   if (ciColorOf(pr) === 'red') return false;
-  return mergeReadyBesidesCi({ pr, unit }).ok;
+  return mergeReadyBesidesCi({ pr, unit, specCheck }).ok;
 }

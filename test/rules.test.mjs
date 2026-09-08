@@ -10,7 +10,7 @@ import { cutRules, readRules } from '../bin/rules.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const runFile = promisify(execFile);
-const roles = ['common', 'lane', 'reviewer', 'fixer', 'qa', 'cutter'];
+const roles = ['common', 'lane', 'spec-check', 'reviewer', 'fixer', 'qa', 'cutter'];
 
 async function git(root, ...args) {
   const { stdout } = await runFile('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 10_000 });
@@ -28,7 +28,7 @@ async function initRepo(root) {
   await git(root, 'config', 'user.email', 'rules@example.test');
 }
 
-test('cutRules returns common plus each of the six committed rule sections', async () => {
+test('cutRules returns common plus each of the seven committed rule sections', async () => {
   const text = await git(ROOT, 'show', 'HEAD:docs/RULES.md');
   const blocks = new Map();
   for (let i = 0; i < roles.length; i += 1) {

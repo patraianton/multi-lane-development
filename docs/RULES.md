@@ -28,9 +28,20 @@ bans only. The ticket says what to build; these rules say how and what never.
 8. Open the PR once, ready, not draft: `gh pr create --base main --head <Branch> --title "<title> #<ticket>" --body-file <file>`. Body line 1 `Ticket: #<ticket>`, then three lines "what changed".
 9. Report: the `Check:` verdict line and log path; every acceptance criterion `met` / `not met` / `n/a` with the command output; what a reviewer would flag first; every existing test you rewrote or found red. Last line `DONE #<ticket> <PR url> <head sha>`.
 
+<!-- role: spec-check -->
+## spec-check — reads one PR head against the sprint's spec; proof = an `S<Round> — GO|NO-GO` comment on `Head:`
+1. `git fetch origin` and check out exactly `Head:`. Read `SPEC.md` (and `GRILL-OUTCOME.md` if present) in `Spec bundle:` completely, then the ticket and the diff against `Base:`. You did not write this code and owe it nothing. You run BEFORE the reviewer and before the full pipeline (owner, 2026-09-08): no test round is spent on code that is not what the spec says.
+2. List every checkable requirement of the spec's requirement sections and every acceptance box, numbered by section. For each, find the executable code path on this head and give one verdict: `MET` (evidence `path:line`), `PARTIAL` (evidence + what differs), `NOT MET` (where it should have been), `NOT VERIFIABLE BY CODE` (what would prove it: browser walk, mailbox, DB query). Comments, test names and the lane's report prove nothing; a test proves a requirement only if you ran it green here and its assertion pins that requirement.
+3. Be exact where the spec is exact: strings and their order in every locale, character for character; counts; sizes; event names and their allowed fields; DB constraints against the validation schema; what the spec forbids to store or emit; the files the diff touches against the spec's allowed list and its out-of-scope list.
+4. Run the module's own tests one file at a time; never the full suite, never a build, never anything that needs a database (DB-bound files: "not run here (needs DB)").
+5. Change nothing, push nothing, open no PR, never edit the ticket, never touch production or `.env*`.
+6. The verdict is one PR comment, plain text, no heading marks: line 1 `S<Round> — GO` or `S<Round> — NO-GO`; line 2 `head <Head>`; then every deviation as `SEVERITY — §ref — spec says — code does — path:line`, HIGH, MEDIUM, LOW in that order; then `not verifiable by code:` lines for the QA walk. NO-GO for any HIGH or MEDIUM deviation (HIGH = user-visible behaviour or a data/delivery contract broken; MEDIUM = the spec's letter not followed); LOW alone is a GO with the LOW lines under `notes:`.
+7. A deviation outside the ticket's scope → a `qa` ticket exactly as reviewer 7, never a NO-GO.
+8. Report: the requirement table (`requirement | verdict | evidence | note`) and the counts `MET=<n> PARTIAL=<n> NOT_MET=<n> NOT_VERIFIABLE=<n>`; last line `DONE #<ticket> <PR url> S<Round> GO|NO-GO`.
+
 <!-- role: reviewer -->
 ## reviewer — reads one PR head; proof = a verdict comment on `Head:`
-1. `git fetch origin` and check out exactly `Head:`. Read the diff against `Base:` and the ticket.
+1. `git fetch origin` and check out exactly `Head:`. Read the diff against `Base:` and the ticket. The board sends you only after the spec-check's `S<n> — GO` on this head: what the spec says is settled, you judge how it is built.
 2. Write your own findings before reading the lane's report or its self-check.
 3. Run the ticket's acceptance commands yourself, plus one check of your own that is not on the lane's list. Do not run the full `Check:` — CI runs it on the PR.
 4. Check the bans: visible text or layout outside the ticket, files outside the ticket's list, a second protected zone, `Closes #`, updated snapshots, waits without a timeout.
@@ -43,8 +54,8 @@ bans only. The ticket says what to build; these rules say how and what never.
 <!-- role: fixer -->
 ## fixer — one round on an open PR; proof = a new head on the PR
 1. `git fetch origin --prune`; `git checkout -B <Branch> origin/<Branch>` — never from `Base`.
-2. The list is the `VERDICT`, `CI` or `CONFLICT` section of this task file, nothing beyond it. Before touching code read every earlier `R<k> — GO|NO-GO` comment on this PR (`gh pr view <Branch> --repo <Repository> --comments`); a change that reopens what an earlier round fixed is a defect.
-3. `VERDICT`: every behaviour item gets a test that is red before the fix and green after; every item is answered in the report `fixed` / `not a defect — why`.
+2. The list is the `SPEC-CHECK`, `VERDICT`, `CI` or `CONFLICT` section of this task file, nothing beyond it. Before touching code read every earlier `S<k> — GO|NO-GO` and `R<k> — GO|NO-GO` comment on this PR (`gh pr view <Branch> --repo <Repository> --comments`); a change that reopens what an earlier round fixed is a defect.
+3. `SPEC-CHECK` and `VERDICT`: every behaviour item gets a test that is red before the fix and green after; every item is answered in the report `fixed` / `not a defect — why`. A `SPEC-CHECK` item is answered against the spec's own words in `Spec bundle:`, never against the ticket's paraphrase.
 4. `CI`: read the failed check's log first; fix the cause; never retry blindly; never delete or skip a test to pass.
 5. `CONFLICT`: `git merge origin/main`; resolve only in files the ticket names; a conflict in anyone else's file → `QUESTION` (common 3).
 6. `Check:` until it is green on the exact head you push (the third red run in a row → `QUESTION`, common 3), then push at once: a run still queued or running on `Head:` is dead and your push cancels it (`pr-ci` cancel-in-progress, owner decision #1274); the repository's push-discipline note does not apply to a fix round (common 6). `pr-ci-full` is the board's business — never wait for it, never treat it as your red check. No `--force`, no empty commit; one PR comment `fix R<Round> pushed, head <sha>`.
@@ -59,17 +70,6 @@ bans only. The ticket says what to build; these rules say how and what never.
 5. Filed at least one finding and `n` < 3 → create the next round: `gh issue create --label qa-run --title "QA R<n+1> — <sprint>" --body "Part of #<umbrella>.\ndepends on: #<each finding you filed>\n<the walk section of your own ticket verbatim>"`. `n` = 3 with findings → post `QUESTION #<ticket> QA round 3 still finds defects` and stop.
 6. One comment on the umbrella: line 1 `QA R<n> — <k> findings`, then the table surface × locale × viewport × result.
 7. Report last line `DONE #<ticket> findings=<k>`; then `gh issue close <ticket>`. Checks skipped → write `STOPPED <reason>` as the last line and leave the ticket open.
-
-<!-- role: spec-check -->
-## spec-check — audits merged code against the spec, clause by clause; proof = the audit report (owner, 2026-09-08)
-1. Runs on a Codex lane after the work is merged, on `origin/main` (`git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main`), never on Windows. The MLD session dispatches it with the spec bundle (`SPEC.md` + `assets/`) copied next to the lane; the task file is written from `docs/SPEC-CHECK-TASK.md`.
-2. You did not write this code and owe it nothing. Read `SPEC.md` completely; list every checkable requirement of §1…§13 and every acceptance box of §14, numbered by section.
-3. One verdict per requirement, from the executable code path — never from comments, test names or the lane's report: `MET` (evidence `path:line`), `PARTIAL` (evidence + what differs), `NOT MET` (where it should have been), `NOT VERIFIABLE BY CODE` (what would prove it: browser walk, mailbox, DB query). A test counts as proof only if you ran it green here and its assertion pins that requirement.
-4. Be exact where the spec is exact: strings and their order in every locale, character for character; counts; sizes; event names and their allowed fields; DB constraints against the validation schema; the files the squash commit touched against the spec's allowed list (§1) and its out-of-scope list (§15).
-5. Run the module's own tests one file at a time; no full suite, no build, no database on the lane (DB-bound files: "not run here (needs DB)").
-6. Change nothing, push nothing, open nothing, never touch production or `.env*`.
-7. Report `SPEC-CHECK-<spec id>.md` in the lane's `reports/`: header (spec id, audited head, squash commit, tests run); one table per section `requirement | verdict | evidence | note`; `## Deviations` ordered HIGH / MEDIUM / LOW as `SEVERITY — §ref — spec says — code does — path:line`; `## Not verifiable by code`; `## Verdict` = `COMPLIANT` / `COMPLIANT WITH DEVIATIONS` / `NOT COMPLIANT`; last line `DONE SPEC-CHECK <head sha> MET=<n> PARTIAL=<n> NOT_MET=<n> NOT_VERIFIABLE=<n>`.
-8. The session reads the report: every HIGH and MEDIUM becomes part of ONE fix ticket (cutter 4), never a heap; LOW goes to the owner's one-line report as a count.
 
 <!-- role: cutter -->
 ## cutter — turns a spec into tickets (the MLD session, on the owner's word)

@@ -69,7 +69,13 @@ function isQaRun(unit) {
   return Boolean(unit?.qaRun) || labelsOf(unit).includes('qa-run');
 }
 
-const DISPATCH_PRIORITY = new Map([['review', 0], ['fix', 1], ['develop', 2]]);
+// Queue order (README §4): spec-check, review, fix, develop — an open PR is
+// finished before a new one starts, and a head is checked against the spec
+// before anyone reviews it or the full pipeline is spent on it (owner,
+// 2026-09-08).
+const DISPATCH_PRIORITY = new Map([['spec', 0], ['review', 1], ['fix', 2], ['develop', 3]]);
+// Kinds whose journal identity is the PR head, not a round number.
+const HEAD_KINDS = new Set(['spec', 'review', 'fix']);
 
 // All task producers feed one stable queue. Producers already walk cards in
 // board order and units in umbrella order, so equal-kind entries deliberately
@@ -85,7 +91,7 @@ export function dispatchKey(pair) {
   if (typeof pair?.journalKey === 'string' && pair.journalKey) return pair.journalKey;
   const ticket = pair?.unit?.ticket;
   const kind = kindOf(pair);
-  if ((kind === 'review' || kind === 'fix') && pair?.head && !pair?.retryOf) {
+  if (HEAD_KINDS.has(kind) && pair?.head && !pair?.retryOf) {
     return `${ticket}:${kind}:${shortSha(pair.head)}`;
   }
   return `${ticket}:${kind}:${roundOf(pair)}`;
@@ -96,6 +102,7 @@ export function taskFileName(pair) {
   const round = roundOf(pair);
   switch (kindOf(pair)) {
     case 'develop': return `TASK-${ticket}.md`;
+    case 'spec': return `TASK-${ticket}-SPEC-S${round}.md`;
     case 'review': return `TASK-${ticket}-REVIEW-R${round}.md`;
     case 'fix': return `TASK-${ticket}-FIX-R${round}.md`;
     default: throw new Error(`unknown dispatch kind "${kindOf(pair)}"`);
@@ -166,7 +173,7 @@ function journalParts(key, entry) {
   const bits = String(key ?? '').split(':');
   const kind = entry?.kind ?? (bits.length >= 2 ? bits[1] : 'develop');
   const suffix = bits[2] ?? '';
-  const headKey = (kind === 'review' || kind === 'fix') && /^[0-9a-f]{7,40}$/i.test(suffix);
+  const headKey = HEAD_KINDS.has(kind) && /^[0-9a-f]{7,40}$/i.test(suffix);
   const parsedRound = headKey ? NaN : Number(suffix);
   return {
     ticket: entry?.ticket ?? (bits[0] && /^\d+$/.test(bits[0]) ? Number(bits[0]) : null),
@@ -231,7 +238,7 @@ export function noProofRetry(ledger, ticket, kind, head = null) {
   const journal = ledger?.dispatched ?? ledger ?? {};
   const failed = entriesFor(journal, ticket, kind)
     .filter(x => x.entry?.judged === 'no-proof')
-    .filter(x => !head || (kind !== 'review' && kind !== 'fix') || sameHead(x.head, head))
+    .filter(x => !head || !HEAD_KINDS.has(kind) || sameHead(x.head, head))
     .sort((a, b) => a.round - b.round || a.order - b.order);
   const last = failed.at(-1);
   if (!last) return null;
@@ -252,7 +259,7 @@ function entryHost(entry) {
 
 function orderedTaskEntries(journal, ticket) {
   return entriesFor(journal, ticket)
-    .filter(item => ['develop', 'review', 'fix'].includes(item.kind))
+    .filter(item => ['develop', 'spec', 'review', 'fix'].includes(item.kind))
     .sort((a, b) => {
       const ta = Date.parse(a.entry?.at ?? '') || 0;
       const tb = Date.parse(b.entry?.at ?? '') || 0;
@@ -414,7 +421,7 @@ export function launchFailureHolds(ledger, { at = null, retryMs = RETRY_MS } = {
 function entriesForAllTickets(journal) {
   const tickets = [];
   for (const [key, entry] of Object.entries(journal ?? {})) {
-    if (!['develop', 'review', 'fix'].includes(entryKind(key, entry))) continue;
+    if (!['develop', 'spec', 'review', 'fix'].includes(entryKind(key, entry))) continue;
     const ticket = entry?.ticket ?? journalParts(key, entry).ticket;
     if (ticket != null) tickets.push(ticket);
   }
@@ -581,6 +588,17 @@ function redOnHead(pr, head) {
 function fixNeed(unit, fixEntries) {
   const pr = unit?.pr;
   const head = String(pr?.headSha ?? '');
+  // The spec-check's NO-GO on this head is the first thing a fixer answers:
+  // no reviewer read that head yet and no full run was spent on it.
+  const spec = pr?.specVerdictOnHead;
+  if (spec?.go === false && sameHead(spec.head, head)) {
+    const n = Number(spec.round);
+    const round = Number.isInteger(n) && n > 0 ? n : 1;
+    return {
+      round,
+      sections: [{ title: `SPEC-CHECK S${round} — verbatim`, body: String(spec.body ?? '') }],
+    };
+  }
   const verdict = pr?.verdictOnHead;
   if (verdict?.go === false) {
     const n = Number(verdict.round);
@@ -682,6 +700,16 @@ export function planFixes({
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
           reason: `review of head ${shortSha(head)} is running — the fix waits for its verdict`,
+        });
+        continue;
+      }
+      // The same rule for the spec-check: while it reads this head, a fixer
+      // would move it and the spec verdict would land on a dead head.
+      if (!sameHead(pr?.specVerdictOnHead?.head, head)
+        && liveEntryOnHead(journal, unit.ticket, 'spec', head, now, launchingMs)) {
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: `spec-check of head ${shortSha(head)} is running — the fix waits for its verdict`,
         });
         continue;
       }
@@ -929,20 +957,34 @@ function lastWriterLane(journal, ticket) {
   return lane;
 }
 
-// Reviews are pure/light work, so every launchable free lane is eligible. One
-// review is planned per lane, in sprint/card and unit order, before develop
-// work. The caller passes the resulting lane names to planDispatchFull as
-// `takenLanes` when composing the complete queue.
-export function planReviews({
+// Head readers — the spec-check (kind `spec`, role `spec-check`, verdict
+// `S<n>`) and the reviewer (kind `review`, role `reviewer`, verdict `R<n>`) —
+// are pure/light work, so every launchable free lane is eligible. One read is
+// planned per lane, in sprint/card and unit order, before develop work. The
+// caller passes the resulting lane names on as `taken` / `takenLanes` when
+// composing the complete queue.
+const HEAD_READERS = {
+  spec: {
+    role: 'spec-check', word: 'spec-check',
+    verdictOnHead: pr => pr?.specVerdictOnHead, rounds: pr => pr?.specRounds,
+  },
+  review: {
+    role: 'reviewer', word: 'review',
+    verdictOnHead: pr => pr?.verdictOnHead, rounds: pr => pr?.verdictRounds,
+  },
+};
+
+function planHeadReads(kind, {
   cards = [], sprints = null, ledger = null, fleet = null, at = null,
   retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS,
-  holds = null,
+  holds = null, taken: takenIn = [], takenTickets: takenTicketsIn = [], specCheck = false,
 } = {}) {
+  const reader = HEAD_READERS[kind];
   const now = Date.parse(at ?? '') || Date.now();
   const journal = ledger?.dispatched ?? {};
   const heldLanes = heldLaneNames(journal, now, holdMs, launchingMs);
-  const taken = new Set();
-  const takenTickets = new Set();
+  const taken = new Set(takenIn);
+  const takenTickets = new Set([...takenTicketsIn].map(ticket => String(ticket)));
   const pairs = [];
 
   for (const card of cards) {
@@ -959,30 +1001,45 @@ export function planReviews({
       // A parked child remains parked. The pure planner does not otherwise
       // require pipeline children: its input contract is the sprint PR facts.
       if (!servable(unit, unitCard)) continue;
-      if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(pr.verdictOnHead?.head, head)) continue;
+      if (!pr || unit?.merged || pr.open === false || pr.draft || !head || sameHead(reader.verdictOnHead(pr)?.head, head)) continue;
       // A no-review unit is skipped exactly like a head that already has its
-      // verdict: the board never plans a reviewer for it (README.md, queue order).
+      // verdict: the board never plans a reader for it (README.md, queue order).
       if (labelsOf(unit).includes('no-review')) continue;
+      // The reviewer reads a head only after the spec-check said GO on it
+      // (owner, 2026-09-08): a spec NO-GO is the fixer's, a missing spec
+      // verdict is the spec-check's — the review waits on the dispatch table.
+      if (kind === 'review' && specCheck) {
+        const spec = pr.specVerdictOnHead;
+        const specOnHead = Boolean(spec) && sameHead(spec.head, head);
+        if (specOnHead && spec.go === false) continue;
+        if (!specOnHead || spec.go !== true) {
+          holds?.push({
+            card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+            reason: `spec-check of head ${shortSha(head)} first — the review waits for its S-verdict`,
+          });
+          continue;
+        }
+      }
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;
-      const retry = dispatchRetry(journal, unit.ticket, 'review', head, now, retryMs);
-      const headGuard = journal[`${unit.ticket}:review:${shortSha(head)}`];
-      const previous = entryForHead(journal, unit.ticket, 'review', head);
+      const retry = dispatchRetry(journal, unit.ticket, kind, head, now, retryMs);
+      const headGuard = journal[`${unit.ticket}:${kind}:${shortSha(head)}`];
+      const previous = entryForHead(journal, unit.ticket, kind, head);
       if (entryBlocksDispatch(headGuard, now, launchingMs)
           || (previous && previous !== headGuard && entryBlocksDispatch(previous, now, launchingMs))) {
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-          reason: `review of head ${shortSha(head)} was already dispatched`,
+          reason: `${reader.word} of head ${shortSha(head)} was already dispatched`,
         });
         continue;
       }
       // Issue #17 mirror: while a fixer is working on this head the branch is
-      // about to move — reviewing the doomed head wastes the reviewer's round.
-      // The fixer's entry keeps its old head, so the new head reviews freely.
+      // about to move — reading the doomed head wastes the reader's round.
+      // The fixer's entry keeps its old head, so the new head reads freely.
       if (liveEntryOnHead(journal, unit.ticket, 'fix', head, now, launchingMs)) {
         holds?.push({
           card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-          reason: `fix of head ${shortSha(head)} is running — the review waits for a new head`,
+          reason: `fix of head ${shortSha(head)} is running — the ${reader.word} waits for a new head`,
         });
         continue;
       }
@@ -1005,7 +1062,7 @@ export function planReviews({
         continue;
       }
 
-      const rawRound = Number(pr.verdictRounds);
+      const rawRound = Number(reader.rounds(pr));
       const firstRound = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
       const round = retry?.round ?? firstRound;
       const base = baseFor(unit, sprint);
@@ -1020,12 +1077,23 @@ export function planReviews({
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: base.error ? { ref: 'main', sha: null, pr: null, ticket: null, unit: null } : base,
-        kind: 'review', round, head, role: 'reviewer',
+        kind, round, head, role: reader.role,
         ...(retry ? { retryOf: retry.previousKey } : {}),
       });
     }
   }
   return pairs;
+}
+
+// The spec-check: an auditor that did not write the code reads the PR head
+// against the sprint's spec before any review or full run (owner, 2026-09-08).
+export function planSpecChecks(opts = {}) {
+  return planHeadReads('spec', opts);
+}
+
+// The reviewer. With `specCheck: true` a head is reviewed only after `S<n> — GO`.
+export function planReviews(opts = {}) {
+  return planHeadReads('review', opts);
 }
 
 // ------------------------------------------------------------ the journal
@@ -1043,7 +1111,7 @@ export function recordDispatch(ledger, pair, outcome, at) {
     // head can stay open. That includes numeric fix retries: pruning a
     // successful retry while retaining its failed head guard would resurrect
     // the same round. Merge likewise retains its retry ceiling.
-    if (kind === 'review' || kind === 'fix' || kind === 'merge' || now - t <= JOURNAL_KEEP_MS) dispatched[k] = e;
+    if (HEAD_KINDS.has(kind) || kind === 'merge' || now - t <= JOURNAL_KEEP_MS) dispatched[k] = e;
   }
   const key = dispatchKey(pair);
   // A successful launch is final for its key. Every retry has its own key, so
@@ -1080,7 +1148,9 @@ export function dispatchRows({ pairs = [], holds = [], ledger = null, at = null,
   const rows = [];
   const kindLabel = value => {
     const kind = kindOf(value);
-    return kind === 'review' ? `review R${roundOf(value)}` : kind;
+    if (kind === 'review') return `review R${roundOf(value)}`;
+    if (kind === 'spec') return `spec-check S${roundOf(value)}`;
+    return kind;
   };
   for (const p of pairs) {
     rows.push({
@@ -1166,7 +1236,7 @@ export function taskText({
     lines.push(`Base: ${b.sha ? '`' + b.sha + '`' : '`origin/' + b.ref + '`'} — the head of \`${b.ref}\`${b.pr ? `, the open PR #${b.pr}` : ''}${b.unit ? ` of ${b.unit}` : ''}${b.ticket ? ` (#${b.ticket})` : ''}. Start from it (MANDATE.md §2); rebase after that PR merges. Do not wait for the merge.`);
   }
   lines.push(`Role: ${role}`);
-  if (head) lines.push(`Head: ${head}  Round: R${roundOf(namedPair)}`);
+  if (head) lines.push(`Head: ${head}  Round: ${kind === 'spec' ? 'S' : 'R'}${roundOf(namedPair)}`);
   lines.push(`Check: ${check}`);
   lines.push(`Rules: docs/RULES.md @ ${rules.sha}`);
   lines.push(specRemote

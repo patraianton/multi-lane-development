@@ -1,6 +1,10 @@
-# SPEC-CHECK task template — the session fills `<…>`, copies it to the lane's kitchen, launches `hzlane <N> "Read <path> and carry it out in full."`
+# SPEC-CHECK task template — a hand-run audit of MERGED code (post-hoc)
 
-Role text: `docs/RULES.md` → `spec-check`. First run: AUTO-FEEDBACK-MODULE-SPEC-001 on lanes-01/lane-1, 2026-09-08.
+The board runs the in-flow spec-check itself on every PR head before the review (role `spec-check` in
+`docs/RULES.md`, README §6). This template is for the other case: auditing what is already on `origin/main`
+against a spec after the fact — the session fills `<…>`, copies it to the lane's kitchen and launches
+`hzlane <N> "Read <path> and carry it out in full."`. First run: AUTO-FEEDBACK-MODULE-SPEC-001 on lanes-01/lane-1,
+2026-09-08 (176 MET / 16 PARTIAL / 5 NOT MET / 14 not verifiable; 4 HIGH + 3 MEDIUM → AUTO-FEEDBACK-FIX-001).
 
 ```
 # TASK — SPEC-CHECK <SPEC-ID> (independent spec-compliance audit)
