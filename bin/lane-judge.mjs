@@ -111,14 +111,15 @@ function openOrMerged(pr) {
   return true;
 }
 
-function verdictOn(entry, prs) {
+// The reviewer's proof is an `R<n>` verdict on the head; the spec-check's is an
+// `S<n>` verdict on the head (the `spec*` fields of prVerdictFacts).
+function verdictOn(entry, prs, family = 'review') {
   for (const pr of prs) {
     if (!prBelongsTo(entry, pr)) continue;
-    const verdicts = [
-      pr?.verdictOnHead,
-      ...(Array.isArray(pr?.verdicts) ? pr.verdicts : []),
-      pr?.verdict,
-    ].filter(Boolean);
+    const verdicts = (family === 'spec'
+      ? [pr?.specVerdictOnHead, ...(Array.isArray(pr?.specVerdicts) ? pr.specVerdicts : []), pr?.specVerdict]
+      : [pr?.verdictOnHead, ...(Array.isArray(pr?.verdicts) ? pr.verdicts : []), pr?.verdict]
+    ).filter(Boolean);
     const verdict = verdicts.find(item => typeof item?.go === 'boolean' && sameHead(item.head, entry.head));
     if (verdict) return verdict;
   }
@@ -158,6 +159,12 @@ function proofFor(entry, prs, ticket) {
       return verdict
         ? { ok: true, reason: `countable verdict on ${entry.head}` }
         : { ok: false, reason: `no countable verdict on ${entry.head}` };
+    }
+    case 'spec': {
+      const verdict = verdictOn(entry, matching, 'spec');
+      return verdict
+        ? { ok: true, reason: `countable spec verdict on ${entry.head}` }
+        : { ok: false, reason: `no countable spec verdict (S<n> — GO|NO-GO) on ${entry.head}` };
     }
     case 'fix': {
       const changed = matching.find(pr => pr?.headSha && !sameHead(pr.headSha, entry.head));

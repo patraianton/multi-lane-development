@@ -48,7 +48,10 @@ export async function startBoard({ port = 0, config = {}, files = {}, env = {} }
       typeof content === 'string' ? content : JSON.stringify(content, null, 2));
   }
   const rawCfg = typeof config === 'function' ? config(dir) : config;
-  const cfg = { autoDispatch: false, ...(rawCfg ?? {}) };
+  // The board fixtures written before 2026-09-08 describe the road without the
+  // spec-check (review at once, merge on R-GO). The live board defaults to
+  // `specCheck: true`; a test of the new road passes it explicitly.
+  const cfg = { autoDispatch: false, specCheck: false, ...(rawCfg ?? {}) };
   await writeFile(path.join(dir, 'autopase-board.json'), JSON.stringify(cfg, null, 2));
   // `env` adds process environment for the board (a function receives the
   // state directory, for variables that must point into it).

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 
 const RULES_PATH = 'docs/RULES.md';
-const ROLES = new Set(['common', 'lane', 'reviewer', 'fixer', 'qa', 'cutter']);
+const ROLES = new Set(['common', 'lane', 'spec-check', 'reviewer', 'fixer', 'qa', 'cutter']);
 const MARKER = /^[\t ]*<!--[\t ]*role:[\t ]*([a-z][a-z0-9-]*)[\t ]*-->[\t ]*(?:\r?\n|$)/gim;
 
 function execGit(bin, args) {

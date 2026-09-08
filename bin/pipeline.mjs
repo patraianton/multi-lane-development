@@ -1111,8 +1111,14 @@ export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage
 
   if (u.pr) {
     const verdict = u.pr.verdictOnHead;
+    // The spec-check's verdict on this head comes before the reviewer's
+    // (owner, 2026-09-08): its NO-GO is the fixer's next round, and until its
+    // GO there is nothing for a reviewer to read.
+    const spec = u.pr.specVerdictOnHead ?? null;
+    const specAware = Boolean(u.pr && Object.hasOwn(u.pr, 'specVerdictOnHead'));
     let word;
-    if (verdict?.go === false) word = `NO-GO R${verdict.round ?? u.pr.verdictRounds ?? 1}`;
+    if (spec?.go === false) word = `SPEC NO-GO S${spec.round ?? u.pr.specRounds ?? 1}`;
+    else if (verdict?.go === false) word = `NO-GO R${verdict.round ?? u.pr.verdictRounds ?? 1}`;
     else if (u.pr.ci?.color === 'red') {
       const failed = failedCheckNames(u.pr.ci);
       word = `red checks (${failed.join(', ') || u.pr.ci.text || 'failed check'})`;
@@ -1130,11 +1136,12 @@ export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage
     } else if (u.lane?.busy) tail = `busy on ${laneName}`;
     else if (held) tail = held;
     else if (would) tail = would;
-    else if (word.startsWith('NO-GO') || word.startsWith('red checks') || word === 'conflicts with main') {
+    else if (word.startsWith('NO-GO') || word.startsWith('SPEC NO-GO') || word.startsWith('red checks') || word === 'conflicts with main') {
       tail = 'waiting for a fixer';
     } else if (word === 'green + GO') tail = mergeWord || 'waiting for the merge sweep';
     else if (word === 'GO, checks not green') tail = 'waiting for green checks';
     else if (word === 'draft') tail = 'waiting for the author';
+    else if (specAware && spec?.go !== true) tail = 'waiting for the spec-check';
     else tail = 'waiting for a review';
     return `PR #${u.pr.number} ${word} — ${tail}`;
   }

@@ -127,7 +127,8 @@ ticket's `Branch:` line, else `feat/<ticket number>`; base is `origin/main`. Whi
 board holds every task that would branch from `main` — reviews, fixes and merges keep running, because they are
 what makes `main` green again. An unknown or stale answer from GitHub is not red.
 
-When lanes are short the queue order is **review, fix, develop**: an open PR is finished before a new one starts.
+When lanes are short the queue order is **spec-check, review, fix, develop**: an open PR is finished before a new
+one starts, and a head is checked against the spec before anyone reviews it.
 A lane belongs to whoever launched the task on it — before stopping a lane read its `TASK-<n>.md`, because a task
 you did not launch is not yours to stop; write on the ticket instead. (On 2026-08-30 a sprint window's stop script
 killed the board's own task on hostinger/lane-4 by lane number.) Hand-run work takes a reserved lane
@@ -142,12 +143,23 @@ merge is ready and only that evidence is missing. A `pr-ci-full` that is red, pe
 **waiting**, never a red check: no fix task, no merge attempt spent, no stuck card. A full run that really fails
 turns `pr-ci` red, and that is an ordinary red check.
 
-## 6. Review, fix, merge
+## 6. Spec-check, review, fix, merge
 
-The verdict is one plain-text PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without the
-head line, or with another head, it is not a verdict. A `NO-GO`, a red check or a conflict sends a fix round to the
-same branch; the reviewer then runs again on the new head. One live lane per PR head — a fix waits while a review
-of that head runs, and the other way round.
+**The spec-check reads every PR head first** (owner, 2026-09-08: compliance with the spec is proven before any
+test round is spent, or the rounds run forty times over code that never did what the spec said). The moment a PR
+head appears the board sends the `spec-check` role of `docs/RULES.md` to a free lane with the spec bundle: an
+auditor that did not write the code reads `SPEC.md` clause by clause against that head and answers with one
+plain-text PR comment: line 1 `S<n> — GO` or `S<n> — NO-GO`, line 2 `head <sha>`, then every deviation as
+`SEVERITY — §ref — spec says — code does — path:line`. A `NO-GO` (any HIGH or MEDIUM deviation) is a fix round on
+the same branch carrying that comment verbatim as `SPEC-CHECK`; the new head is spec-checked again. Only a head
+with `S<n> — GO` is reviewed, labelled `full-ci` or merged. `no-review` tickets keep their road: no reader at all.
+The scoped `pr-ci` still runs on every push — GitHub starts it, 7–10 minutes, and it is the only check spent
+before the spec verdict. `specCheck: false` in the settings restores the pre-2026-09-08 road.
+
+The review verdict is one plain-text PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
+the head line, or with another head, it is not a verdict. A `NO-GO`, a red check or a conflict sends a fix round to
+the same branch; the spec-check and then the reviewer run again on the new head. One live lane per PR head — a fix
+waits while a spec-check or a review of that head runs, and the other way round.
 
 The board merges with `gh pr merge --squash` when **both** `pr-ci` and `pr-ci-full` are green on the exact same
 head, the GO is on that head, the PR is not draft, GitHub says mergeable, and the ticket has no `hold-merge`. On a
@@ -167,12 +179,6 @@ the **live** cabinet as the QA account, never on the internal preview page, and 
 One finding = one ticket, filed at once, labelled `qa`; the exact title and body format is the `qa` role text in
 `docs/RULES.md`, which the walker is handed with its task. Those tickets are the **record** of the round, not the
 work order.
-
-In parallel with the QA walk the session sends a **spec-check** to a Codex lane (owner, 2026-09-08): an auditor that
-did not write the code reads `SPEC.md` clause by clause against `origin/main` and returns one verdict per requirement
-with `file:line` evidence — role `spec-check` in `docs/RULES.md`, task template `docs/SPEC-CHECK-TASK.md`. Its HIGH and
-MEDIUM deviations fold into the same single fix ticket as the QA findings; a sprint is not closed on the author's own
-word alone.
 
 The **fix** for a round is one ticket, the same rule as the sprint: the session folds the round's findings into a
 single `qa` ticket titled `QA R<n> findings — one fix on one lane (folds #…)`, whose body lists `Folds: #…` and
