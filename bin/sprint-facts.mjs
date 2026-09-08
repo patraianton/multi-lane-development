@@ -274,6 +274,18 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
               .filter(Boolean)
               .map(verdict => Number(verdict?.round))
               .filter(Number.isInteger));
+          // The spec-check family (owner, 2026-09-08) travels the same way:
+          // the planner holds the review until an `S<n> — GO` names this head,
+          // so dropping these fields here would hold every review forever.
+          const specVerdicts = Array.isArray(open.specVerdicts) ? open.specVerdicts : [];
+          const suppliedSpec = Object.hasOwn(open, 'specVerdictOnHead')
+            ? open.specVerdictOnHead
+            : specVerdicts.findLast(verdict => sameHead(verdict?.head, open.headSha));
+          const specVerdictOnHead = sameHead(suppliedSpec?.head, open.headSha) ? suppliedSpec : null;
+          const rawSpecRounds = Number(open.specRounds);
+          const specRounds = Number.isInteger(rawSpecRounds) && rawSpecRounds >= 0
+            ? rawSpecRounds
+            : Math.max(0, ...specVerdicts.map(verdict => Number(verdict?.round)).filter(Number.isInteger));
           // headSha: the commit a dependent unit starts from (auto-dispatch).
           u.pr = {
             number: open.number,
@@ -291,6 +303,9 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
             // only from a headed verdict that names this PR's current head.
             verdictOnHead,
             verdictRounds,
+            specVerdicts,
+            specVerdictOnHead,
+            specRounds,
           };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.
