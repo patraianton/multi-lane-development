@@ -168,7 +168,8 @@ test('a successful close pass refreshes stale unit and umbrella facts before the
     "if (args[0] === 'pr' && args[1] === 'list') {",
     "  process.stdout.write(JSON.stringify(args.includes('merged') ? [mergedPr] : []));",
     "} else if (args[0] === 'issue' && args[1] === 'list') {",
-    '  process.stdout.write(JSON.stringify(issues));',
+    "  const state = String(args[args.indexOf('--state') + 1] || 'all').toLowerCase();",
+    "  process.stdout.write(JSON.stringify(issues.filter(issue => state === 'all' || issue.state.toLowerCase() === state)));",
     "} else if (args[0] === 'issue' && args[1] === 'view') {",
     '  process.stdout.write(JSON.stringify(issues.find(issue => String(issue.number) === args[2]) || {}));',
     "} else if (args[0] === 'issue' && args[1] === 'close') {",
@@ -190,8 +191,9 @@ test('a successful close pass refreshes stale unit and umbrella facts before the
 
     const calls = await callsOf(callsFile);
     const closes = calls.filter(args => args[0] === 'issue' && args[1] === 'close');
+    // #57: the unit source reads open issues whole and closed ones separately.
     const unitIssueReads = calls.filter(args => args[0] === 'issue' && args[1] === 'list'
-      && args[args.indexOf('--state') + 1] === 'all');
+      && args[args.indexOf('--state') + 1] === 'open');
     assert.deepEqual(closes.map(args => args.slice(0, 3)), [
       ['issue', 'close', '1516'],
       ['issue', 'close', '1515'],

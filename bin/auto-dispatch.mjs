@@ -17,6 +17,17 @@ import { startableOnBoard } from './idle-lanes.mjs';
 import { isEvidenceCheck } from './merge.mjs';
 
 const ACTIVE = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merged']);
+// The review↔fix loop ends here (owner, 2026-09-04/07: five review rounds are
+// the ceiling; #87 re-dispatched fix R5 and review R6 after an unstuck). A
+// NO-GO in round ≥ ceiling holds the fix, and no reader is planned past it —
+// the owner decides on the hold row, not by another lane.
+export const ROUND_CEILING = Math.max(1, Number(process.env.BOARD_ROUND_CEILING) || 5);
+export function ceilingHold(cardRef, unit, kind, round, head) {
+  return {
+    card: cardRef, unit: unit?.unit || '', ticket: unit?.ticket, lane: '', ceiling: true,
+    reason: `round ceiling ${ROUND_CEILING} reached on ${shortSha(head)} (${kind}${round}) — the owner decides`,
+  };
+}
 // A host whose launch failed is excluded for this long. Other hosts can take
 // the next round immediately; after three failures every host waits this long.
 export const RETRY_MS = 10 * 60 * 1000;
@@ -523,6 +534,10 @@ function laneNamesFor(sprint, retry = false) {
   if (retry) {
     for (const lane of sprint?.laneTable ?? []) {
       if (!lane?.hostOk || lane.busy || !lane.fleet || !lane.host || !lane.lane) continue;
+      // The host's own `<lane>.reserved` file shows as a RESERVED state; the
+      // free list already drops it, and the retry path must too (#85: every
+      // retry re-paired a reserved Mac lane and the launcher refused it).
+      if (/reserved/i.test(String(lane.state ?? ''))) continue;
       names.add(`${lane.host}/${lane.lane}`);
     }
   }
@@ -700,6 +715,15 @@ export function planFixes({
         };
       }
       if (!need) continue;
+
+      // A NO-GO in the ceiling round is the owner's to answer, not a fixer's.
+      const noGoRound = [pr?.verdictOnHead, pr?.specVerdictOnHead]
+        .filter(v => v?.go === false && sameHead(v.head, head))
+        .map(v => Number(v.round)).filter(Number.isInteger);
+      if (noGoRound.some(round => round >= ROUND_CEILING)) {
+        holds?.push(ceilingHold(cardRef, unit, 'NO-GO in round ', Math.max(...noGoRound), head));
+        continue;
+      }
 
       // Issue #17: while the board's own reviewer is still reading this very
       // head, a fixer would move it and the verdict would land on a dead head
@@ -1087,6 +1111,10 @@ function planHeadReads(kind, {
       const rawRound = Number(reader.rounds(pr));
       const firstRound = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
       const round = retry?.round ?? firstRound;
+      if (round > ROUND_CEILING) {
+        holds?.push(ceilingHold(cardRef, unit, kind === 'spec' ? 'spec-check S' : 'review R', round, head));
+        continue;
+      }
       const base = baseFor(unit, sprint);
       taken.add(lane.name);
       takenTickets.add(String(unit.ticket));

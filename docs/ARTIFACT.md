@@ -163,7 +163,7 @@ sweep.
 snapshot, and `session_ended` when a founder pressed Send & End. Delivery
 drains the queue. Attachments arrive as public URLs under the session.
 Founder annotations collected this way are the authoritative grill answers
-(CONTEXT.md) — fold them into the spec.
+(docs/history/CONTEXT.md, archived) — fold them into the spec.
 
 ## Local smoke path (no Cloudflare, no credentials)
 

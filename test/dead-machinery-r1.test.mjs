@@ -64,7 +64,7 @@ test('deployment docs describe the local board and retained probe source mode', 
 });
 
 test('the glossary no longer reserves Status for or defines the deleted watchdog', async () => {
-  const context = await readFile(path.join(ROOT, 'CONTEXT.md'), 'utf8');
+  const context = await readFile(path.join(ROOT, 'docs', 'history', 'CONTEXT.md'), 'utf8');
   assert.doesNotMatch(context, /\*\*Watchdog\*\*:/);
   assert.doesNotMatch(context, /reserved for the watchdog/i);
   assert.match(context, /\*\*Status\*\*:[\s\S]*written by the board/i);

@@ -77,6 +77,12 @@ test('unitStatus: a card without a PR says why it is queued, and the owner and s
     ['queued off', { ticket }, queued, [], {}, 'queued — auto-dispatch is off'],
     ['queued on', { ticket }, queued, [], { dispatchOn: true }, 'queued — no lane has taken it yet'],
     ['open dependency is not a hold', { ticket, deps: [{ ticket: 1849, state: 'pr green', met: false }] }, queued, [row('develop', 'would dispatch', { lane: 'mac/lane-7' })], {}, 'queued — would dispatch to mac/lane-7 (auto-dispatch is off)'],
+    // #82: the hold reads from the unit's own deps when the planner row is missing for a sweep.
+    ['unmet dependency without a planner row', { ticket, deps: [{ ticket: 1926, state: 'on lane', met: false }] }, queued, [], { dispatchOn: true }, 'queued — waits for #1926 (on lane)'],
+    ['open-PR dependency without a planner row is still not a hold', { ticket, deps: [{ ticket: 1849, state: 'pr green', met: false }] }, queued, [], { dispatchOn: true }, 'queued — no lane has taken it yet'],
+    ['open-PR dependency holds a QA run', { ticket, qaRun: true, deps: [{ ticket: 1849, state: 'pr green', met: false }] }, queued, [], { dispatchOn: true }, 'queued — waits for #1849 (pr green)'],
+    ['dependency outside the sprint holds', { ticket, deps: [{ ticket: 1749, state: 'outside the sprint', met: null }] }, queued, [], { dispatchOn: true }, 'queued — waits for #1749 (outside the sprint)'],
+    ['met dependency is no hold', { ticket, deps: [{ ticket: 1926, state: 'merged', met: true }] }, queued, [], { dispatchOn: true }, 'queued — no lane has taken it yet'],
     ['trimmed hold', { ticket }, queued, [row('develop', 'held: waits for #1850 (pr green)   ')], {}, 'queued — waits for #1850 (pr green)'],
   ];
   for (const [name, unit, current, rows, options, expected] of cases) {

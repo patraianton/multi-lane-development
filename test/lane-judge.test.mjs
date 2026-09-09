@@ -247,3 +247,19 @@ test('the TASK file outranks the branch', () => {
   assert.equal(second.journal.dispatched['101:develop:1'].judged, 'no-proof');
   assert.match(second.journal.dispatched['101:develop:1'].judgeReason, /was taken over by TASK-1701$/);
 });
+
+test('with a confirm grace, absence of proof waits for a later read while proof counts at once (#83)', () => {
+  const early = facts({ prAt: '2026-08-30T12:02:00.000Z', ticketAt: '2026-08-30T12:02:00.000Z' });
+  const held = judgeLanes({ ...early, confirmMs: 5 * 60 * 1000 });
+  assert.equal(held.journal.dispatched['101:develop:1'].judged, undefined, 'one minute after seen-free is not evidence yet');
+  assert.deepEqual(held.retries, []);
+
+  const late = facts({ prAt: '2026-08-30T12:06:30.000Z', ticketAt: '2026-08-30T12:06:30.000Z' });
+  const judged = judgeLanes({ ...late, confirmMs: 5 * 60 * 1000 });
+  assert.equal(judged.journal.dispatched['101:develop:1'].judged, 'no-proof');
+  assert.equal(judged.retries.length, 1);
+
+  const proven = facts({ prs: [{ number: 7, branch: 'feat/101', state: 'OPEN' }] });
+  const ok = judgeLanes({ ...proven, confirmMs: 5 * 60 * 1000 });
+  assert.equal(ok.journal.dispatched['101:develop:1'].judged, 'ok', 'proof on the first fresh read is judged at once');
+});

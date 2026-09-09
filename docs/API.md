@@ -472,7 +472,7 @@ stuck[1]{id,title,fails,waiting}:
   cmtadlv3hrpww,Stuck example,ci 3 (3 in a row),1h 9m
 help[4]:
   one card in full (summary, comments, history) — /api/pipeline/card/<id>; its spec text — ?spec=1 there, or /pipeline/card/<id>/spec as plain text; the whole pipeline in full — ?full=1
-  stages: spec, grilled, ticketed, development, local_check, ci_pr, done; stuck — three failures in a row, waiting for a human
+  stages: spec, grilled, ticketed, development, local_check, ci_pr, merged, done; stuck — three failures in a row, waiting for a human
   clock is the delivery time; done is terminal and does not count — a finished card shows "(stopped)"
   ?format=json — the same shape as plain JSON
 ```

@@ -198,7 +198,13 @@ function roundOf(entry) {
 // Returns an immutable journal update and effects for the caller:
 //   judgments: completed decisions; failures: failCard inputs; retries: queue
 //   identities with the previous host explicitly de-preferred.
-export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, now = null, takeoverMs = 20 * 60 * 1000 } = {}) {
+// confirmMs: absence of proof counts only once the PR/ticket facts were read
+//   this long after the lane was first seen free (#83: one read that lagged
+//   GitHub by minutes declared no-proof on a head that already carried its GO,
+//   and a duplicate review lane was launched). Proof itself counts at once.
+//   Default 0 keeps the pure function's older fixtures; the board passes its
+//   own grace.
+export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, now = null, takeoverMs = 20 * 60 * 1000, confirmMs = 0 } = {}) {
   const nowMs = Number.isFinite(timeOf(now)) ? timeOf(now) : Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const laneFacts = snapshot(lanes);
@@ -232,6 +238,9 @@ export function judgeLanes({ journal = {}, lanes = [], prs = {}, tickets = {}, n
     if (!(prFacts.at > seenMs && ticketFacts.at > seenMs)) continue;
 
     const proof = proofFor(original, prFacts.items, ticketsByNumber.get(Number(original.ticket)));
+    // Absence is evidence only once it survived a read taken `confirmMs` after
+    // the lane was first seen free; proof counts on the first read (#83).
+    if (!proof.ok && confirmMs > 0 && !(prFacts.at >= seenMs + confirmMs && ticketFacts.at >= seenMs + confirmMs)) continue;
     const judged = proof.ok ? 'ok' : 'no-proof';
     const reason = proof.ok ? proof.reason
       : `${proof.reason} after ${original.lane} ${takenBy ? 'was taken over by ' + takenBy : 'freed'}`;

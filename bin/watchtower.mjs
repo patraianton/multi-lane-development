@@ -100,7 +100,11 @@ function writeLog(method, args) {
   const at = new Date().toISOString();
   const rendered = redactLog(format(...args));
   const line = rendered.split(/\r?\n/).map(part => `${at} ${part}`).join('\n');
-  appendFileSync(BOARD_LOG_FILE, `${line}\n`);
+  // The sink is synchronous on purpose (ordering). A locked or unwritable log
+  // file must not take the sweep and the API down with it (#86: five minutes
+  // of silence with nothing between two log lines); the console copy still
+  // carries the line.
+  try { appendFileSync(BOARD_LOG_FILE, `${line}\n`); } catch { /* console copy below */ }
   nativeConsole[method](line);
 }
 console.log = (...args) => writeLog('log', args);
@@ -320,6 +324,14 @@ function runText(bin, args, timeout = 60000) {
         resolve(out);
       });
   });
+}
+
+// A source that reads JSON from gh names its failure instead of dying on
+// `Unexpected end of JSON input` (#86: gh exited 0 with an empty stdout while
+// GitHub was slow, and three sources threw the bare parser error).
+function parseJsonOut(out, what) {
+  if (out === null || !String(out).trim()) throw new Error(`${what} printed nothing`);
+  try { return JSON.parse(out); } catch { throw new Error(`${what} printed something that is not JSON`); }
 }
 
 // herdr calls that answer with one line of JSON.
@@ -570,6 +582,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciRunners: f.ciRunners ?? [],
       umbrellaStates: new Map(Object.entries(f.umbrellaStates ?? {}).map(([k, v]) => [Number(k), String(v).toUpperCase()])),
       seenTickets: new Set((Array.isArray(f.seenTickets) ? f.seenTickets : []).map(Number).filter(Number.isFinite)),
+      closedTickets: new Set((Array.isArray(f.closedTickets) ? f.closedTickets : []).map(Number).filter(Number.isFinite)),
       mainCi: f.mainCi ?? null,
       openIssues: f.openIssues ?? [],
       staleSources: f.staleSources ?? [],
@@ -601,6 +614,7 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
       ciRunners: ciRunnersSource.value ?? [],
       umbrellaStates: unitIssuesSource.ok ? umbrellaStates : null,
       seenTickets: unitIssuesSource.ok ? seenTickets : new Set(),
+      closedTickets: unitIssuesSource.ok ? closedTickets : new Set(),
       // Fails open by construction: a failed tick is null, and null is never
       // red, so one GitHub hiccup releases the hold instead of freezing work.
       mainCi: mainCiSource.ok ? (mainCiSource.value ?? null) : null,
@@ -687,6 +701,9 @@ async function judgeDispatchedLanes(facts) {
     },
     tickets: { at: ticketAt, items: unitIssueItems(facts.unitIssues) },
     now: at,
+    // #83: a single GitHub read that lags by minutes must not cost a
+    // duplicate review lane; a genuinely empty lane waits these minutes more.
+    confirmMs: NO_PROOF_CONFIRM_MS,
   });
 
   // Once the PR a review/fix/merge entry served is merged, its guards guard
@@ -857,6 +874,10 @@ const IDLE_JSON = path.join(STATE_DIR, 'idle-lanes.json');
 const IDLE_GRACE_MS = Math.max(60_000, (Number(process.env.WATCHTOWER_IDLE_GRACE_MIN) || 5) * 60_000);
 const IDLE_REPEAT_MS = Math.max(IDLE_GRACE_MS, (Number(process.env.WATCHTOWER_IDLE_REPEAT_MIN) || 20) * 60_000);
 const FIX_DEBT_STUCK_MS = 30 * 60 * 1000;
+// Absence of proof on a freed lane is judged only from a GitHub read taken
+// this long after the lane was first seen free (#83).
+const noProofConfirmMin = Number(process.env.WATCHTOWER_NO_PROOF_CONFIRM_MIN);
+const NO_PROOF_CONFIRM_MS = (Number.isFinite(noProofConfirmMin) && noProofConfirmMin >= 0 ? noProofConfirmMin : 5) * 60_000;
 // One line to the owner about the board itself, once per distinct key. Kept in
 // memory: a restart may repeat one alarm, which is cheaper than a state file.
 const alarmed = new Set();
@@ -892,22 +913,53 @@ async function mainCiFailureNames(mainCi) {
   return [...new Set(names)].slice(0, 4);
 }
 
+// #91: a red main gets ONE rerun of its failed jobs before the owner hears
+// about it — a flaky test or a date rollover clears on the second attempt, and
+// on 2026-09-07 waiting for a human to press rerun cost six hours of held
+// dispatch. `attempt` comes from GitHub, so a restart cannot rerun twice; the
+// set only stops a second request before the source reflects attempt 2.
+// Dispatch stays held throughout: the source keeps the known red run while the
+// rerun is in progress (newestMainCiRun), and releases it on the new verdict.
+const reranMainRuns = new Set();
+let mainSeenAttempt = 0;
+let mainRedAlarmed = false;
 async function mainCiWatch(mainCi) {
   if (!mainCi) return;
   const red = mainCi.red === true;
+  const runId = mainCi.databaseId ?? null;
+  const attempt = Number(mainCi.attempt) || 1;
   const first = mainWasRed === null;
-  if (!first && red === mainWasRed) return;
+  const newAttempt = red && mainWasRed === true && attempt > mainSeenAttempt;
+  if (!first && red === mainWasRed && !newAttempt) return;
   mainWasRed = red;
+  mainSeenAttempt = red ? attempt : 0;
   if (first && !red) return; // a board that starts on a green main says nothing
-  let line;
+  const sha8 = String(mainCi.headSha).slice(0, 8);
   if (red) {
+    if (attempt === 1 && runId && config.repo && !reranMainRuns.has(runId)) {
+      reranMainRuns.add(runId);
+      const out = await runText(GH, ['run', 'rerun', String(runId), '--failed', '--repo', config.repo], 30000);
+      if (out !== null) {
+        console.log(`main-ci: red at ${sha8} (${mainCi.url}) — rerun of the failed jobs requested once for run ${runId}; dispatch stays held`);
+        return;
+      }
+      console.log(`main-ci: rerun of run ${runId} could not be started — alarming now`);
+    }
     const failedNames = await mainCiFailureNames(mainCi);
-    line = `main is red since ${mainCi.createdAt} (${mainCi.url}) — the board holds every lane task based on main`;
+    let line = `main is red since ${mainCi.createdAt} (${mainCi.url})`;
+    if (attempt > 1) line += ` — red again on attempt ${attempt}, the rerun did not clear it`;
+    line += ' — the board holds every lane task based on main';
     if (failedNames.length) line += ` — failing: ${failedNames.join(', ')}`;
-  } else {
-    line = `main is green again at ${String(mainCi.headSha).slice(0, 8)} — dispatch resumes`;
+    mainRedAlarmed = true;
+    await alarmOwner(`main:red:${mainCi.headSha}:${attempt}`, line);
+    return;
   }
-  await alarmOwner(`main:${red ? 'red' : 'green'}:${mainCi.headSha}`, line);
+  if (!mainRedAlarmed) {
+    console.log(`main-ci: green again at ${sha8} — the rerun cleared it, nobody was alarmed; dispatch resumes`);
+    return;
+  }
+  mainRedAlarmed = false;
+  await alarmOwner(`main:green:${mainCi.headSha}`, `main is green again at ${sha8} — dispatch resumes`);
 }
 
 async function idleLaneSweep(sprints, facts, { excludeTickets = [] } = {}) {
@@ -1306,6 +1358,13 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   // without a browser, a base error, a red main — and the reason stays on the
   // dispatch table.
   for (const hold of holds) if (hold.ticket != null) attemptedTickets.add(hold.ticket);
+  // The round ceiling is the owner's call (#87): say it once per ticket and
+  // reason, on the same channel as every other board-level stop.
+  for (const hold of holds) {
+    if (!hold.ceiling) continue;
+    await alarmOwner(`ceiling:${hold.ticket}:${hold.reason}`,
+      `${hold.card?.title ?? ''} #${hold.ticket}: ${hold.reason} — no more lanes on this PR until a person answers`);
+  }
   const rowsWithMerges = rows => {
     const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
     return [
@@ -1949,7 +2008,7 @@ const prSource = makeSource('pull-requests', 60000, async () => {
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '80',
     '--json', 'number,title,body,headRefName,headRefOid,isDraft,mergeable,labels,url,createdAt,updatedAt,statusCheckRollup,author,comments'], 90000);
   if (out === null) throw new Error('gh pr list did not answer');
-  const list = JSON.parse(out);
+  const list = parseJsonOut(out, 'gh pr list');
   return list.map(p => {
     const headSha = p.headRefOid ?? null;
     const verdictFacts = prVerdictFacts(p.comments, headSha);
@@ -1989,7 +2048,7 @@ const ciRunnersSource = makeSource('ci-runners', 60000, async () => {
     '--jq', '[.runners[] | {name, status, busy, labels: [.labels[].name]}]'], 60000);
   if (out === null) throw new Error('gh api actions/runners did not answer');
   // Slot names on top of runner names, from the registry in the settings.
-  return JSON.parse(out).map(r => fleetSlot(config.ciSlots, r));
+  return parseJsonOut(out, 'gh api actions/runners').map(r => fleetSlot(config.ciSlots, r));
 });
 
 // main's own health — the fact the board lacked on 2026-08-30, when it kept
@@ -2005,9 +2064,9 @@ const mainCiSource = makeSource('main-ci', 60000, async () => {
   if (gate) throw new Error(`held: ${gate}`);
   const out = await runText(GH, ['run', 'list', '--repo', repo, '--branch', 'main',
     '--workflow', 'pr-ci.yml', '--limit', '5',
-    '--json', 'databaseId,conclusion,headSha,url,createdAt'], 60000);
+    '--json', 'databaseId,conclusion,headSha,url,createdAt,attempt'], 60000);
   if (out === null) throw new Error('gh run list did not answer');
-  return newestMainCiRun(JSON.parse(out), mainCiSource.value ?? null);
+  return newestMainCiRun(parseJsonOut(out, 'gh run list (main)'), mainCiSource.value ?? null);
 });
 
 // GitHub sometimes answers `gh run list` with a stale page — on 2026-09-08 one
@@ -2068,7 +2127,7 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
   const out = await runText(GH, ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '100',
     '--json', 'number,title,body,headRefName,headRefOid,url,createdAt,mergedAt,comments'], 90000);
   if (out === null) throw new Error('gh pr list --state merged did not answer');
-  return JSON.parse(out).map(p => {
+  return parseJsonOut(out, 'gh pr list --state merged').map(p => {
     const headSha = p.headRefOid ?? null;
     return {
       number: p.number,
@@ -2097,6 +2156,9 @@ const mergedPrSource = makeSource('pull-requests-merged', 120000, async () => {
 // #1515 carries none), so the state of every referenced issue is kept.
 let umbrellaStates = new Map();
 let seenTickets = new Set();
+// Every issue read as CLOSED this sweep: a never-started card whose ticket is
+// closed is dropped whether or not the ticket still names the sprint (#89).
+let closedTickets = new Set();
 // Every open issue that is neither an umbrella nor parked, with what it
 // deliberately names (body AND comments count): the off-board watch reads
 // this list.
@@ -2106,20 +2168,39 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   const byUmbrella = new Map(); // umbrella number -> [{number, title, url, createdAt}]
   if (!repo) {
     seenTickets = new Set();
+    closedTickets = new Set();
     return byUmbrella;
   }
   const gate = await githubGate();
   if (gate) throw new Error(`held: ${gate}`);
   // Closed units are read too: a sprint card shows a finished unit as done,
   // not as vanished. Consumers that want the open scope filter on `state`.
-  const out = await runText(GH, ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '300',
-    '--json', 'number,title,body,url,labels,createdAt,state,closedAt,comments'], 90000);
-  if (out === null) throw new Error('gh issue list (units) did not answer');
+  // Two reads, not one capped window (#57: `--state all --limit 300` spanned
+  // the newest 300 issues only, so every new ticket evicted an in-work ticket
+  // older than the window — 114 open issues sat below its edge on 2026-09-09).
+  // Open issues are read whole; closed ones keep the 300-newest horizon.
+  const fields = 'number,title,body,url,labels,createdAt,state,closedAt,comments';
+  const [openOut, closedOut] = await Promise.all([
+    runText(GH, ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '1000', '--json', fields], 120000),
+    runText(GH, ['issue', 'list', '--repo', repo, '--state', 'closed', '--limit', '300', '--json', fields], 120000),
+  ]);
+  if (openOut === null || closedOut === null) throw new Error('gh issue list (units) did not answer');
+  // One row per issue: an issue that flipped state between the two reads (or
+  // a source answering both reads alike) must not become two units.
+  const issues = [];
+  const seenNumbers = new Set();
+  for (const it of [...parseJsonOut(openOut, 'gh issue list (open units)'), ...parseJsonOut(closedOut, 'gh issue list (closed units)')]) {
+    if (seenNumbers.has(it.number)) continue;
+    seenNumbers.add(it.number);
+    issues.push(it);
+  }
   const states = new Map();
   const issueState = new Map();
   const work = [];
-  for (const it of JSON.parse(out)) {
+  const closed = new Set();
+  for (const it of issues) {
     issueState.set(it.number, String(it.state ?? 'OPEN').toUpperCase());
+    if (issueState.get(it.number) === 'CLOSED') closed.add(it.number);
     const labels = (it.labels ?? []).map(l => String(l.name ?? '').toLowerCase());
     if (labels.includes('umbrella')) { states.set(it.number, issueState.get(it.number)); continue; }
     if (labels.includes('wave-next')) continue;
@@ -2157,6 +2238,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
   for (const n of byUmbrella.keys()) if (issueState.has(n)) states.set(n, issueState.get(n));
   umbrellaStates = states;
   seenTickets = new Set(work.map(issue => issue.number));
+  closedTickets = closed;
   openWorkIssues = work;
   return byUmbrella;
 });

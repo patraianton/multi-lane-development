@@ -1,5 +1,7 @@
 # CI runs on assigned slots; queues must not exist
 
+Status: superseded 2026-08-30 — nobody assigns CI slots; runners are a plain pool and CI has a scoped `pr-ci` and a full `pr-ci-full` mode (README).
+
 A pool of dedicated CI servers (three VPS today) is sized so that a card entering CI/PR never
 waits. The CTO assigns the card a specific free slot — each runner carries a unique label and
 the PR's CI run is pinned to it — so the run starts immediately and the card shows where it

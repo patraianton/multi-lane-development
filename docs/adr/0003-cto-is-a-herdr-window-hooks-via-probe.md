@@ -1,5 +1,7 @@
 # The CTO agent is a herdr window; hooks are delivered by the probe
 
+Status: superseded 2026-08-30 — there is no CTO window and no probe hooks; the board decides the stage itself (ADR 0006) and the session watching it is described in AGENTS.md.
+
 The CTO stays a live herdr window on the owner's machine — visible, steerable, close to the
 other windows — rather than a headless run on the board host. The board therefore never calls
 the CTO directly: it queues hook events per card, and the probe delivers them into the CTO

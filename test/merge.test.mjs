@@ -260,3 +260,20 @@ test('a verdict without a valid line-two head is never a verdict on the current 
   assert.equal(facts.verdictOnHead, null);
   assert.equal(facts.verdictRounds, 3);
 });
+
+test('a verdict flattened to one line with literal \n is still counted on its head (#90)', () => {
+  const comments = [{ body: `R3 — NO-GO\nhead ${HEAD}\nqa-tests/foo.test.ts: fails`, createdAt: '2026-09-04T20:28:22Z' }];
+  const facts = prVerdictFacts(comments, HEAD);
+  assert.equal(facts.verdicts.length, 1);
+  assert.equal(facts.verdicts[0].head, HEAD);
+  assert.equal(facts.verdicts[0].go, false);
+  assert.equal(facts.verdictOnHead?.round, 3);
+  assert.equal(facts.verdicts[0].body, `R3 — NO-GO\nhead ${HEAD}\nqa-tests/foo.test.ts: fails`);
+});
+
+test('a real multi-line verdict that quotes a literal \n is left as written (#90)', () => {
+  const comments = [{ body: `R1 — GO\nhead ${HEAD}\nnote: the log prints "a\nb" on one line`, createdAt: null }];
+  const facts = prVerdictFacts(comments, HEAD);
+  assert.equal(facts.verdictOnHead?.round, 1);
+  assert.equal(facts.verdicts[0].body, comments[0].body);
+});

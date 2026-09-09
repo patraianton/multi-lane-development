@@ -119,7 +119,12 @@ export function prVerdictFacts(comments, headSha = null) {
   let specRounds = 0;
 
   for (const comment of comments ?? []) {
-    const body = String(comment?.body ?? '');
+    const raw = String(comment?.body ?? '');
+    // A lane posting through a shell can flatten its verdict into one line with
+    // literal "\n" between the parts (#90: R3 — NO-GO\nhead …). Unescape only
+    // when the body has no real line break, so a multi-line comment that quotes
+    // "\n" stays as written.
+    const body = /\r?\n/.test(raw) ? raw : raw.replace(/\\r\\n|\\n/g, '\n');
     const lines = body.split(/\r?\n/);
     const first = lines[0].trim();
     const match = /^R(\d+)\s*[—–-]+\s*(GO|NO-GO)\b/i.exec(first);

@@ -7,6 +7,6 @@ wrote it. The card links to the issue; from there development is tracked in GitH
 (umbrella issues, PRs). Rejected: a draft ticket at spec time updated after the grill —
 needless duplication.
 
-Amended 2026-08-28 by [TICKETING.md](../TICKETING.md): the single ticket of this decision
+Amended 2026-08-28 by [TICKETING.md](../history/TICKETING.md): the single ticket of this decision
 is the umbrella; the `ticketed` stage adds one mandatory ticket per grill unit, bound to
 the umbrella — the binding ADR-0006 already reads.
