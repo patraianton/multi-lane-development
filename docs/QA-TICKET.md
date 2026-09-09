@@ -15,8 +15,10 @@ depends on: #<work ticket>
 Site: https://autopase.lv — PRODUCTION. Real browser: headed Chromium via Playwright, header
 `x-autopase-monitor` from the lane's `.env.local`, user agent `autopase-route-health/1.0`. A Vercel
 checkpoint page = say so in the report and stop that probe.
-Deployed commit: read it from <where the site exposes it, e.g. the /api/health build field> and compare with
-`origin/main`.
+Deployed commit: `curl -s https://autopase.lv/api/health/ready` → `revision`; compare with `origin/main` (wait up to
+15 minutes for a lagging deploy, RULES qa 2).
+Proof beyond the screen (RULES qa 8–9): read the rows back with the read-only DB role, check `info@autopase.lv`
+with `qa-mail.mjs`, push screenshots + `REPORT.md` to `autopase-evidence/<sprint>/QA-R<n>/` and link them.
 Locales: RU, LV, EN. Viewports: 1280×900, 1024×800, 1023×800, 820×1000, 390×844, 360×800.
 Cabinet: every surface that touches the cabinet (`/kabinets-v2`, listing add/edit/publish, photos, contacts,
 messages) is walked in the LIVE cabinet, signed in as the QA account: `node ~/kitchens/autopase.lv/qa/qa-login.mjs`
