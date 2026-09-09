@@ -28,6 +28,14 @@ test('only deliberate membership phrases name a sprint umbrella', () => {
   assert.deepEqual(umbrellaRefs('Part of #1863 (QA R2).\ndepends on: #1880'), [1863]);
 });
 
+test('a negated membership phrase is a disclaimer, not membership (#88)', () => {
+  assert.deepEqual(umbrellaRefs('**Not part of #1923.**'), []);
+  assert.deepEqual(umbrellaRefs('not a part of #1923'), []);
+  assert.deepEqual(umbrellaRefs('no longer part of #1923'), []);
+  assert.deepEqual(umbrellaRefs('never part of #1923, filed after the sprint'), []);
+  assert.deepEqual(umbrellaRefs('Not part of #1923. Part of #1950.'), [1950]);
+});
+
 test('sprint facts carry only tickets seen in this sweep and default to none', () => {
   const card = { id: 'c1', links: { ticket: 'https://github.com/acme/web/issues/1863' } };
   const absent = sprintFactsFor([card]).get('c1').seenTickets;

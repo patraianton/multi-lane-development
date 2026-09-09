@@ -119,7 +119,7 @@ function dropCards({ stage = 'ticketed', lane = '', pr = '' } = {}) {
   }];
 }
 
-function dropFacts({ stale = false, seen = true } = {}) {
+function dropFacts({ stale = false, seen = true, closed = false } = {}) {
   const facts = {
     lanes: [],
     prs: [],
@@ -131,15 +131,16 @@ function dropFacts({ stale = false, seen = true } = {}) {
     staleSources: stale ? ['tickets'] : [],
   };
   if (seen) facts.seenTickets = [DROP_TICKET];
+  if (closed) facts.closedTickets = [DROP_TICKET];
   return facts;
 }
 
-async function startDropBoard({ stage, lane, pr, stale, seen } = {}) {
+async function startDropBoard({ stage, lane, pr, stale, seen, closed } = {}) {
   return startBoard({
     config: { source: 'probe' },
     files: {
       'pipeline-cards.json': { cards: dropCards({ stage, lane, pr }) },
-      'sprint-facts.json': dropFacts({ stale, seen }),
+      'sprint-facts.json': dropFacts({ stale, seen, closed }),
     },
     env: dir => ({
       WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
@@ -165,6 +166,21 @@ test('a fresh sweep drops an untouched unit whose seen ticket no longer names th
     assert.equal(board.output().split(line).length - 1, 1, 'the sync logs exactly one drop step');
     assert.equal(board.output().includes(`card ${DROP_SPRINT_TITLE}:`), false,
       'the drop plan has no sprint-stage step');
+  } finally {
+    await board.stop();
+  }
+});
+
+test('a fresh sweep drops an untouched unit whose ticket was read as closed, even when it is not among the open seen tickets (#89)', async () => {
+  const board = await startDropBoard({ seen: false, closed: true });
+  try {
+    await until(board.base,
+      current => current.cards.some(card => card.id === DROP_SPRINT_ID)
+        && !current.cards.some(card => card.id === DROP_CARD_ID),
+      { pathName: '/pipeline/data' });
+    await settle(500);
+    const line = `card ${DROP_TITLE}: dropped — ticket #${DROP_TICKET} closed before it started, outside sprint ${DROP_SPRINT_TITLE}`;
+    assert.equal(board.output().split(line).length - 1, 1, 'the sync logs exactly one closed-drop step');
   } finally {
     await board.stop();
   }

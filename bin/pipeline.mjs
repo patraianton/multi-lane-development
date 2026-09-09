@@ -1157,6 +1157,17 @@ export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage
   else if (['development', 'local_check'].includes(card.stage)) head = 'no lane and no PR';
   else head = 'queued';
 
+  // The planner's hold row is last sweep's and vanishes for one sweep whenever
+  // a source tick failed (#82: the sentence flipped to "no lane has taken it
+  // yet" and back). The unit's own deps say the same thing every sweep, in the
+  // planner's words (auto-dispatch dependencyBlockers): an open-PR dependency
+  // is not a hold unless the unit is a QA run, waits for merges, or the
+  // dependency is outside the sprint.
+  const waits = (u.deps ?? [])
+    .filter(d => d?.met !== true)
+    .filter(d => Boolean(u.qaRun) || d?.met === null || Boolean(u.depsMerged)
+      || !(typeof d?.state === 'string' && d.state.startsWith('pr')))
+    .map(d => `#${d.ticket} (${d.state || 'unmet'})`);
   let tail;
   if (held) tail = held;
   else if (would) tail = would;
@@ -1164,6 +1175,7 @@ export function unitStatus(u, card, { rows = [], dispatchOn = false, sprintStage
   else if (head === 'ticket closed without a merge') tail = 'nothing to do';
   else if (head.startsWith('lane ')) tail = 'the planner will not start it: free the lane or open the PR';
   else if (head === 'no lane and no PR') tail = 'the board is not running this card';
+  else if (waits.length) tail = `waits for ${waits.join(', ')}`;
   else tail = dispatchOn ? 'no lane has taken it yet' : 'auto-dispatch is off';
   return `${head} — ${tail}`;
 }
@@ -1323,8 +1335,13 @@ function unitPlan(cards, sprints) {
       for (const card of cards) {
         if (card.parent !== sprintId || sprintTickets.has(card.ticket)) continue;
         if (card.stage !== 'ticketed' || card.lane !== '' || card.links.pr !== '') continue;
-        if (!s.seenTickets.has(card.ticket)) continue;
-        plan.push({ kind: 'drop', id: card.id, ticket: card.ticket, sprintId });
+        // Seen open and no longer naming the sprint, or read as closed (#89:
+        // a folded finding closed before it started left its card behind
+        // because only open tickets counted as seen).
+        const seen = s.seenTickets.has(card.ticket);
+        const closed = s.closedTickets instanceof Set && s.closedTickets.has(card.ticket);
+        if (!seen && !closed) continue;
+        plan.push({ kind: 'drop', id: card.id, ticket: card.ticket, sprintId, closed: !seen && closed });
       }
     }
     // The sprint's own stage follows its units: development once any unit has
@@ -1404,7 +1421,9 @@ export async function syncSprintUnits(sprints) {
         const sprint = state.cards.find(c => c.id === step.sprintId);
         const index = state.cards.indexOf(card);
         state.cards.splice(index, 1);
-        lines.push(`card ${card.title}: dropped — ticket #${step.ticket} no longer names sprint ${sprint.title}`);
+        lines.push(step.closed
+          ? `card ${card.title}: dropped — ticket #${step.ticket} closed before it started, outside sprint ${sprint.title}`
+          : `card ${card.title}: dropped — ticket #${step.ticket} no longer names sprint ${sprint.title}`);
         continue;
       }
       if (step.kind === 'sprint-stage') {

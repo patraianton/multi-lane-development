@@ -16,9 +16,12 @@ export function umbrellaOf(link) {
 
 // A unit names its sprint deliberately. Bare issue numbers are cross-references,
 // not membership; comments count because callers join all ticket text first.
+// A negated phrase ("Not part of #N", "no longer part of #N", "outside #N's
+// sprint") is a disclaimer, not membership (#88: an infra ticket saying
+// "Not part of #1923" joined the sprint and was dispatched to a lane).
 export function umbrellaRefs(text) {
-  return [...String(text ?? '').matchAll(/(?:\b(?:part of|continuation of)\s+|^\s*umbrella:\s*)#(\d{3,5})\b/gim)]
-    .map(match => Number(match[1]));
+  const phrase = /(?<!\b(?:not|never|outside|no longer)\s+(?:a\s+)?)(?:\b(?:part of|continuation of)\s+|^\s*umbrella:\s*)#(\d{3,5})\b/gim;
+  return [...String(text ?? '').matchAll(phrase)].map(match => Number(match[1]));
 }
 
 // "SALON-U5: migration 133" → "U5"; "U16 rollout" → "U16"; else ''.
@@ -184,7 +187,7 @@ export function ciSlotSummary(runners = []) {
 //   qa = the issue carries the `qa` label: a QA ticket (the findings a sprint's
 //   reviews left behind), listed apart from the work units as `qaTickets`.
 // Returns Map(card id -> sprint) for every card whose ticket link is an umbrella.
-export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], umbrellaStates = null, seenTickets = new Set(), staleSources = [], at = null } = {}) {
+export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], unitIssues = new Map(), ciJobs = new Map(), ciRunners = [], umbrellaStates = null, seenTickets = new Set(), closedTickets = new Set(), staleSources = [], at = null } = {}) {
   const out = new Map();
   const ciSlots = ciSlotSummary(ciRunners);
   for (const card of cards ?? []) {
@@ -384,6 +387,7 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
       umbrella,
       umbrellaOpen,
       seenTickets: seenTickets instanceof Set ? seenTickets : new Set(),
+      closedTickets: closedTickets instanceof Set ? closedTickets : new Set(),
       units: work,
       qaTickets,
       lanes: bound,

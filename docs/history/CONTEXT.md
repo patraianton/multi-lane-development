@@ -1,4 +1,6 @@
-# Watchtower
+# Watchtower — CTO-era glossary (archived 2026-09-09)
+
+Archived: this file describes the CTO/probe/slot machinery that no longer exists. The live road is `README.md`; the HTTP contract is `docs/API.md`; the stages are `spec → grilled → ticketed → development → local_check → ci_pr → merged → done`.
 
 A live board for a coding-agent fleet, evolving into a delivery pipeline: persistent task cards
 move through stages (spec → grilled → ticketed → development → local check → CI/PR → done)

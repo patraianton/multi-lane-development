@@ -82,7 +82,9 @@ async function calls(file) {
   }
 }
 
-function redMainFacts() {
+// attempt 2 by default: a red that already had its one rerun (#91) alarms at
+// once; attempt 1 is the rerun case, tested on its own below.
+function redMainFacts(attempt = 2) {
   return {
     ...facts(),
     mainCi: {
@@ -91,9 +93,53 @@ function redMainFacts() {
       url: 'https://github.com/acme/web/actions/runs/987',
       createdAt: '2026-08-30T12:00:00.000Z',
       red: true,
+      attempt,
     },
   };
 }
+
+test('a red main on its first attempt gets one rerun and no alarm; red again on attempt 2 alarms (#91)', async () => {
+  const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-red-main-rerun-tools-'));
+  const callsFile = path.join(toolsDir, 'calls.jsonl');
+  let board;
+  let factsFile;
+  try {
+    const fakeGh = await executable(toolsDir, 'gh', [
+      '#!/usr/bin/env node',
+      "import { appendFileSync } from 'node:fs';",
+      'const a = process.argv.slice(2);',
+      `appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(a) + '\\n');`,
+      "if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);",
+      "if (a[0] === 'api') process.stdout.write('[]');",
+    ].join('\n'));
+    board = await startBoard({
+      config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
+      files: { 'sprint-facts.json': redMainFacts(1) },
+      env: dir => {
+        factsFile = path.join(dir, 'sprint-facts.json');
+        return {
+          WATCHTOWER_SPRINT_FACTS_FILE: factsFile,
+          WATCHTOWER_SPRINT_SWEEP_MS: '200',
+          WATCHTOWER_GH: fakeGh,
+        };
+      },
+    });
+    await until(() => board.output().includes('rerun of the failed jobs requested once for run 987'));
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const reruns = (await calls(callsFile)).filter(a => a[0] === 'run' && a[1] === 'rerun');
+    assert.deepEqual(reruns, [['run', 'rerun', '987', '--failed', '--repo', 'acme/web']], 'exactly one rerun request');
+    assert.doesNotMatch(board.output(), /ALARM main is red/, 'the owner is not alarmed before the rerun answers');
+
+    await writeFile(factsFile, JSON.stringify(redMainFacts(2)));
+    await until(() => /ALARM main is red.*red again on attempt 2/.test(board.output()));
+    assert.match(board.output(), /telegram: alarm sent \(main:red:abc12345[0-9a-f]*:2\)/);
+    const rerunsAfter = (await calls(callsFile)).filter(a => a[0] === 'run' && a[1] === 'rerun');
+    assert.equal(rerunsAfter.length, 1, 'attempt 2 is never rerun again');
+  } finally {
+    if (board) await board.stop();
+    await rm(toolsDir, { recursive: true, force: true });
+  }
+});
 
 test('a red main alarm names the first failed jobs', async () => {
   const toolsDir = await mkdtemp(path.join(tmpdir(), 'watchtower-red-main-tools-'));
@@ -134,9 +180,11 @@ test('a failed red-main details lookup still fires the original alarm', async ()
   let board;
   try {
     const fakeGh = await executable(toolsDir, 'gh', '#!/usr/bin/env node\nprocess.exit(1);\n');
+    // attempt 1 with a gh that fails: the rerun cannot be started, so the
+    // original alarm fires at once (#91 falls through).
     board = await startBoard({
       config: { source: 'probe', repo: 'acme/web', telegram: OWNER_TELEGRAM },
-      files: { 'sprint-facts.json': redMainFacts() },
+      files: { 'sprint-facts.json': redMainFacts(1) },
       env: dir => ({
         WATCHTOWER_SPRINT_FACTS_FILE: path.join(dir, 'sprint-facts.json'),
         WATCHTOWER_SPRINT_SWEEP_MS: '200',

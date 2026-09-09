@@ -1062,6 +1062,20 @@ test('a legacy plain-number journal key is develop round 1, and launching recove
     [2, 'lanes-01/lane-2', '1583:develop:2'],
     'when no other host is free, the now-idle original lane can retry the next round',
   );
+
+  // #85: a lane the host itself calls RESERVED is not retry capacity either.
+  const reservedSource = new Map([['cs', sprint({
+    free: [],
+    laneTable: [
+      { host: 'mac', lane: 'lane-6', hostOk: true, busy: false, fleet: true, state: 'RESERVED' },
+      { host: 'lanes-01', lane: 'lane-2', hostOk: true, busy: false, fleet: true, state: 'FREE' },
+    ],
+    units: [noProofUnit], qaTickets: [],
+  })]]);
+  const [reservedRetry] = planDispatch(cards, reservedSource, {
+    fleet: FLEET, ledger: judged, at: '2026-08-29T12:01:00.000Z',
+  });
+  assert.equal(reservedRetry.lane, 'lanes-01/lane-2', 'the retry skips the reserved lane and takes the free one');
 });
 
 test('a stuck unit card cannot receive develop or fix R4 after three no-proof rounds', () => {
@@ -1530,4 +1544,39 @@ test('a red main holds every unit that branches from main', () => {
     assert.deepEqual(open.pairs.map(p => p.unit.ticket), [1583, 1590, 1599],
       'unknown or green is never red — one GitHub hiccup does not stop the board');
   }
+});
+
+test('the round ceiling holds the fix after a NO-GO in the ceiling round and plans no reader past it (#87)', async () => {
+  const { ROUND_CEILING, planReviews } = await import('../bin/auto-dispatch.mjs');
+  const at = '2026-08-29T12:00:00.000Z';
+  const head = 'c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5';
+  const body = `R${ROUND_CEILING} — NO-GO\nhead ${head}\n\nStill wrong.`;
+  const unitAtCeiling = {
+    unit: 'U9', ticket: 2009, title: 'FIN-U9', branch: 'feat/fin-u9', state: 'pr no-go', deps: [],
+    pr: {
+      number: 2109, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE',
+      verdictOnHead: { round: ROUND_CEILING, go: false, head, body }, verdictRounds: ROUND_CEILING,
+    },
+  };
+  const source = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unitAtCeiling], qaTickets: [] })]]);
+  const holds = [];
+  const fixes = planFixes({ cards, sprints: source, fleet: FLEET, at, holds });
+  assert.deepEqual(fixes, [], 'no fixer is sent after the ceiling NO-GO');
+  assert.equal(holds[0]?.reason, `round ceiling ${ROUND_CEILING} reached on c5c5c5c5 (NO-GO in round ${ROUND_CEILING}) — the owner decides`);
+  assert.equal(holds[0]?.ceiling, true);
+
+  // The head moved by hand: the next review round would be ceiling + 1.
+  const movedHead = 'd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6';
+  const moved = { ...unitAtCeiling, state: 'pr open', pr: { ...unitAtCeiling.pr, headSha: movedHead, verdictOnHead: null, verdictRounds: ROUND_CEILING } };
+  const movedSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [moved], qaTickets: [] })]]);
+  const reviewHolds = [];
+  const reviews = planReviews({ cards, sprints: movedSource, fleet: FLEET, at, holds: reviewHolds });
+  assert.deepEqual(reviews, [], 'no review R(ceiling+1) is planned');
+  assert.match(reviewHolds[0]?.reason ?? '', /round ceiling .* \(review R6\) — the owner decides/);
+
+  // One round below the ceiling still gets its fixer.
+  const below = { ...unitAtCeiling, pr: { ...unitAtCeiling.pr, verdictOnHead: { round: ROUND_CEILING - 1, go: false, head, body } } };
+  const belowSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [below], qaTickets: [] })]]);
+  const [fix] = planFixes({ cards, sprints: belowSource, fleet: FLEET, at });
+  assert.equal(fix?.unit?.ticket, 2009);
 });
