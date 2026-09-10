@@ -1014,20 +1014,23 @@ function lastWriterLane(journal, ticket) {
 // (#87) is on verdicts given, never on the number the next read would carry
 // (2026-09-10 04:22: five fix pushes after five spec NO-GOs made the FIRST
 // review read as R6 and the ceiling held it with zero reviews done).
-function maxRound(verdicts) {
-  return Math.max(0, ...(Array.isArray(verdicts) ? verdicts : [])
-    .map(v => Number(v?.round)).filter(Number.isInteger));
+// Counted as distinct verdict rounds, not as the highest number: the number
+// follows the fix pushes (the first review after five fixes is R6), and a
+// single "R6 — GO" is one verdict given, not six (2026-09-10 05:04).
+function verdictsGiven(verdicts) {
+  return new Set((Array.isArray(verdicts) ? verdicts : [])
+    .map(v => Number(v?.round)).filter(Number.isInteger)).size;
 }
 const HEAD_READERS = {
   spec: {
     role: 'spec-check', word: 'spec-check',
     verdictOnHead: pr => pr?.specVerdictOnHead, rounds: pr => pr?.specRounds,
-    done: pr => maxRound(pr?.specVerdicts),
+    done: pr => verdictsGiven(pr?.specVerdicts),
   },
   review: {
     role: 'reviewer', word: 'review',
     verdictOnHead: pr => pr?.verdictOnHead, rounds: pr => pr?.verdictRounds,
-    done: pr => maxRound(pr?.verdicts),
+    done: pr => verdictsGiven(pr?.verdicts),
   },
 };
 
