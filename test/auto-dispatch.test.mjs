@@ -1565,14 +1565,25 @@ test('the round ceiling holds the fix after a NO-GO in the ceiling round and pla
   assert.equal(holds[0]?.reason, `round ceiling ${ROUND_CEILING} reached on c5c5c5c5 (NO-GO in round ${ROUND_CEILING}) — the owner decides`);
   assert.equal(holds[0]?.ceiling, true);
 
-  // The head moved by hand: the next review round would be ceiling + 1.
+  // The head moved by hand after five review verdicts: no sixth reader.
   const movedHead = 'd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6';
-  const moved = { ...unitAtCeiling, state: 'pr open', pr: { ...unitAtCeiling.pr, headSha: movedHead, verdictOnHead: null, verdictRounds: ROUND_CEILING } };
+  const fiveVerdicts = Array.from({ length: ROUND_CEILING }, (_, i) => ({ round: i + 1, go: false, head }));
+  const moved = { ...unitAtCeiling, state: 'pr open', pr: { ...unitAtCeiling.pr, headSha: movedHead, verdictOnHead: null, verdictRounds: ROUND_CEILING, verdicts: fiveVerdicts } };
   const movedSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [moved], qaTickets: [] })]]);
   const reviewHolds = [];
   const reviews = planReviews({ cards, sprints: movedSource, fleet: FLEET, at, holds: reviewHolds });
-  assert.deepEqual(reviews, [], 'no review R(ceiling+1) is planned');
-  assert.match(reviewHolds[0]?.reason ?? '', /round ceiling .* \(review R6\) — the owner decides/);
+  assert.deepEqual(reviews, [], 'no sixth review is planned');
+  assert.match(reviewHolds[0]?.reason ?? '', /round ceiling .* \(review verdicts given: 5\) — the owner decides/);
+
+  // Five fix pushes after spec NO-GOs number the first review R6, but zero
+  // review verdicts were given: the ceiling does not hold it (2026-09-10).
+  const firstReview = { ...moved, pr: { ...moved.pr, verdicts: [], specVerdictOnHead: { round: 6, go: true, head: movedHead } } };
+  const firstReviewSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [firstReview], qaTickets: [] })]]);
+  const firstHolds = [];
+  const [firstPlanned] = planReviews({ cards, sprints: firstReviewSource, fleet: FLEET, at, holds: firstHolds, specCheck: true });
+  assert.equal(firstPlanned?.unit?.ticket, 2009, 'the first review is planned');
+  assert.equal(firstPlanned?.round, ROUND_CEILING + 1, 'and keeps its R6 number');
+  assert.deepEqual(firstHolds, []);
 
   // One round below the ceiling still gets its fixer.
   const below = { ...unitAtCeiling, pr: { ...unitAtCeiling.pr, verdictOnHead: { round: ROUND_CEILING - 1, go: false, head, body } } };

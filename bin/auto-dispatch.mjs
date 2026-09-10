@@ -1009,14 +1009,25 @@ function lastWriterLane(journal, ticket) {
 // planned per lane, in sprint/card and unit order, before develop work. The
 // caller passes the resulting lane names on as `taken` / `takenLanes` when
 // composing the complete queue.
+// `rounds` numbers the next read (it counts fix pushes too, so a review after
+// five fixes is R6); `done` counts this family's own verdicts — the ceiling
+// (#87) is on verdicts given, never on the number the next read would carry
+// (2026-09-10 04:22: five fix pushes after five spec NO-GOs made the FIRST
+// review read as R6 and the ceiling held it with zero reviews done).
+function maxRound(verdicts) {
+  return Math.max(0, ...(Array.isArray(verdicts) ? verdicts : [])
+    .map(v => Number(v?.round)).filter(Number.isInteger));
+}
 const HEAD_READERS = {
   spec: {
     role: 'spec-check', word: 'spec-check',
     verdictOnHead: pr => pr?.specVerdictOnHead, rounds: pr => pr?.specRounds,
+    done: pr => maxRound(pr?.specVerdicts),
   },
   review: {
     role: 'reviewer', word: 'review',
     verdictOnHead: pr => pr?.verdictOnHead, rounds: pr => pr?.verdictRounds,
+    done: pr => maxRound(pr?.verdicts),
   },
 };
 
@@ -1111,8 +1122,9 @@ function planHeadReads(kind, {
       const rawRound = Number(reader.rounds(pr));
       const firstRound = (Number.isInteger(rawRound) && rawRound >= 0 ? rawRound : 0) + 1;
       const round = retry?.round ?? firstRound;
-      if (round > ROUND_CEILING) {
-        holds?.push(ceilingHold(cardRef, unit, kind === 'spec' ? 'spec-check S' : 'review R', round, head));
+      const done = reader.done(pr);
+      if (done >= ROUND_CEILING) {
+        holds?.push(ceilingHold(cardRef, unit, `${reader.word} verdicts given: `, done, head));
         continue;
       }
       const base = baseFor(unit, sprint);
