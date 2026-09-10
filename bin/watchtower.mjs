@@ -1360,9 +1360,12 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   for (const hold of holds) if (hold.ticket != null) attemptedTickets.add(hold.ticket);
   // The round ceiling is the owner's call (#87): say it once per ticket and
   // reason, on the same channel as every other board-level stop.
+  // Once per ticket, not per head: the person who answers moves the head, and
+  // the hold for round six on the new head is the same decision, not news
+  // (two Telegram lines for one ceiling on 2026-09-10 04:16 and 04:20).
   for (const hold of holds) {
     if (!hold.ceiling) continue;
-    await alarmOwner(`ceiling:${hold.ticket}:${hold.reason}`,
+    await alarmOwner(`ceiling:${hold.ticket}`,
       `${hold.card?.title ?? ''} #${hold.ticket}: ${hold.reason} — no more lanes on this PR until a person answers`);
   }
   const rowsWithMerges = rows => {
