@@ -10,7 +10,7 @@ import {
   planDispatch, planDispatchFull, planReviews, planFixes, sortDispatchQueue,
   baseFor, baseLine, recordDispatch, dispatchRows, laneLauncher,
   taskText, specDirFor, launchPlan, runLaunch, commentLine, dispatchKey, taskFileName,
-  quarantinedLanes, RETRY_MS, LAUNCHING_HOLD_MS,
+  quarantinedLanes, RETRY_MS, LAUNCHING_HOLD_MS, ceilingHold,
 } from '../bin/auto-dispatch.mjs';
 import { judgeLanes } from '../bin/lane-judge.mjs';
 
@@ -1311,6 +1311,25 @@ test('review pairs precede develop pairs and reserve their lanes', () => {
   const queue = [...reviews, ...develops];
   assert.deepEqual(queue.map(pair => pair.kind), ['review', 'develop']);
   assert.deepEqual(queue.map(pair => pair.lane), ['mac/lane-6', 'mac/lane-7']);
+});
+
+test('a hold on a ticket outside the sprint is the owner\'s to lift, an in-sprint hold is not', () => {
+  const at = '2026-09-10T04:00:00.000Z';
+  const finding = {
+    unit: 'QA', ticket: 2162, title: 'served pre-fix revision exposes an internal listing', qa: true, open: true,
+    state: 'queued', branch: '', deps: [
+      { ticket: 1749, unit: '', state: 'outside the sprint', met: null },
+      { ticket: 2066, unit: '', state: 'outside the sprint', met: null },
+    ],
+  };
+  const s = sprint({ qaTickets: [finding] });
+  const { holds } = planDispatchFull(cards, new Map([['cs', s]]), { fleet: FLEET, at });
+  const outside = holds.find(hold => hold.ticket === 2162);
+  assert.equal(outside?.owner, true, 'no lane of the sprint can lift it — the owner hears about it');
+  assert.equal(outside.reason, 'waits for #1749 (outside the sprint), #2066 (outside the sprint)');
+  const inside = holds.find(hold => hold.ticket === 1581);
+  assert.equal(inside?.owner, undefined, 'a hold on a sprint lane resolves by itself — no alarm');
+  assert.equal(ceilingHold({ id: 'c' }, { unit: 'U1', ticket: 1 }, 'review verdicts given: ', 5, 'abcdef1234').owner, true);
 });
 
 test('the table rows: pairs as would-dispatch, the journal\'s recent word, and holds', () => {
