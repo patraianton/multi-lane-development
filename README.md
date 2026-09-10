@@ -99,6 +99,13 @@ repo is private, so external links break: the images must be uploaded through th
 copy of `assets/` stays as the lanes' working copy; the inline gallery is what proves nothing was dropped —
 before moving the card to `ticketed`, count the `user-attachments` links in each body against `MANIFEST.sha256`.
 
+**Every spec image also goes into the evidence repository at intake** (owner's rule, 2026-09-10): the same
+`assets/` files, unchanged, plus `SPEC.md`, committed to `Baltic-OrangesLV/autopase-evidence` under
+`<SPRINT>/spec/` before the card moves to `ticketed`. The spec-check's and the QA walker's screenshots land in
+sibling folders (`<SPRINT>/S<n>/`, `<SPRINT>/QA-R<n>/`) and name the mock as `../spec/<file>`, so one folder
+shows "as designed" next to "as built". Until 2026-09-10 the mocks never reached that repository and the walk's
+"matches / differs" column had nothing beside it to compare with.
+
 Acceptance criteria are commands with expected output, at least one of them red on `main` today; a visible result
 names the mock path and the verbatim spec line. A ticket touching migrations, schema, auth, deploy/env, payments or
 the scraper gets the label `hold-merge`; one that repairs a red `main` gets `main-fix`; one that changes only
@@ -137,7 +144,9 @@ killed the board's own task on hostinger/lane-4 by lane number.) Hand-run work t
 ## 5. CI on every push — two modes
 
 An ordinary push to the PR runs the **scoped** gate: check `pr-ci`, the affected tests only, 7–10 minutes. The
-**full** pipeline — build, every test, the browser smoke, 35–50 minutes — runs only on a PR labelled `full-ci`, and
+**full** pipeline — build, every test, the browser smoke; 30–37 minutes of work (build 5–7, tests 16–19, smoke
+5–8, measured 2026-09-10) plus whatever the runner queue adds, 0–40 minutes when `main`'s own full run and a
+production build are on the same four runners — runs only on a PR labelled `full-ci`, and
 check `pr-ci-full` is its receipt on that head. The board adds the `full-ci` label itself the moment a card it will
 merge is ready and only that evidence is missing. A `pr-ci-full` that is red, pending or not reported yet is
 **waiting**, never a red check: no fix task, no merge attempt spent, no stuck card. A full run that really fails
