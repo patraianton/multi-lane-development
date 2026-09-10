@@ -30,7 +30,12 @@ POST /pipeline/card/move     {"id":"<card id>","to":"grilled"}
 ```
 
 `<SPRINT>` is upper case, hyphenated, `<AREA>-<WHAT>-<NNN>` with a three-digit serial counting sprints in that area
-— `AUTOPASE-SEARCH-UX-005`, `AUTOPASE-MANUAL-PUBLICATION-001`. `MANIFEST.sha256` is `sha256sum` run in the sprint
+— `AUTOPASE-SEARCH-UX-005`, `AUTOPASE-MANUAL-PUBLICATION-001`. **The title must start with that id and the folder
+must carry the same name**: the board finds the spec bundle it ships to every lane by that id under `specsDir`
+(or by a `spec dir: <path>` line at the top of the card's spec text). A card whose folder the board cannot find
+dispatches with `Spec bundle: none shipped`, and every reader then audits the revision pasted into the ticket —
+on 2026-09-10 three spec-checks of AUTOPASE-STAGING-001 judged revision 2 while revision 3 sat in the folder.
+Since that day the bundle is re-copied on every dispatch, so an amended `SPEC.md` reaches the next reader. `MANIFEST.sha256` is `sha256sum` run in the sprint
 folder over `SPEC.md` and every attachment shipped with it (`sha256sum SPEC.md > MANIFEST.sha256`); it exists so a
 lane or a later session can prove with `sha256sum -c MANIFEST.sha256` that the spec it reads is the spec that arrived.
 
