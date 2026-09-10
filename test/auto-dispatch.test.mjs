@@ -1403,6 +1403,11 @@ test('the spec folder comes from the program whose state names the umbrella, els
   assert.equal(specDirFor({ umbrella: 1515, programs }), null);
   assert.equal(specDirFor({ card: { spec: 'goal\nspec dir: `C:\\specs\\X`\n' } }), 'C:\\specs\\X');
   assert.equal(specDirFor({ card: { spec: 'spec: X-R1' }, specsDir: dir }), path.join(dir, 'X-R1'));
+  // The sprint id at the head of the card title names the folder under specsDir
+  // (2026-09-10: a README §1 card — title + SPEC.md text — shipped no bundle).
+  assert.equal(specDirFor({ card: { title: 'AUTOPASE-STAGING-001 — the sprint branch on a staging', spec: '# AUTOPASE-STAGING-001\n…' }, specsDir: dir }), path.join(dir, 'AUTOPASE-STAGING-001'));
+  assert.equal(specDirFor({ card: { title: 'AUTOPASE-STAGING-001 — x', spec: 'x' } }), null, 'no specsDir, no guess');
+  assert.equal(specDirFor({ card: { title: '#2093', spec: 'x' }, specsDir: dir }), null, 'a unit card has no sprint id');
 });
 
 test('the launch plan is commands and nothing runs: copy the task, ship the bundle once, start the launcher, comment', () => {

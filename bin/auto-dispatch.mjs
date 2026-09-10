@@ -1395,6 +1395,13 @@ export function specDirFor({ card = null, umbrella = null, programs = null, spec
     const p = m[1].replace(/^`|`$/g, '');
     return path.isAbsolute(p) || !specsDir ? p : path.join(specsDir, p);
   }
+  // Else the sprint's own folder under specsDir, named by the card title's
+  // sprint id (`AUTOPASE-STAGING-001 — …` → specsDir/AUTOPASE-STAGING-001).
+  // Until 2026-09-10 a card created as README §1 says — title + the SPEC.md
+  // text — shipped no bundle at all, and every reader of AUTOPASE-STAGING-001
+  // audited the revision pasted into the ticket, not the amended spec.
+  const t = /^\s*([A-Z][A-Z0-9]+(?:-[A-Z0-9]+)+)\b/.exec(String(card?.title ?? ''));
+  if (t && specsDir) return path.join(specsDir, t[1]);
   return null;
 }
 
