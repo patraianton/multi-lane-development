@@ -1577,6 +1577,14 @@ test('the round ceiling holds the fix after a NO-GO in the ceiling round and pla
 
   // Five fix pushes after spec NO-GOs number the first review R6, but zero
   // review verdicts were given: the ceiling does not hold it (2026-09-10).
+  // Nor after that one R6 verdict: one verdict given is one, not six.
+  for (const verdicts of [[], [{ round: 6, go: true, head }]]) {
+    const oneSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [{ ...moved, pr: { ...moved.pr, verdicts, verdictRounds: 6, specVerdictOnHead: { round: 6, go: true, head: movedHead } } }], qaTickets: [] })]]);
+    const oneHolds = [];
+    const [onePlanned] = planReviews({ cards, sprints: oneSource, fleet: FLEET, at, holds: oneHolds, specCheck: true });
+    assert.equal(onePlanned?.unit?.ticket, 2009, `a review is planned with ${verdicts.length} verdict(s) given`);
+    assert.deepEqual(oneHolds, []);
+  }
   const firstReview = { ...moved, pr: { ...moved.pr, verdicts: [], specVerdictOnHead: { round: 6, go: true, head: movedHead } } };
   const firstReviewSource = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [firstReview], qaTickets: [] })]]);
   const firstHolds = [];
