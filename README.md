@@ -165,6 +165,18 @@ with `S<n> — GO` is reviewed, labelled `full-ci` or merged. `no-review` ticket
 The scoped `pr-ci` still runs on every push — GitHub starts it, 7–10 minutes, and it is the only check spent
 before the spec verdict. `specCheck: false` in the settings restores the pre-2026-09-08 road.
 
+**The staging walk** (owner, 2026-09-10: the code is seen on a staging, not on production, before a single
+test round is spent). Every push to the sprint's PR deploys that head — with no check in front of it — to one
+staging stack on the CI host, serving a nightly copy of production data behind HTTP basic auth
+(AUTOPASE-STAGING-001). The deploy writes one PR comment it keeps editing: line 1 `STAGING head <sha>`, or
+`STAGING head <sha> FAILED — <step>`, line 2 the address, line 3 `data: copy of production from <when>`. With
+`staging: { enabled: true, url, user, password, waitMinutes }` in the settings the board holds the spec-check of a
+head until that receipt names it (up to `waitMinutes` from the PR's last change), then sends the spec-check to a
+`browser: true` lane with a `Staging:` header line — the auditor walks the surfaces the spec names, puts every
+screenshot beside its mock in `autopase-evidence/<sprint>/S<n>/` and reads the code as before. A FAILED receipt is
+read at once on any lane: the head does not deploy, and that is HIGH. No receipt after the wait = a code-only
+round that says so. A mismatch with a mock is a NO-GO (owner, 2026-09-10). `enabled: false` = the road above.
+
 The review verdict is one plain-text PR comment: line 1 `R<n> — GO` or `R<n> — NO-GO`, line 2 `head <sha>`. Without
 the head line, or with another head, it is not a verdict. A `NO-GO`, a red check or a conflict sends a fix round to
 the same branch; the spec-check and then the reviewer run again on the new head. One live lane per PR head — a fix

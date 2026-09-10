@@ -122,3 +122,87 @@ test('with specCheck on, neither the merge nor the full-ci label happens before 
   assert.equal(needsFullCiLabel({ pr: { ...base, specVerdictOnHead: SPEC_GO, labels: [] }, unit: { labels: [] }, specCheck: true }), true);
   assert.deepEqual(canMerge({ pr: { ...base, verdictOnHead: null, specVerdictOnHead: null }, unit: { labels: ['no-review'] }, specCheck: true }), { ok: true, why: '' }, 'no-review keeps its road: no reader at all');
 });
+
+// ---- the staging walk (owner, 2026-09-10): a PR head is deployed to one
+// staging before any check; the spec-check waits for the deploy receipt and
+// walks it on a browser lane. Pure fixtures; no ssh, no gh.
+const STAGING = { enabled: true, url: 'http://89.167.116.229:18090', user: 'staging', password: 'pw-1', waitMinutes: 25 };
+const FLEET_BROWSER = {
+  ...FLEET,
+  hosts: { ...FLEET.hosts, mac: { kitchen: '~/kitchens/autopase.lv', launch: 'maclane {n} "{prompt}"', browser: true } },
+  lanes: { ...FLEET.lanes, 'lane-6': { host: 'mac', n: 6 } },
+};
+const RULES_MIN = { sha: 'abc1234', text: '## common\n1. x\n## spec-check\n1. y' };
+function sprintsWith(prFacts, free) {
+  const m = sprints(prFacts);
+  m.get('cs').free = free;
+  return m;
+}
+const minutesBefore = (n) => new Date(Date.parse(AT) - n * 60000).toISOString();
+
+test('prVerdictFacts reads the staging receipt: head, address, data line, and a FAILED step', () => {
+  const ok = prVerdictFacts([
+    { body: 'STAGING head aefd5925\nhttp://89.167.116.229:18090\ndata: copy of production from 2026-09-10 03:40 UTC\nserved aefd5925 at 2026-09-10T15:00:00Z', createdAt: AT },
+  ], HEAD);
+  assert.equal(ok.stagingOnHead?.head, 'aefd5925');
+  assert.equal(ok.stagingOnHead?.url, 'http://89.167.116.229:18090');
+  assert.equal(ok.stagingOnHead?.data, 'copy of production from 2026-09-10 03:40 UTC');
+  assert.equal(ok.stagingOnHead?.failed, false);
+  assert.equal(ok.specVerdicts.length, 0, 'a receipt is not a verdict');
+  const failed = prVerdictFacts([{ body: 'STAGING head bbbb1111 FAILED — migrate\nhttp://89.167.116.229:18090', createdAt: AT }], NEXT);
+  assert.equal(failed.stagingOnHead?.failed, true);
+  assert.equal(failed.stagingOnHead?.step, 'migrate');
+  const other = prVerdictFacts([{ body: 'STAGING head bbbb1111\nhttp://89.167.116.229:18090', createdAt: AT }], HEAD);
+  assert.equal(other.stagingOnHead, null, 'a receipt for another head is not this head\'s');
+  assert.equal(other.staging?.head, 'bbbb1111');
+});
+
+test('with the staging enabled the spec-check waits for the receipt, up to waitMinutes from the PR change, then goes code-only', () => {
+  const holds = [];
+  const fresh = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(5) })), fleet: FLEET, at: AT, holds, staging: STAGING });
+  assert.equal(fresh.length, 0);
+  assert.match(holds.map(h => h.reason).join('\n'), /staging of head aefd5925 not ready/);
+  const stale = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(40) })), fleet: FLEET, at: AT, staging: STAGING });
+  assert.equal(stale.length, 1);
+  assert.equal(stale[0].staging?.state, 'missing');
+  const text = taskText({ pair: stale[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
+  assert.match(text, /^Staging: no receipt for head aefd5925/m);
+});
+
+test('a ready receipt sends the spec-check to a browser lane and the task carries the address and the password', () => {
+  const receipt = { head: 'aefd5925', failed: false, url: 'http://89.167.116.229:18090', data: 'copy of production from 2026-09-10 03:40 UTC' };
+  const holds = [];
+  const noBrowser = planSpecChecks({
+    cards, sprints: sprintsWith(pr({ stagingOnHead: receipt }), ['lanes-01/lane-1', 'lanes-01/lane-2']),
+    fleet: FLEET_BROWSER, at: AT, holds, staging: STAGING,
+  });
+  assert.equal(noBrowser.length, 0);
+  assert.match(holds.map(h => h.reason).join('\n'), /needs a free browser: true lane/);
+  const pairs = planSpecChecks({
+    cards, sprints: sprintsWith(pr({ stagingOnHead: receipt }), ['lanes-01/lane-1', 'mac/lane-6']),
+    fleet: FLEET_BROWSER, at: AT, staging: STAGING,
+  });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].lane, 'mac/lane-6');
+  assert.equal(pairs[0].staging?.state, 'ready');
+  const text = taskText({ pair: pairs[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
+  assert.match(text, /^Staging: http:\/\/89\.167\.116\.229:18090 — HTTP basic auth user `staging`, password `pw-1`; it serves head aefd5925; data: copy of production from 2026-09-10 03:40 UTC\./m);
+});
+
+test('a FAILED receipt is read at once on any lane: the head does not deploy', () => {
+  const receipt = { head: 'aefd5925', failed: true, step: 'migrate', url: 'http://89.167.116.229:18090' };
+  const pairs = planSpecChecks({ cards, sprints: sprints(pr({ stagingOnHead: receipt })), fleet: FLEET, at: AT, staging: STAGING });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].lane, 'lanes-01/lane-1');
+  assert.equal(pairs[0].staging?.state, 'failed');
+  const text = taskText({ pair: pairs[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
+  assert.match(text, /^Staging: FAILED on head aefd5925 — migrate\./m);
+});
+
+test('with the staging disabled the road is unchanged: no wait, any lane, no Staging line', () => {
+  const pairs = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(1) })), fleet: FLEET, at: AT, staging: { ...STAGING, enabled: false } });
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].staging, undefined);
+  const text = taskText({ pair: pairs[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
+  assert.doesNotMatch(text, /^Staging:/m);
+});
