@@ -406,17 +406,36 @@ function makeSource(name, everyMs, fn) {
 
 let config = { ...DEFAULTS };
 
+// The staging (owner, 2026-09-10): one stack on the CI host that receives every
+// PR head before any check; the spec-check walks it in a browser. `enabled`
+// false = the pre-staging road (code-only spec-checks, no wait). The password
+// is the stack's HTTP basic auth and travels only into the spec-check's task.
+function parseStaging(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const url = String(raw.url ?? '').trim();
+  const waitMinutes = Number(raw.waitMinutes);
+  return {
+    enabled: raw.enabled === true && Boolean(url),
+    url,
+    user: String(raw.user ?? 'staging').trim() || 'staging',
+    password: String(raw.password ?? ''),
+    waitMinutes: Number.isFinite(waitMinutes) && waitMinutes >= 1 ? Math.floor(waitMinutes) : 25,
+  };
+}
+
 function applyConfig(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   rememberLogSecret(src.telegram?.botToken ?? src.telegram?.token);
   rememberLogSecret(src.lavish?.apiToken);
   rememberLogSecret(src.cloudflare?.apiToken);
+  rememberLogSecret(src.staging?.password);
   config = { ...DEFAULTS, ...src, hosts: { ...DEFAULTS.hosts, ...(src.hosts ?? {}) } };
   config.source = config.source === 'probe' ? 'probe' : 'local';
   const stale = Number(config.probeStaleSec);
   config.probeStaleSec = Number.isFinite(stale) && stale >= 1 ? Math.floor(stale) : DEFAULTS.probeStaleSec;
   config.autoDispatch = src.autoDispatch === true;
   config.specCheck = src.specCheck !== false;
+  config.staging = parseStaging(src.staging);
   config.telegramOwnerChatId = String(src.telegram?.ownerChatId ?? '').trim();
   config.check = String(src.check ?? DEFAULTS.check).trim() || DEFAULTS.check;
   config.github = parseGithubIdentity(src.github);
@@ -1231,7 +1250,7 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   const text = taskText({
     pair, ticket, role, kind: pair.kind, round: pair.round, head: pair.head,
     rules: taskRules, check, sections: pair.sections ?? [], kitchen: plan0.kitchen,
-    taskFile: plan0.taskFile, specRemote: plan0.bundle, repo, at,
+    taskFile: plan0.taskFile, specRemote: plan0.bundle, repo, at, staging: config.staging,
   });
   await mkdir(DISPATCH_DIR, { recursive: true });
   const localTask = path.join(DISPATCH_DIR, taskFileName(pair));
@@ -1323,7 +1342,7 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   // Queue order (README §4): spec-check, review, fix, develop. The spec-check
   // reads a head first; the reviewer waits for its `S<n> — GO` (owner, 2026-09-08).
   const specChecks = config.specCheck
-    ? planSpecChecks({ cards, sprints, ledger, fleet, at, holds: reviewHolds })
+    ? planSpecChecks({ cards, sprints, ledger, fleet, at, holds: reviewHolds, staging: config.staging })
     : [];
   const reviews = planReviews({
     cards, sprints, ledger, fleet, at, holds: reviewHolds, specCheck: config.specCheck,

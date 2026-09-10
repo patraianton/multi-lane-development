@@ -289,6 +289,14 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
           const specRounds = Number.isInteger(rawSpecRounds) && rawSpecRounds >= 0
             ? rawSpecRounds
             : Math.max(0, ...specVerdicts.map(verdict => Number(verdict?.round)).filter(Number.isInteger));
+          // The staging receipt (owner, 2026-09-10) travels the same way: the
+          // planner holds the spec-check until `STAGING head <sha>` names this
+          // head, so dropping it here would hold every spec-check for the wait.
+          const stagings = Array.isArray(open.stagings) ? open.stagings : [];
+          const suppliedStaging = Object.hasOwn(open, 'stagingOnHead')
+            ? open.stagingOnHead
+            : stagings.findLast(receipt => sameHead(receipt?.head, open.headSha));
+          const stagingOnHead = sameHead(suppliedStaging?.head, open.headSha) ? suppliedStaging : null;
           // headSha: the commit a dependent unit starts from (auto-dispatch).
           u.pr = {
             number: open.number,
@@ -309,6 +317,8 @@ export function sprintFactsFor(cards, { lanes = [], prs = [], mergedPrs = [], un
             specVerdicts,
             specVerdictOnHead,
             specRounds,
+            stagingOnHead,
+            updatedAt: open.updatedAt ?? null,
           };
           // Where the check runs: the first job in progress (else queued) names
           // its runner — the CI slot — and the server behind it.

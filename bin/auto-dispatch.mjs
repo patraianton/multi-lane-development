@@ -1043,7 +1043,7 @@ const HEAD_READERS = {
 function planHeadReads(kind, {
   cards = [], sprints = null, ledger = null, fleet = null, at = null,
   retryMs = RETRY_MS, holdMs = LANE_HOLD_MS, launchingMs = LAUNCHING_HOLD_MS,
-  holds = null, taken: takenIn = [], takenTickets: takenTicketsIn = [], specCheck = false,
+  holds = null, taken: takenIn = [], takenTickets: takenTicketsIn = [], specCheck = false, staging = null,
 } = {}) {
   const reader = HEAD_READERS[kind];
   const now = Date.parse(at ?? '') || Date.now();
@@ -1086,6 +1086,33 @@ function planHeadReads(kind, {
           continue;
         }
       }
+      // The staging walk (owner, 2026-09-10): with a staging configured the
+      // spec-check waits for the deploy receipt of this head — a bot comment
+      // `STAGING head <sha>` — up to `waitMinutes` from the PR's last change,
+      // then reads the head on a browser lane. A receipt that says FAILED is
+      // read at once: the head does not deploy, and that is the auditor's
+      // first finding. No receipt after the wait = a code-only round, and the
+      // task header says so.
+      let stagingState = null;
+      if (kind === 'spec' && staging?.enabled) {
+        const receipt = pr.stagingOnHead;
+        if (receipt && sameHead(receipt.head, head)) {
+          stagingState = receipt.failed
+            ? { state: 'failed', head: receipt.head, step: receipt.step ?? null, url: receipt.url ?? staging.url ?? null }
+            : { state: 'ready', head: receipt.head, url: receipt.url ?? staging.url ?? null, data: receipt.data ?? null };
+        } else {
+          const since = Date.parse(pr.updatedAt ?? '') || now;
+          const waitMinutes = Math.max(1, Number(staging.waitMinutes) || 25);
+          if (now - since < waitMinutes * 60000) {
+            holds?.push({
+              card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+              reason: `staging of head ${shortSha(head)} not ready — the spec-check waits for its receipt (up to ${waitMinutes} min)`,
+            });
+            continue;
+          }
+          stagingState = { state: 'missing', head, url: staging.url ?? null };
+        }
+      }
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;
       const retry = dispatchRetry(journal, unit.ticket, kind, head, now, retryMs);
@@ -1119,12 +1146,20 @@ function planHeadReads(kind, {
       }
       lanes.sort(laneOrder(journal));
       const authorLane = lastWriterLane(journal, unit.ticket);
-      const eligible = candidate => candidate.name !== authorLane;
+      // A ready staging is walked in a real browser: only a `browser: true`
+      // host may take that read (the same rule as the QA walk).
+      const needsBrowser = stagingState?.state === 'ready';
+      const eligible = candidate => candidate.name !== authorLane && (!needsBrowser || candidate.browser);
       const lane = (retry?.type === 'no-proof' && retry.avoidHost
         ? lanes.find(candidate => eligible(candidate) && candidate.host !== retry.avoidHost)
         : null) ?? lanes.find(eligible);
       if (!lane) {
-        holds?.push({ card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '', reason: 'no free lane' });
+        holds?.push({
+          card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
+          reason: needsBrowser
+            ? `staging of head ${shortSha(head)} is ready — the spec-check needs a free browser: true lane`
+            : 'no free lane',
+        });
         continue;
       }
 
@@ -1149,6 +1184,7 @@ function planHeadReads(kind, {
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: base.error ? { ref: 'main', sha: null, pr: null, ticket: null, unit: null } : base,
         kind, round, head, role: reader.role,
+        ...(stagingState ? { staging: stagingState } : {}),
         ...(retry ? { retryOf: retry.previousKey } : {}),
       });
     }
@@ -1289,7 +1325,7 @@ export function taskText({
   pair, ticket, role = pair?.role || (isQaRun(pair?.unit) ? 'qa' : 'lane'),
   kind = kindOf(pair), round = roundOf(pair), head = pair?.head ?? null,
   rules, check = DEFAULT_CHECK, sections = pair?.sections ?? [], kitchen = '', taskFile = '',
-  specRemote = null, repo = '', at = null,
+  specRemote = null, repo = '', at = null, staging = null,
 }) {
   if (!rules?.sha || typeof rules?.text !== 'string') throw new Error('task rules with sha and text are required');
   const u = pair.unit;
@@ -1313,6 +1349,17 @@ export function taskText({
   lines.push(specRemote
     ? `Spec bundle: \`${specRemote}\` — the spec, the grill outcome and the handoff live there; every § reference in the ticket is restated inline, and the inline text wins.`
     : 'Spec bundle: none shipped — the ticket reads standalone (TICKETING.md §2.7).');
+  // The staging line (owner, 2026-09-10): where the spec-check walks this head
+  // in a browser, or why it cannot. The password is the staging's HTTP basic
+  // auth — it protects a copy of production data on a public port.
+  const st = pair?.staging;
+  if (st?.state === 'ready') {
+    lines.push(`Staging: ${st.url} — HTTP basic auth user \`${staging?.user || 'staging'}\`, password \`${staging?.password || ''}\`; it serves head ${st.head}${st.data ? `; data: ${st.data}` : ''}. Walk it (spec-check 9).`);
+  } else if (st?.state === 'failed') {
+    lines.push(`Staging: FAILED on head ${st.head}${st.step ? ` — ${st.step}` : ''}. The head does not deploy: report it as HIGH (spec-check 9).`);
+  } else if (st?.state === 'missing') {
+    lines.push(`Staging: no receipt for head ${st.head} after the wait — a code-only round; write \`staging: not walked\` under the verdict (spec-check 9).`);
+  }
   lines.push(`Dispatched by the board${at ? ' at ' + at : ''} (auto-dispatch, decision 16)${taskFile ? `; this file is \`${taskFile}\`` : ''}. Reports go to the umbrella issue only.`);
   lines.push('');
   lines.push('---');

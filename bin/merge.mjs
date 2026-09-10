@@ -117,6 +117,9 @@ export function prVerdictFacts(comments, headSha = null) {
   let specVerdict = null;
   let specVerdictOnHead = null;
   let specRounds = 0;
+  const stagings = [];
+  let staging = null;
+  let stagingOnHead = null;
 
   for (const comment of comments ?? []) {
     const raw = String(comment?.body ?? '');
@@ -134,6 +137,29 @@ export function prVerdictFacts(comments, headSha = null) {
     if (Number.isInteger(round)) verdictRounds = Math.max(verdictRounds, round);
     const specRound = Number(specMatch?.[1]);
     if (Number.isInteger(specRound)) specRounds = Math.max(specRounds, specRound);
+    // The staging deploy's receipt (owner, 2026-09-10): a bot comment the
+    // staging workflow edits in place — line 1 `STAGING head <sha>` or
+    // `STAGING head <sha> FAILED — <step>`, line 2 the address, line 3
+    // `data: copy of production from <when>`. The latest receipt that names
+    // the current head is what the spec-check walks; a FAILED one is the
+    // auditor's first finding (the head does not deploy).
+    const stagingMatch = /^STAGING\s+head\s+([0-9a-f]{7,40})\b\s*(?:(FAILED)\b\s*[—–:-]*\s*(.*))?$/i.exec(first);
+    if (stagingMatch) {
+      const second = String(lines[1] ?? '').trim();
+      const entry = {
+        head: stagingMatch[1],
+        failed: Boolean(stagingMatch[2]),
+        step: stagingMatch[2] ? (String(stagingMatch[3] ?? '').trim() || null) : null,
+        url: /^https?:\/\//i.test(second) ? second : null,
+        data: String(lines[2] ?? '').replace(/^data:\s*/i, '').trim() || null,
+        at: comment?.updatedAt ?? comment?.createdAt ?? null,
+        body,
+      };
+      stagings.push(entry);
+      staging = entry;
+      if (prefixMatches(entry.head, headSha)) stagingOnHead = entry;
+      continue;
+    }
     const hit = match ?? specMatch;
     if (!hit) continue;
 
@@ -156,7 +182,10 @@ export function prVerdictFacts(comments, headSha = null) {
     if (prefixMatches(entry.head, headSha)) verdictOnHead = entry;
   }
 
-  return { verdicts, verdict, verdictOnHead, verdictRounds, specVerdicts, specVerdict, specVerdictOnHead, specRounds };
+  return {
+    verdicts, verdict, verdictOnHead, verdictRounds, specVerdicts, specVerdict, specVerdictOnHead, specRounds,
+    stagings, staging, stagingOnHead,
+  };
 }
 
 // The spec-check's GO on this exact head. With `specCheck` on, a unit that is
