@@ -10,7 +10,8 @@ roles, the road a card walks — is `README.md`; this file is your job only and 
 - **Sprint = ONE work ticket, one lane, one PR** (owner, 2026-09-04). QA findings come back as one
   fix ticket. Never cut a sprint into a heap of unit tickets — doing that once cost 22 hours.
 - **CI has two modes** (since 2026-09-05): an ordinary push runs the scoped `pr-ci` (~7–10 min); the
-  full pipeline runs only on a PR labelled `full-ci` and reports as `pr-ci-full` (~35–50 min). A merge
+  full pipeline runs only on a PR labelled `full-ci` and reports as `pr-ci-full` (30–37 min of work plus
+  0–40 min of runner queue, measured 2026-09-10). A merge
   needs BOTH green on the current head; a red or pending `pr-ci-full` is *waiting* — no fix, no stuck.
 - **`hold-merge` PRs** (migrations, schema, auth, deploy/env, payments, scraper): the SESSION merges
   them on green + GO, adding `full-ci` first if it is missing. The board never merges or labels these.
@@ -36,7 +37,7 @@ tool (Git Bash). The one exception is the Mac `ssh` in check 6, which only works
 ## Intake (8–9)
 
 8. **Product code for the grill.** In the product worktree: `git fetch origin main`, then read with `git show origin/main:<path>` and `git grep <pattern> origin/main -- <paths>`. Compare the spec's "verified base" SHA against `origin/main`; write the drift you find into `GRILL-OUTCOME.md` as a stated fact, so the ticket is cut against today's code and not the spec's memory of it.
-9. **Spec intake.** Copy the spec into the specs folder as `SPEC.md` + `MANIFEST.sha256`, then follow `README.md` §1–§3 end to end. The board takes over at `ticketed`.
+9. **Spec intake.** Copy the spec into the specs folder as `SPEC.md` + `MANIFEST.sha256`, then follow `README.md` §1–§3 end to end: grill → one Lavish questions page → tickets. Before `ticketed`, the spec's images and `SPEC.md` are committed to `autopase-evidence/<SPRINT>/spec/` (owner, 2026-09-10) — the screenshots of every later check land beside them. The board takes over at `ticketed`.
 
 ## While it runs
 
