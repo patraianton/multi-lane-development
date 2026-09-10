@@ -206,3 +206,26 @@ test('with the staging disabled the road is unchanged: no wait, any lane, no Sta
   const text = taskText({ pair: pairs[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
   assert.doesNotMatch(text, /^Staging:/m);
 });
+
+// A no-proof retry answers the NEWEST spec NO-GO on the head, not the list the
+// retried launch carried (2026-09-10 21:37: the session's S5 superseded a stale
+// S4; the retry after the stopped lane still shipped "SPEC-CHECK S4 — verbatim").
+test('a no-proof fix retry carries a spec NO-GO posted after the launch, not the saved S-list', async () => {
+  const { recordDispatch } = await import('../bin/auto-dispatch.mjs');
+  const s4 = { round: 2, go: false, head: 'aefd5925', at: '2026-09-08T15:00:00.000Z', body: 'S2 — NO-GO\nhead aefd5925\nMEDIUM — stale item' };
+  const s5 = { round: 3, go: false, head: 'aefd5925', at: '2026-09-08T15:20:00.000Z', body: 'S3 — NO-GO\nhead aefd5925\nMEDIUM — the real item' };
+  const before = sprints(pr({ specVerdictOnHead: s4, specRounds: 2 }));
+  const [initial] = planFixes({ cards, sprints: before, fleet: FLEET, at: '2026-09-08T15:05:00.000Z' });
+  assert.equal(initial.sections[0].title, 'SPEC-CHECK S2 — verbatim');
+  const ledger = recordDispatch({ dispatched: {} }, initial, { result: 'launched' }, '2026-09-08T15:05:00.000Z');
+  const key = dispatchKey(initial);
+  ledger.dispatched[key] = { ...ledger.dispatched[key], judged: 'no-proof' };
+  const after = sprints(pr({ specVerdictOnHead: s5, specRounds: 3 }));
+  const [retry] = planFixes({ cards, sprints: after, ledger, fleet: FLEET, at: '2026-09-08T15:25:00.000Z' });
+  assert.ok(retry, 'the retry is planned');
+  assert.equal(retry.sections[0].title, 'SPEC-CHECK S3 — verbatim');
+  assert.match(retry.sections[0].body, /the real item/);
+  // and with no newer verdict the saved list is still owed
+  const [same] = planFixes({ cards, sprints: before, ledger, fleet: FLEET, at: '2026-09-08T15:25:00.000Z' });
+  assert.equal(same.sections[0].title, 'SPEC-CHECK S2 — verbatim');
+});

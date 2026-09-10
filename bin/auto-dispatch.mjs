@@ -682,7 +682,11 @@ export function planFixes({
       const previous = entryForHead(journal, unit.ticket, 'fix', head);
       const headGuard = journal[`${unit.ticket}:fix:${shortSha(head)}`];
       let retry = dispatchRetry(journal, unit.ticket, 'fix', head, now, retryMs);
-      const superseded = [previous, headGuard].find(entry => newerNoGoThanEntry(pr?.verdictOnHead, entry));
+      // Both verdict families count as a newer NO-GO: a spec verdict posted
+      // after the launch (the session's S5 superseding a stale S4, 2026-09-10)
+      // must reach the fixer, not the list the retried launch carried.
+      const newerNoGo = entry => newerNoGoThanEntry(pr?.verdictOnHead, entry) || newerNoGoThanEntry(pr?.specVerdictOnHead, entry);
+      const superseded = [previous, headGuard].find(newerNoGo);
       if (!retry && superseded) {
         const previousKey = entriesFor(journal, unit.ticket, 'fix').find(item => item.entry === superseded)?.key;
         retry = {
@@ -702,7 +706,10 @@ export function planFixes({
       // fact turns green or a comment disappears before the next sweep. Its
       // original verbatim task context is part of the durable launch record.
       const currentNeed = fixNeed(unit, fixEntries);
-      let need = retry && retry.type !== 'new-no-go' && savedSections.length
+      // …unless a NO-GO newer than that launch names this head: then the
+      // fixer answers the newest list, and the saved one is history.
+      const staleSections = retryEntry && newerNoGo(retryEntry) && currentNeed;
+      let need = retry && retry.type !== 'new-no-go' && savedSections.length && !staleSections
         ? { round: retry.round, sections: savedSections }
         : currentNeed;
       const heldEntry = previous?.result === 'held' ? previous : null;
