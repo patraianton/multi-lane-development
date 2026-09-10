@@ -24,7 +24,7 @@ const ACTIVE = new Set(['ticketed', 'development', 'local_check', 'ci_pr', 'merg
 export const ROUND_CEILING = Math.max(1, Number(process.env.BOARD_ROUND_CEILING) || 5);
 export function ceilingHold(cardRef, unit, kind, round, head) {
   return {
-    card: cardRef, unit: unit?.unit || '', ticket: unit?.ticket, lane: '', ceiling: true,
+    card: cardRef, unit: unit?.unit || '', ticket: unit?.ticket, lane: '', ceiling: true, owner: true,
     reason: `round ceiling ${ROUND_CEILING} reached on ${shortSha(head)} (${kind}${round}) — the owner decides`,
   };
 }
@@ -840,8 +840,14 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
       if (!servable(u, unitCardFor(cards, card.id, u?.ticket))) continue;
       const blockers = dependencyBlockers(u, card.id, cards);
       if (!blockers.length || !startableOnBoard({ ...u, deps: [] }, card.id, cards)) continue;
+      // A dependency outside the sprint never resolves by itself: no lane of
+      // this sprint works on it, so the hold is a person's decision, said once
+      // on the owner channel (a QA finding held on three open cache tickets
+      // stalled a merged sprint for five silent hours, 2026-09-10 03:58–09:12).
+      const outside = blockers.some(dep => dep.state === 'outside the sprint');
       holds.push({
         card: cardRef, unit: u.unit || '', ticket: u.ticket, lane: '',
+        ...(outside ? { owner: true } : {}),
         reason: `waits for ${blockers.map(dep => `#${dep.ticket} (${dep.state})`).join(', ')}`,
       });
     }

@@ -1363,10 +1363,15 @@ async function autoDispatchSweep(sprints, facts, mergeRows = [], { beforeLaunch 
   // Once per ticket, not per head: the person who answers moves the head, and
   // the hold for round six on the new head is the same decision, not news
   // (two Telegram lines for one ceiling on 2026-09-10 04:16 and 04:20).
+  // The same channel for every hold only a person can lift (`owner: true`): the
+  // round ceiling, and a unit waiting on a ticket outside the sprint.
   for (const hold of holds) {
-    if (!hold.ceiling) continue;
-    await alarmOwner(`ceiling:${hold.ticket}`,
-      `${hold.card?.title ?? ''} #${hold.ticket}: ${hold.reason} — no more lanes on this PR until a person answers`);
+    if (!hold.owner) continue;
+    const key = hold.ceiling ? `ceiling:${hold.ticket}` : `outside:${hold.ticket}`;
+    const tail = hold.ceiling
+      ? 'no more lanes on this PR until a person answers'
+      : 'no lane of this sprint will lift it: close or re-scope the ticket, or clear its depends-on';
+    await alarmOwner(key, `${hold.card?.title ?? ''} #${hold.ticket}: ${hold.reason} — ${tail}`);
   }
   const rowsWithMerges = rows => {
     const transient = new Set(mergeRows.map(row => `${row.unit}:${row.base}`));
