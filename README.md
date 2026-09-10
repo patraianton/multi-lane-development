@@ -94,6 +94,9 @@ handed; the two must always agree.
   fold into one fix ticket the same way). First line `Part of #<umbrella>`; then the whole scope, in the files it
   names; `depends on: none` unless another sprint's open PR must land first; a `Branch:` line only when
   `feat/<ticket>` will not do; never `Closes #`, `Fixes #` or `Resolves #` in the instructions.
+  **A spec amended after ticketing is re-pasted into the ticket body at once** — the task header tells every
+  lane that the inline text wins over the bundle, so a stale body is what the spec-check audits (2026-09-10:
+  S4 and S6 of AUTOPASE-STAGING-001 judged revision 2 from the ticket while revision 3 sat in the bundle).
 - **The QA round-1 ticket** copied verbatim from `docs/QA-TICKET.md` — its viewport list and live-cabinet clause
   are the point of it — label `qa-run`, first line `Part of #<umbrella>`, `depends on: #<work ticket>`.
 
