@@ -1446,8 +1446,13 @@ export function launchPlan(pair, { fleet, hosts = {}, localTask, localSpec = nul
   if (!target) return { error: `no ssh target for host ${pair.host} (hosts.${pair.host}.target in the board settings, or fleet-launch.json hosts.${pair.host}.ssh)`, steps, taskFile, bundle, kitchen, laneCmd };
   steps.push({ kind: 'task-copy', bin: 'scp', args: [...opts, ...keyArgs, localTask, `${target}:${scpPath(taskFile)}`], timeout: 60_000 });
   if (bundle) {
-    steps.push({ kind: 'bundle-check', bin: 'ssh', args: [...opts, ...keyArgs, target, `${shell}test -d "${shellPath(bundle)}" && echo HAVE || echo MISSING`], timeout: 60_000 });
-    steps.push({ kind: 'bundle-copy', bin: 'scp', args: [...opts, ...keyArgs, '-r', localSpec, `${target}:${scpPath(bundle)}`], timeout: 300_000, onlyIf: 'MISSING' });
+    // The bundle is copied on EVERY dispatch (2026-09-10): until then it was
+    // copied only when missing on the host, so a spec amended mid-sprint
+    // (AUTOPASE-STAGING-001 rev 3) never reached the lanes and the spec-check
+    // S2 gave a GO against revision 2. The copy goes to the kitchen, not to the
+    // bundle path: `scp -r dir host:dir` on an existing dir nests it as dir/dir,
+    // while `scp -r dir host:kitchen/` overwrites the files in place.
+    steps.push({ kind: 'bundle-copy', bin: 'scp', args: [...opts, ...keyArgs, '-r', localSpec, `${target}:${scpPath(kitchen)}/`], timeout: 300_000 });
   }
   steps.push({ kind: 'launch', bin: 'ssh', args: [...opts, ...keyArgs, target, `${shell}${laneCmd}`], timeout: 90_000 });
   if (repo && pair.umbrella) {

@@ -1413,14 +1413,16 @@ test('the launch plan is commands and nothing runs: copy the task, ship the bund
   assert.equal(plan.taskFile, '~/kitchens/autopase.lv/TASK-1583.md');
   assert.equal(plan.bundle, '~/kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1');
   assert.equal(plan.laneCmd, 'maclane 6 "Read $HOME/kitchens/autopase.lv/TASK-1583.md and do it whole."');
-  assert.deepEqual(plan.steps.map(st => st.kind), ['task-copy', 'bundle-check', 'bundle-copy', 'launch', 'comment']);
+  assert.deepEqual(plan.steps.map(st => st.kind), ['task-copy', 'bundle-copy', 'launch', 'comment']);
   const by = Object.fromEntries(plan.steps.map(st => [st.kind, st]));
   assert.deepEqual(by['task-copy'].args.slice(-2), ['C:\\wt\\state\\auto-dispatch\\TASK-1583.md', 'mac:kitchens/autopase.lv/TASK-1583.md'], 'a ~/ kitchen is home-relative for scp');
   assert.ok(by['task-copy'].args.includes('ConnectTimeout=30'), 'the host\'s own connect timeout');
   assert.ok(!by['task-copy'].args.includes('-i'), 'no key for a Host alias');
-  assert.equal(by['bundle-check'].args.at(-1), 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; test -d "$HOME/kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1" && echo HAVE || echo MISSING');
-  assert.deepEqual(by['bundle-copy'].args.slice(-3), ['-r', 'C:\\specs\\AUTO-DETAIL-FINANCE-CARDS-R1', 'mac:kitchens/autopase.lv/AUTO-DETAIL-FINANCE-CARDS-R1']);
-  assert.equal(by['bundle-copy'].onlyIf, 'MISSING');
+  // The bundle goes to the kitchen on every dispatch (2026-09-10): a spec
+  // amended mid-sprint must reach the next reader; `scp -r dir host:dir` on an
+  // existing dir would nest it, `host:kitchen/` overwrites the files in place.
+  assert.deepEqual(by['bundle-copy'].args.slice(-3), ['-r', 'C:\\specs\\AUTO-DETAIL-FINANCE-CARDS-R1', 'mac:kitchens/autopase.lv/']);
+  assert.equal(by['bundle-copy'].onlyIf, undefined, 'copied every time, never only when missing');
   assert.equal(by.launch.args.at(-1), 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane 6 "Read $HOME/kitchens/autopase.lv/TASK-1583.md and do it whole."');
   assert.equal(by.launch.args.at(-2), 'mac');
   assert.deepEqual(by.comment.args, ['issue', 'comment', '1569', '--repo', 'acme/web', '--body', 'board: U3b #1583 dispatched to mac/lane-6 from feat/fin-u3a@b34d212d (PR #1602 of U3a)']);
@@ -1457,17 +1459,17 @@ test('running a plan: a busy launcher holds, ssh trouble fails, and a lost comme
     };
     return { calls, exec };
   };
-  let r = script({ 'bundle-check': { code: 0, out: 'MISSING' }, launch: { code: 0, out: 'lane-6 started' } });
+  let r = script({ launch: { code: 0, out: 'lane-6 started' } });
   let out = await runLaunch(plan, r.exec);
   assert.deepEqual([out.result, out.error], ['launched', null]);
-  assert.deepEqual(r.calls, ['task-copy', 'bundle-check', 'bundle-copy', 'launch', 'comment'], 'the bundle is copied because it was missing');
+  assert.deepEqual(r.calls, ['task-copy', 'bundle-copy', 'launch', 'comment'], 'the bundle is copied on every dispatch');
 
-  r = script({ 'bundle-check': { code: 0, out: 'HAVE' } });
+  r = script({});
   out = await runLaunch(plan, r.exec);
   assert.equal(out.result, 'launched');
-  assert.deepEqual(r.calls, ['task-copy', 'bundle-check', 'launch', 'comment'], 'a bundle already there is not copied again');
+  assert.deepEqual(r.calls, ['task-copy', 'bundle-copy', 'launch', 'comment'], 'again on the next dispatch — an amended spec must reach the lane');
 
-  r = script({ 'bundle-check': { code: 0, out: 'HAVE' }, launch: { code: 2, out: 'lane-6 занята' } });
+  r = script({ launch: { code: 2, out: 'lane-6 занята' } });
   out = await runLaunch(plan, r.exec);
   assert.equal(out.result, 'held');
   assert.match(out.error, /launcher refused: lane-6/);
@@ -1479,7 +1481,7 @@ test('running a plan: a busy launcher holds, ssh trouble fails, and a lost comme
   assert.match(out.error, /task-copy failed \(exit 255\)/);
   assert.deepEqual(r.calls, ['task-copy']);
 
-  r = script({ 'bundle-check': { code: 0, out: 'HAVE' }, comment: { code: 1, out: 'gh: rate limited' } });
+  r = script({ comment: { code: 1, out: 'gh: rate limited' } });
   out = await runLaunch(plan, r.exec);
   assert.deepEqual([out.result, out.error], ['launched', 'umbrella comment failed: gh: rate limited']);
 
