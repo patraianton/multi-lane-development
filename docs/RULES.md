@@ -26,7 +26,7 @@ bans only. The ticket says what to build; these rules say how and what never.
 6. Every acceptance criterion with a negative case gets a test that is red on `Base` and green after. Never update snapshots to pass; every new wait has a timeout.
 7. Push only after `Check:` is green on the exact head you push. One push per round; no empty commits.
 8. Open the PR once, ready, not draft: `gh pr create --base main --head <Branch> --title "<title> #<ticket>" --body-file <file>`. Body line 1 `Ticket: #<ticket>`, then three lines "what changed".
-9. Report: the `Check:` verdict line and log path; every acceptance criterion `met` / `not met` / `n/a` with the command output; what a reviewer would flag first; every existing test you rewrote or found red. Last line `DONE #<ticket> <PR url> <head sha>`.
+9. Report: the `Check:` verdict line and log path; every acceptance criterion `met` / `not met` / `n/a` with the command output; every numbered requirement of the ticket answered by its number as `met path:line` / `not met` — a `met` without the code line that does it counts as `not met`, and a green test proves a requirement only if its assertion pins that requirement (PR #2227 reported AC-10/13/14 `met` on tests that did not pin them, 2026-09-11); what a reviewer would flag first; every existing test you rewrote or found red. Last line `DONE #<ticket> <PR url> <head sha>`.
 
 <!-- role: spec-check -->
 ## spec-check — reads one PR head against the sprint's spec; proof = an `S<Round> — GO|NO-GO` comment on `Head:`
@@ -82,7 +82,9 @@ bans only. The ticket says what to build; these rules say how and what never.
 3. Umbrella issue: what the sprint delivers, `grill passed:`, the spec bundle path, `Rules: docs/RULES.md @ <sha>`.
 4. **One work ticket for the whole sprint** — never one per unit (owner, 2026-09-04): one ticket, one lane, one PR, start to finish. First line `Part of #<umbrella>`; the whole scope, in the files it names; `depends on: none` unless another sprint's open PR must land first; a `Branch:` line only when `feat/<ticket>` will not do; never `Closes #` in instructions. QA findings that come back are cut the same way — the walker files one ticket per finding as the record (`qa` 4), and you fold a round's findings into **one** fix ticket, label `qa`, title `QA R<n> findings — one fix on one lane (folds #…)`, body `Folds: #…` with every folded body appended verbatim as the spec; close the folded tickets as folded, leave separate only a finding already carried by an open PR with a GO, and point the next round's `qa-run` ticket at the fix ticket.
 5. Acceptance = commands with expected output, at least one red on `main` today. A visible result → the mock path and the verbatim spec line, or a production screenshot with "change only X". A spec revised after ticketing is re-pasted into the ticket body the same hour (`gh issue edit --body-file`): the task header says the inline text wins, so the ticket is what every reader audits.
-6. Landmines and defaults from the grill are pasted into the ticket as `question · default · deadline · addressee`.
+6. Landmines and defaults from the grill are pasted into the ticket as `question · default · deadline · addressee`, one per line.
+   The ticket lists every checkable requirement of the spec numbered by its section (`D2-12`, `AC-10` — the numbers the
+   spec-check uses), one per line, never packed into a paragraph: the lane answers each number in its report (lane 9).
    A ticket that changes the schema names the new migration's number and says in words: no migration listed in the
    product's `ci/prod-applied-migrations.txt` is edited — production never re-runs it, while CI assembles its schema
    from the edited text and goes green on a schema production does not have; every widening goes into the new one
