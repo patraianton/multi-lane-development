@@ -59,8 +59,29 @@ function checkName(item) {
   return String(item?.name ?? item?.context ?? '');
 }
 
+// One head carries two runs of the same check once the board labels the PR:
+// the scoped run's fail-fast `pr-ci-full` (the merge gate before the label)
+// and the full run after it. Only the newest run of a name is that check's
+// state; the older one is history. Newest = the later timestamp; without one
+// on either side, the later rollup entry (GitHub lists a name's runs in
+// order). Without this, PR #2203 sat at "waiting for green checks" with both
+// required runs green on the head (2026-09-11).
+function newestPerName(items) {
+  const when = item => Date.parse(item?.completedAt ?? item?.startedAt ?? '') || 0;
+  const byName = new Map();
+  items.forEach((item, index) => {
+    const key = checkName(item);
+    const prev = byName.get(key);
+    if (!prev) { byName.set(key, { item, index }); return; }
+    const a = when(item), b = when(prev.item);
+    const newer = a && b ? a > b : true;
+    if (newer) byName.set(key, { item, index });
+  });
+  return [...byName.values()].sort((a, b) => a.index - b.index).map(entry => entry.item);
+}
+
 export function ciColor(rollup, required = REQUIRED_CHECKS) {
-  const items = rollup ?? [];
+  const items = newestPerName(rollup ?? []);
   const requiredNames = [...new Set((required ?? []).map(String))];
   const wanted = new Set(requiredNames);
   const selected = wanted.size ? items.filter(item => wanted.has(checkName(item))) : items;

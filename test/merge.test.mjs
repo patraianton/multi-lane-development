@@ -146,6 +146,28 @@ test('the full-run receipt holds the merge yellow and never reads as a red check
   }
 });
 
+test('two runs of one check on a head — only the newest run is the check', () => {
+  const scoped = { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-11T06:05:13Z' };
+  const gateBeforeLabel = { name: 'pr-ci-full', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: '2026-09-11T06:05:21Z' };
+  const fullAfterLabel = { name: 'pr-ci-full', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-11T07:07:47Z' };
+  const scopedAgain = { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-11T07:07:38Z' };
+  // PR #2203, 2026-09-11: the label re-ran the workflow on the same head.
+  assert.deepEqual(ciColor([scoped, scopedAgain, gateBeforeLabel, fullAfterLabel]), {
+    color: 'green', text: 'CI green (2)', failedNames: [],
+  }, 'the fail-fast gate from before the label is history');
+  assert.deepEqual(ciColor([scoped, fullAfterLabel, gateBeforeLabel]), {
+    color: 'green', text: 'CI green (2)', failedNames: [],
+  }, 'order in the rollup does not matter when both carry a time');
+  assert.deepEqual(ciColor([scoped, gateBeforeLabel, { name: 'pr-ci-full', status: 'QUEUED', conclusion: '' }]), {
+    color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [],
+  }, 'a queued re-run without a time is the newer entry');
+  assert.deepEqual(ciColor([
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-11T06:05:13Z' },
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: '2026-09-11T07:07:38Z' },
+    fullAfterLabel,
+  ]), { color: 'red', text: 'CI red (1)', failedNames: ['pr-ci'] }, 'a newer red run is red, an older green does not hide it');
+});
+
 test('the board asks for the full run exactly when the card is ready to merge without it', () => {
   const waiting = { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] };
   const ready = candidate({ pr: { ci: { ...waiting, headSha: HEAD } } });
