@@ -161,6 +161,12 @@ test('two runs of one check on a head — only the newest run is the check', () 
   assert.deepEqual(ciColor([scoped, gateBeforeLabel, { name: 'pr-ci-full', status: 'QUEUED', conclusion: '' }]), {
     color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [],
   }, 'a queued re-run without a time is the newer entry');
+  // PR #2209, 2026-09-11 07:46: gh prints a zero completedAt for a run in flight.
+  assert.deepEqual(ciColor([
+    { name: 'pr-ci', status: 'IN_PROGRESS', conclusion: '', startedAt: '2026-09-11T07:46:35Z', completedAt: '0001-01-01T00:00:00Z' },
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-09-11T07:11:55Z', completedAt: '2026-09-11T07:46:04Z' },
+    fullAfterLabel,
+  ]), { color: 'run', text: 'CI running (1)', failedNames: [] }, 'a zero completedAt is no time — the in-flight re-run is the newer pr-ci');
   assert.deepEqual(ciColor([
     { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-11T06:05:13Z' },
     { name: 'pr-ci', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: '2026-09-11T07:07:38Z' },
