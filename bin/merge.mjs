@@ -67,7 +67,15 @@ function checkName(item) {
 // order). Without this, PR #2203 sat at "waiting for green checks" with both
 // required runs green on the head (2026-09-11).
 function newestPerName(items) {
-  const when = item => Date.parse(item?.completedAt ?? item?.startedAt ?? '') || 0;
+  // gh prints `0001-01-01T00:00:00Z` for the completedAt of a run still in
+  // flight — a zero date, not a time; the run's startedAt is its time then.
+  const when = item => {
+    for (const key of ['completedAt', 'startedAt']) {
+      const t = Date.parse(item?.[key] ?? '');
+      if (Number.isFinite(t) && t > 0) return t;
+    }
+    return 0;
+  };
   const byName = new Map();
   items.forEach((item, index) => {
     const key = checkName(item);
