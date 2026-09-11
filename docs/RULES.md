@@ -7,7 +7,7 @@ bans only. The ticket says what to build; these rules say how and what never.
 <!-- role: common -->
 ## common — everyone
 1. Work only in the folder named in `Lane:`. Never create another clone; never touch another lane's folder; never `git stash`.
-2. Never run a production command; never touch a database; never change a deploy, env or workflow setting; never merge; never arm auto-merge; never push to `main`.
+2. Never run a production command; never touch a database; never change a deploy, env or workflow setting; never merge; never arm auto-merge; never push to `main`; never add the `full-ci` label — the board or the session adds it once, when the work is ready, and on an open PR it turns every later push into a full 30–37 min run (PR #2227, 2026-09-11).
 3. Never ask a human. Where the ticket is silent, take the safe reading, do it, and write the question and your choice in the report. If you truly cannot continue, post one comment on the ticket whose first line is `QUESTION #<ticket> <one line>` and stop.
 4. Never change visible text or layout that the ticket does not name. "Seems more right" goes into the report, not into the code.
 5. Never write `Closes #`, `Fixes #` or `Resolves #` anywhere — PR title, PR body, commit messages. Name the ticket as `Ticket: #<n>`.
@@ -83,6 +83,10 @@ bans only. The ticket says what to build; these rules say how and what never.
 4. **One work ticket for the whole sprint** — never one per unit (owner, 2026-09-04): one ticket, one lane, one PR, start to finish. First line `Part of #<umbrella>`; the whole scope, in the files it names; `depends on: none` unless another sprint's open PR must land first; a `Branch:` line only when `feat/<ticket>` will not do; never `Closes #` in instructions. QA findings that come back are cut the same way — the walker files one ticket per finding as the record (`qa` 4), and you fold a round's findings into **one** fix ticket, label `qa`, title `QA R<n> findings — one fix on one lane (folds #…)`, body `Folds: #…` with every folded body appended verbatim as the spec; close the folded tickets as folded, leave separate only a finding already carried by an open PR with a GO, and point the next round's `qa-run` ticket at the fix ticket.
 5. Acceptance = commands with expected output, at least one red on `main` today. A visible result → the mock path and the verbatim spec line, or a production screenshot with "change only X". A spec revised after ticketing is re-pasted into the ticket body the same hour (`gh issue edit --body-file`): the task header says the inline text wins, so the ticket is what every reader audits.
 6. Landmines and defaults from the grill are pasted into the ticket as `question · default · deadline · addressee`.
+   A ticket that changes the schema names the new migration's number and says in words: no migration listed in the
+   product's `ci/prod-applied-migrations.txt` is edited — production never re-runs it, while CI assembles its schema
+   from the edited text and goes green on a schema production does not have; every widening goes into the new one
+   (PR #2227 edited 137 in place, 2026-09-11).
 7. A ticket touching migrations, schema, auth, deploy/env, payments or the scraper gets the label `hold-merge` —
    the board never merges it; the MLD session merges it by hand on green + GO — green meaning both `pr-ci` and
    `pr-ci-full` on that head, and the board never adds `full-ci` to a `hold-merge` PR, so the session adds it first.
