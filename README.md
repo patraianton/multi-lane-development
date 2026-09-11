@@ -55,20 +55,32 @@ option is the default decision. Questions reach the owner this way and no other:
 separate message, never a second page.
 
 The session writes that page itself as `grill-outcome.html` from `GRILL-OUTCOME.md` — a **single-file** HTML page
-with every asset inlined (sibling files are not served), each question its own element with its options listed
-inside it, because a founder answers by annotating an element and an unannotatable question cannot be answered.
-Publish it, which also rings the doorbell:
+with every asset inlined (sibling files are not served). **A founder answers by clicking, never by annotating**
+(owner, 2026-09-11 — a page whose options were plain elements opened the annotation box on every click): each
+question is a native form built after `lavish-axi playbook input` — `<form data-lavish-question="Qn">` with
+`<input type="radio">` options (a product question has its first option pre-checked and marked «по умолчанию»; an
+owner-zone question has nothing pre-checked), an optional text field for an address or a date, one «Записать
+ответ» submit that calls `window.lavish.queuePrompt(...)` exactly once with `queueKey`, and one sticky «Отправить
+все ответы» button at the foot calling `window.lavish.sendQueuedPrompts()`. Never an `alert()`. The builder that
+produced the first such page is `_conveyor\MLD\reports\build-grill-page-cpi.mjs` — copy it, do not start from prose.
+
+Publish with the local editor (the Cloudflare-worker path `bin/lavish-publish.mjs` needs a `lavish` block in
+`state/autopase-board.json` that has never been filled — do not reach for it):
 
 ```
-node bin/lavish-publish.mjs publish grill-outcome.html --card <card id>
+cd <specs folder> && lavish-axi grill-outcome.html --no-open          # prints url + public_url
+curl -sI <public_url>                                                  # must answer 200/302 — a dead link cannot be recalled from Telegram
+POST /pipeline/card/update   {"id":"<card id>","links":{"artifact":"<public_url>"}}
 ```
 
-It prints the public `…/session/<16-hex-key>` URL and sets `links.artifact`; on a card in `grilled` whose artifact
-link was empty, that first set is what tags both founders in the Telegram group — publishing and ringing the
-doorbell are one command. `--key <16hex>` republishes to the same URL. The credentials are the `lavish` block
-(`publicBaseUrl`, `apiToken`) in `state/autopase-board.json`, which is not in git. The board reads the page's state
-every 30 s and marks the card answered as soon as founder annotations exist; the card cannot leave `grilled` before
-that mark. Answers that arrived another way — Telegram, a call — are recorded by hand:
+`public_url` is `https://lavish.kidneypass.com/session/<16-hex-key>` (named Cloudflare tunnel, open without a login
+since 2026-09-11; `~/.lavish-axi/config.json` holds the `publicUrl`; a `*.trycloudflare.com` link is a dead quick
+tunnel). On a card in `grilled` whose artifact link was empty, that first set is what tags both founders in the
+Telegram group (the partner is **Женя**, `@JevLob`); the card stamps `notified.artifact` and never repeats it — a
+second ring is `notifyArtifactReady(card)` from `bin/telegram-bot.mjs` after `configureTelegram(<telegram block>)`.
+Edits to the HTML reach the founders on their next reload of the same link; `curl` cannot fetch the artifact body
+(per-load token, 409), so verify the file on disk. Answers come back through `lavish-axi poll <file>` (run it under
+the Monitor tool, output to a file); the session records them by hand:
 
 ```
 POST /pipeline/card/artifact-answered   {"id":"<card id>","answers":1,"by":"<who answered>"}
