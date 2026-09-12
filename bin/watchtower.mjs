@@ -624,7 +624,9 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // information missing, never a reason to hold a card.
     await ciJobsSource.tick();
     await alarmSlowScopedRuns(prSource.value ?? [], ciJobsSource.value ?? new Map());
-    await rerunPreemptedStaging(prSource.value ?? []);
+    const unitBranches = new Set([...(unitIssuesSource.value?.values?.() ?? [])].flat()
+      .map(unit => unit?.branch).filter(Boolean));
+    await rerunPreemptedStaging(prSource.value ?? [], unitBranches);
     const staleSources = staleSourceNames();
     facts = {
       lanes: lanesWithMemory(lanesSource.value, staleSources),
@@ -914,9 +916,14 @@ const alarmed = new Set();
 // head, remembered in memory (a restart may ask once more, which is harmless: the
 // workflow is idempotent per sha and its own concurrency rule keeps one deploy).
 const stagingRerequested = new Set();
-async function rerunPreemptedStaging(prs) {
+// Only the board's own pull requests (a sprint unit's branch): the staging slot is one
+// for the whole repository and every dispatch preempts whoever holds it — on
+// 2026-09-12 21:48 the board re-requested #2271 and, two seconds later, a foreign
+// #2268, cancelling its own deploy. No unit list (source down) = no re-request.
+async function rerunPreemptedStaging(prs, unitBranches = new Set()) {
   if (!config.staging?.enabled || !config.repo) return;
   for (const pr of prs) {
+    if (!unitBranches.has(String(pr?.branch ?? ''))) continue;
     const receipt = pr?.stagingOnHead;
     const head = pr?.headSha ?? '';
     if (!receipt?.preempted || !head || !head.startsWith(String(receipt.head ?? '').slice(0, 7))) continue;
