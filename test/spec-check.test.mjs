@@ -229,3 +229,23 @@ test('a no-proof fix retry carries a spec NO-GO posted after the launch, not the
   const [same] = planFixes({ cards, sprints: before, ledger, fleet: FLEET, at: '2026-09-08T15:25:00.000Z' });
   assert.equal(same.sections[0].title, 'SPEC-CHECK S2 — verbatim');
 });
+
+// A PREEMPTED receipt (product PR #2274, owner 2026-09-12): a newer staging run
+// took the single slot before this head was proven either way. Not ready, not
+// failed — the board re-requests the deploy and the wait clock restarts from
+// the receipt. On 2026-09-12 the same receipt spelled FAILED cost PR #2272 a
+// spec-check round.
+test('a PREEMPTED receipt is neither ready nor failed: the spec-check waits again from the receipt, then goes code-only', () => {
+  const parsed = prVerdictFacts([{ body: 'STAGING head aefd5925 PREEMPTED — a newer staging run took the slot; not a failure. Re-run Staging with sha=aefd5925\nhttp://89.167.116.229:18090', createdAt: AT }], HEAD);
+  assert.equal(parsed.stagingOnHead?.preempted, true);
+  assert.equal(parsed.stagingOnHead?.failed, false);
+  const receipt = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(5), url: 'http://89.167.116.229:18090' };
+  const holds = [];
+  const waiting = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(40), stagingOnHead: receipt })), fleet: FLEET, at: AT, holds, staging: STAGING });
+  assert.equal(waiting.length, 0, 'a preempted receipt five minutes old is a wait, not a walk and not a failure');
+  assert.match(holds.map(h => h.reason).join('\n'), /staging of head aefd5925 was preempted by another branch's run — re-requested/);
+  const old = { ...receipt, at: minutesBefore(40) };
+  const codeOnly = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(40), stagingOnHead: old })), fleet: FLEET, at: AT, staging: STAGING });
+  assert.equal(codeOnly.length, 1);
+  assert.equal(codeOnly[0].staging?.state, 'missing', 'after waitMinutes from the preempted receipt the round goes code-only, never "failed"');
+});

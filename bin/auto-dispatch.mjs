@@ -1103,17 +1103,26 @@ function planHeadReads(kind, {
       let stagingState = null;
       if (kind === 'spec' && staging?.enabled) {
         const receipt = pr.stagingOnHead;
-        if (receipt && sameHead(receipt.head, head)) {
+        // A PREEMPTED receipt (product PR #2274, owner 2026-09-12) is neither ready nor
+        // failed: a newer staging run took the slot before this head was proven either
+        // way. The board re-requests the deploy (watchtower, rerunPreemptedStaging) and
+        // the wait clock restarts from the receipt, not from the PR's last change —
+        // reading it as READY walked an auditor onto a foreign head, reading it as
+        // FAILED cost a spec-check round on 2026-09-12.
+        const preempted = Boolean(receipt && sameHead(receipt.head, head) && receipt.preempted);
+        if (receipt && sameHead(receipt.head, head) && !preempted) {
           stagingState = receipt.failed
             ? { state: 'failed', head: receipt.head, step: receipt.step ?? null, url: receipt.url ?? staging.url ?? null }
             : { state: 'ready', head: receipt.head, url: receipt.url ?? staging.url ?? null, data: receipt.data ?? null };
         } else {
-          const since = Date.parse(pr.updatedAt ?? '') || now;
+          const since = Date.parse((preempted ? receipt.at : null) ?? pr.updatedAt ?? '') || now;
           const waitMinutes = Math.max(1, Number(staging.waitMinutes) || 25);
           if (now - since < waitMinutes * 60000) {
             holds?.push({
               card: cardRef, unit: unit.unit || '', ticket: unit.ticket, lane: '',
-              reason: `staging of head ${shortSha(head)} not ready — the spec-check waits for its receipt (up to ${waitMinutes} min)`,
+              reason: preempted
+                ? `staging of head ${shortSha(head)} was preempted by another branch's run — re-requested, the spec-check waits for the new receipt (up to ${waitMinutes} min)`
+                : `staging of head ${shortSha(head)} not ready — the spec-check waits for its receipt (up to ${waitMinutes} min)`,
             });
             continue;
           }

@@ -172,12 +172,15 @@ export function prVerdictFacts(comments, headSha = null) {
     // `data: copy of production from <when>`. The latest receipt that names
     // the current head is what the spec-check walks; a FAILED one is the
     // auditor's first finding (the head does not deploy).
-    const stagingMatch = /^STAGING\s+head\s+([0-9a-f]{7,40})\b\s*(?:(FAILED)\b\s*[—–:-]*\s*(.*))?$/i.exec(first);
+    const stagingMatch = /^STAGING\s+head\s+([0-9a-f]{7,40})\b\s*(?:(FAILED|PREEMPTED)\b\s*[—–:-]*\s*(.*))?$/i.exec(first);
     if (stagingMatch) {
       const second = String(lines[1] ?? '').trim();
       const entry = {
         head: stagingMatch[1],
-        failed: Boolean(stagingMatch[2]),
+        // PREEMPTED (product PR #2274, owner 2026-09-12): a newer staging run took the
+        // slot and the head was never proven broken — not a failure, not ready either.
+        failed: String(stagingMatch[2] ?? '').toUpperCase() === 'FAILED',
+        preempted: String(stagingMatch[2] ?? '').toUpperCase() === 'PREEMPTED',
         step: stagingMatch[2] ? (String(stagingMatch[3] ?? '').trim() || null) : null,
         url: /^https?:\/\//i.test(second) ? second : null,
         data: String(lines[2] ?? '').replace(/^data:\s*/i, '').trim() || null,
