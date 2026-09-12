@@ -923,7 +923,7 @@ async function rerunPreemptedStaging(prs) {
     if (stagingRerequested.has(head)) continue;
     stagingRerequested.add(head);
     const out = await runText(GH, ['workflow', 'run', 'Staging', '--repo', config.repo, '-f', `sha=${head}`], 30000);
-    writeLog(`staging: head ${head.slice(0, 9)} of PR #${pr.number} was preempted by another run — re-requested the deploy${out === null ? ' (gh did not answer; the planner keeps waiting)' : ''}`);
+    console.log(`staging: head ${head.slice(0, 9)} of PR #${pr.number} was preempted by another run — re-requested the deploy${out === null ? ' (gh did not answer; the planner keeps waiting)' : ''}`);
   }
 }
 
