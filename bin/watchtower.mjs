@@ -623,6 +623,8 @@ const sprintSource = makeSource('sprint-units', sprintSweepMs, async () => {
     // CI jobs read the PR list this sweep just refreshed; a failure here is
     // information missing, never a reason to hold a card.
     await ciJobsSource.tick();
+    await alarmSlowScopedRuns(prSource.value ?? [], ciJobsSource.value ?? new Map());
+    await rerunPreemptedStaging(prSource.value ?? []);
     const staleSources = staleSourceNames();
     facts = {
       lanes: lanesWithMemory(lanesSource.value, staleSources),
@@ -900,6 +902,46 @@ const NO_PROOF_CONFIRM_MS = (Number.isFinite(noProofConfirmMin) && noProofConfir
 // One line to the owner about the board itself, once per distinct key. Kept in
 // memory: a restart may repeat one alarm, which is cheaper than a state file.
 const alarmed = new Set();
+// Owner rule of 2026-09-12 (product PR #2274): a pull request without the `full-ci`
+// label runs the scoped check, 7-10 minutes of work. A `pr-ci` job past 15 minutes on
+// such a PR means the rule slipped, not that the queue is long (the job clock starts
+// when a runner picks it up) — and the owner hears it the same day. Measured before the
+// rule: every sprint push of 2026-09-12 ran the full 37 minutes under the scoped name,
+// and nobody noticed for six days because nothing measured it.
+// A PREEMPTED staging receipt (product PR #2274, owner 2026-09-12): a newer staging
+// run took the single slot before this head was proven either way. The planner
+// waits for a new receipt; this is the hand that asks for it — one dispatch per
+// head, remembered in memory (a restart may ask once more, which is harmless: the
+// workflow is idempotent per sha and its own concurrency rule keeps one deploy).
+const stagingRerequested = new Set();
+async function rerunPreemptedStaging(prs) {
+  if (!config.staging?.enabled || !config.repo) return;
+  for (const pr of prs) {
+    const receipt = pr?.stagingOnHead;
+    const head = pr?.headSha ?? '';
+    if (!receipt?.preempted || !head || !head.startsWith(String(receipt.head ?? '').slice(0, 7))) continue;
+    if (stagingRerequested.has(head)) continue;
+    stagingRerequested.add(head);
+    const out = await runText(GH, ['workflow', 'run', 'Staging', '--repo', config.repo, '-f', `sha=${head}`], 30000);
+    writeLog(`staging: head ${head.slice(0, 9)} of PR #${pr.number} was preempted by another run — re-requested the deploy${out === null ? ' (gh did not answer; the planner keeps waiting)' : ''}`);
+  }
+}
+
+async function alarmSlowScopedRuns(prs, ciJobs) {
+  const limitMs = 15 * 60000;
+  for (const pr of prs) {
+    if (!pr?.headSha || !pr.number) continue;
+    if ((pr.labels ?? []).includes('full-ci')) continue;
+    const jobs = ciJobs.get(pr.number) ?? [];
+    const job = jobs.find(j => j.workflow === 'pr-ci' && j.job === 'pr-ci' && j.status === 'in_progress' && j.startedAt);
+    if (!job) continue;
+    const ranMs = Date.now() - Date.parse(job.startedAt);
+    if (!Number.isFinite(ranMs) || ranMs < limitMs) continue;
+    await alarmOwner(`slow-scoped:${pr.headSha}`,
+      `Запрос #${pr.number}: узкий прогон идёт уже ${Math.floor(ranMs / 60000)} минут на ${pr.headSha.slice(0, 9)} без ярлыка полного круга — правило от 12.09 (узкий = 7–10 минут) не держится; смотри строку «test scope:» в этом прогоне`);
+  }
+}
+
 async function alarmOwner(key, line) {
   if (alarmed.has(key)) return;
   alarmed.add(key);

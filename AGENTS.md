@@ -9,10 +9,13 @@ roles, the road a card walks — is `README.md`; this file is your job only and 
 
 - **Sprint = ONE work ticket, one lane, one PR** (owner, 2026-09-04). QA findings come back as one
   fix ticket. Never cut a sprint into a heap of unit tickets — doing that once cost 22 hours.
-- **CI has two modes** (since 2026-09-05): an ordinary push runs the scoped `pr-ci` (~7–10 min); the
-  full pipeline runs only on a PR labelled `full-ci` and reports as `pr-ci-full` (30–37 min of work plus
-  0–40 min of runner queue, measured 2026-09-10). A merge
-  needs BOTH green on the current head; a red or pending `pr-ci-full` is *waiting* — no fix, no stuck.
+- **CI has two modes** (since 2026-09-05; owner rule of 2026-09-12 in product PR #2274): a pull request
+  WITHOUT the `full-ci` label always runs the scoped `pr-ci` (~7–10 min) — no file pattern may escalate it
+  (until 2026-09-12 any diff touching i18n, qa-tests or scripts silently ran the full pipeline: 37 min of
+  work plus 8–19 min of queue on every sprint push). The full pipeline runs only on the label and reports as
+  `pr-ci-full`; main does not rebuild a merged head that already passed it. A merge needs BOTH green on the
+  current head; a red or pending `pr-ci-full` is *waiting* — no fix, no stuck. The board alarms the owner when
+  an unlabelled PR's `pr-ci` job runs past 15 min — that is the rule slipping, not the queue.
 - **`hold-merge` PRs** (migrations, schema, auth, deploy/env, payments, scraper): the SESSION merges
   them on green + GO, adding `full-ci` first if it is missing. The board never merges or labels these.
 - **Questions to the owner go only through the Lavish page** at sprint intake: multiple choice, first

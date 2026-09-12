@@ -189,7 +189,7 @@ before the spec verdict. `specCheck: false` in the settings restores the pre-202
 test round is spent). Every push to the sprint's PR deploys that head — with no check in front of it — to one
 staging stack on the CI host, serving a nightly copy of production data behind HTTP basic auth
 (AUTOPASE-STAGING-001). The deploy writes one PR comment it keeps editing: line 1 `STAGING head <sha>`, or
-`STAGING head <sha> FAILED — <step>`, line 2 the address, line 3 `data: copy of production from <when>`. With
+`STAGING head <sha> FAILED — <step>`, or — since 2026-09-12 (product PR #2274) — `STAGING head <sha> PREEMPTED — …` when a newer staging run took the single slot before this head was proven either way (the board re-requests the deploy and waits again; it is never a NO-GO), line 2 the address, line 3 `data: copy of production from <when>`. With
 `staging: { enabled: true, url, user, password, waitMinutes }` in the settings the board holds the spec-check of a
 head until that receipt names it (up to `waitMinutes` from the PR's last change), then sends the spec-check to a
 `browser: true` lane with a `Staging:` header line — the auditor walks the surfaces the spec names, puts every
