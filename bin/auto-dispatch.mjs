@@ -1371,6 +1371,7 @@ export function taskText({
   const st = pair?.staging;
   if (st?.state === 'ready') {
     lines.push(`Staging: ${st.url} — HTTP basic auth user \`${staging?.user || 'staging'}\`, password \`${staging?.password || ''}\`; it serves head ${st.head}${st.data ? `; data: ${st.data}` : ''}. Walk it (spec-check 9).`);
+    lines.push('Staging note: the staging image is built with ACCOUNT_AUTH=0 — every surface the product gates on isAccountAuthEnabled() (the Results service funnel and cards, the cabinet, anything behind sign-in) is absent there BY BUILD; its absence is never a finding (spec-check 9). Judge those surfaces from code.');
   } else if (st?.state === 'failed') {
     lines.push(`Staging: FAILED on head ${st.head}${st.step ? ` — ${st.step}` : ''}. The head does not deploy: report it as HIGH (spec-check 9).`);
   } else if (st?.state === 'missing') {
