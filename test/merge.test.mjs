@@ -172,6 +172,18 @@ test('two runs of one check on a head — only the newest run is the check', () 
     { name: 'pr-ci', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: '2026-09-11T07:07:38Z' },
     fullAfterLabel,
   ]), { color: 'red', text: 'CI red (1)', failedNames: ['pr-ci'] }, 'a newer red run is red, an older green does not hide it');
+  // PR #2271, 2026-09-12 21:38: the session cancelled a labelled re-run that duplicated
+  // an already green full run on the same head; the board read CI red and sent a fixer.
+  assert.deepEqual(ciColor([
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-12T21:33:50Z' },
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'CANCELLED', completedAt: '2026-09-12T21:38:20Z' },
+    { name: 'pr-ci-full', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-09-12T21:33:55Z' },
+    { name: 'pr-ci-full', status: 'QUEUED', conclusion: '' },
+  ]), { color: 'run', text: 'CI waiting for pr-ci-full', failedNames: [] }, 'a cancelled run is not a verdict: the green run of the name stays, the queued gate is waited for');
+  assert.deepEqual(ciColor([
+    { name: 'pr-ci', status: 'COMPLETED', conclusion: 'CANCELLED', completedAt: '2026-09-12T21:38:20Z' },
+    fullAfterLabel,
+  ]), { color: 'red', text: 'CI red (1)', failedNames: ['pr-ci'] }, 'a lone cancelled run keeps its old meaning');
 });
 
 test('the board asks for the full run exactly when the card is ready to merge without it', () => {

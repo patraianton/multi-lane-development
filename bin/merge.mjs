@@ -76,11 +76,19 @@ function newestPerName(items) {
     }
     return 0;
   };
+  // A cancelled run is not a verdict (the same rule main-ci follows): the session
+  // cancels a run that duplicates a green one, a newer push cancels the stale one.
+  // On 2026-09-12 a cancelled duplicate of an already green `pr-ci` read as CI red
+  // and the board sent a fixer to repair nothing. A cancelled entry is that check's
+  // state only when no other entry of the name exists.
+  const cancelled = item => String(item?.conclusion || item?.state || item?.status || '').toUpperCase() === 'CANCELLED';
   const byName = new Map();
   items.forEach((item, index) => {
     const key = checkName(item);
     const prev = byName.get(key);
     if (!prev) { byName.set(key, { item, index }); return; }
+    if (cancelled(item) && !cancelled(prev.item)) return;
+    if (cancelled(prev.item) && !cancelled(item)) { byName.set(key, { item, index }); return; }
     const a = when(item), b = when(prev.item);
     const newer = a && b ? a > b : true;
     if (newer) byName.set(key, { item, index });
