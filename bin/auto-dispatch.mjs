@@ -682,6 +682,11 @@ export function planFixes({
       const pr = unit?.pr;
       const head = String(pr?.headSha ?? '');
       if (!head || unit?.merged || ['CLOSED', 'MERGED'].includes(String(pr?.state ?? '').toUpperCase())) continue;
+      // A draft PR is the lane's own work in progress — no fixer, and no
+      // no-proof retry of an earlier fixer either (2026-09-13: fix R1 on draft
+      // #2295 was stopped by hand, and the retry path re-launched R2 from the
+      // saved sections without asking fixNeed).
+      if (pr?.draft) continue;
       const fixEntries = entriesFor(journal, unit.ticket, 'fix');
       const failureState = launchFailureState(journal, unit.ticket, now, retryMs);
       if (failureState?.held) continue;
