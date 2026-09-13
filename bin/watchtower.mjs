@@ -1283,10 +1283,23 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   // The ticket comes verbatim from GitHub; rules come from this board's HEAD.
   let ticket = null;
   if (repo) {
-    const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url'], 60000);
+    const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url,state'], 60000);
     try { ticket = raw === null ? null : JSON.parse(raw); } catch { ticket = null; }
   }
   if (!ticket?.body) return { result: 'held', error: 'the ticket body could not be read (gh issue view)', ran: [] };
+  // The sweep's facts can be minutes old; the session folds findings and
+  // repoints `depends on:` between sweeps. 2026-09-13 16:12: the board launched
+  // a closed finding (#2297, folded a minute earlier) and the QA R2 walk whose
+  // `depends on:` had just gained the fold ticket. The live body wins.
+  if (String(ticket.state ?? '').toUpperCase() === 'CLOSED') {
+    return { result: 'held', error: `ticket #${pair.unit.ticket} is closed on GitHub (re-read at launch) — the next sweep drops it`, ran: [] };
+  }
+  const liveDeps = parseUnitDeps(ticket.body);
+  const knownDeps = new Set((pair.unit.depTickets ?? []).map(Number));
+  const newDeps = liveDeps.filter(n => !knownDeps.has(n));
+  if (newDeps.length) {
+    return { result: 'held', error: `ticket #${pair.unit.ticket} gained dependencies since the sweep (${newDeps.map(n => `#${n}`).join(', ')}) — re-planned next sweep`, ran: [] };
+  }
   const specDir = specDirFor({ card: (await listPipelineCards()).find(c => c.id === pair.card.id), umbrella: pair.umbrella, programs: programsSource.value, specsDir: config.specsDir });
   let localSpec = null;
   if (specDir) { try { if ((await stat(specDir)).isDirectory()) localSpec = specDir; } catch { localSpec = null; } }
