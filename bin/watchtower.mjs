@@ -1283,7 +1283,7 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   // The ticket comes verbatim from GitHub; rules come from this board's HEAD.
   let ticket = null;
   if (repo) {
-    const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url,state'], 60000);
+    const raw = await runText(GH, ['issue', 'view', String(pair.unit.ticket), '--repo', repo, '--json', 'number,title,body,url,state,comments'], 60000);
     try { ticket = raw === null ? null : JSON.parse(raw); } catch { ticket = null; }
   }
   if (!ticket?.body) return { result: 'held', error: 'the ticket body could not be read (gh issue view)', ran: [] };
@@ -1294,7 +1294,10 @@ async function dispatchOne(pair, { fleet, repo, at, rules }) {
   if (String(ticket.state ?? '').toUpperCase() === 'CLOSED') {
     return { result: 'held', error: `ticket #${pair.unit.ticket} is closed on GitHub (re-read at launch) — the next sweep drops it`, ran: [] };
   }
-  const liveDeps = parseUnitDeps(ticket.body);
+  // Body AND comments: a later "**Dependency added:** also depends on #n" comment
+  // (TICKETING.md §2.4) counts — on 2026-09-13 20:06 the board read the body only,
+  // missed the session's comment on QA R2 #2291 and launched the walk twice.
+  const liveDeps = parseUnitDeps([ticket.body ?? '', ...(ticket.comments ?? []).map(c => c?.body ?? '')].join('\n'));
   const knownDeps = new Set((pair.unit.depTickets ?? []).map(Number));
   const newDeps = liveDeps.filter(n => !knownDeps.has(n));
   if (newDeps.length) {
@@ -2303,7 +2306,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
     if (issueState.get(it.number) === 'OPEN') {
       work.push({
         number: it.number, title: it.title, url: it.url, labels,
-        branch, deps: parseUnitDeps(it.body), depsMerged, qa,
+        branch, deps: parseUnitDeps(text), depsMerged, qa,
         dependsLine: /\bdepends?\s+on\b/i.test(String(it.body ?? '')),
         refs: [...refs],
       });
@@ -2319,7 +2322,7 @@ const unitIssuesSource = makeSource('umbrella-units', 180000, async () => {
           body: String(comment?.body ?? ''),
           createdAt: comment?.createdAt ?? null,
         })),
-        deps: parseUnitDeps(it.body), depsMerged,
+        deps: parseUnitDeps(text), depsMerged,
         qa,
       });
     }
