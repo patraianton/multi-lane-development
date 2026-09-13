@@ -435,6 +435,17 @@ test('a no-proof fix retries under the next round key and keeps the verdict sect
     [2, initialKey, 'VERDICT R1 — verbatim', '2008:fix:2'],
   );
   {
+    // The launch re-reads the ticket body and compares its `depends on:` with
+    // what the sweep knew — the pair must carry the sweep's dependency tickets
+    // (facts keep them as `deps[].ticket`; `depTickets` is deleted there, and
+    // an empty copy held #2299 for an hour on 2026-09-13).
+    const withDeps = { ...one.units[0], deps: [{ ticket: 2253, unit: 'U1', state: 'merged', met: true }, { ticket: 2292, unit: '', state: 'outside the sprint', met: null }] };
+    const [pairWithDeps] = planFixes({
+      cards, sprints: new Map([['cs', sprint({ free: ['lanes-01/lane-1'], units: [withDeps], qaTickets: [] })]]), fleet: FLEET, at,
+    });
+    assert.deepEqual(pairWithDeps.unit.depTickets, [2253, 2292], 'a dispatch pair carries the dependency tickets the sweep resolved');
+  }
+  {
     // The PR went draft after the first fixer was judged no-proof: the retry
     // path must not re-launch from the saved sections (2026-09-13, #2295).
     const draftUnit = { ...one.units[0], pr: { ...one.units[0].pr, draft: true } };
