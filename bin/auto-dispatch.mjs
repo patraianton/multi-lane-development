@@ -800,7 +800,7 @@ export function planFixes({
         umbrella: sprint.umbrella ?? null,
         unit: {
           unit: unit.unit || '', ticket: unit.ticket, title: unit.title || '', url: unit.url || '', branch: branchOf(unit),
-          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit),
+          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: [...(unit.depTickets ?? [])],
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: baseFor(unit, sprint), kind: 'fix', round: retry?.round ?? need.round, head,
@@ -976,7 +976,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
         umbrella: s.umbrella ?? null,
         unit: {
           unit: u.unit || '', ticket: u.ticket, title: u.title || '', url: u.url || '', branch: branchOf(u),
-          qa: Boolean(u.qa), qaRun, labels: labelsOf(u),
+          qa: Boolean(u.qa), qaRun, labels: labelsOf(u), depTickets: [...(u.depTickets ?? [])],
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base, kind: 'develop', round: retry?.round ?? 1, head: null, role: qaRun ? 'qa' : 'lane',
@@ -1206,7 +1206,7 @@ function planHeadReads(kind, {
         umbrella: sprint.umbrella ?? null,
         unit: {
           unit: unit.unit || '', ticket: unit.ticket, title: unit.title || '', url: unit.url || '', branch: branchOf(unit),
-          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit),
+          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: [...(unit.depTickets ?? [])],
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: base.error ? { ref: 'main', sha: null, pr: null, ticket: null, unit: null } : base,
