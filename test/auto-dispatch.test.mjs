@@ -412,6 +412,17 @@ test('a no-proof fix retries under the next round key and keeps the verdict sect
     [retry.round, retry.retryOf, retry.sections[0].title, dispatchKey(retry)],
     [2, initialKey, 'VERDICT R1 — verbatim', '2008:fix:2'],
   );
+  {
+    // The PR went draft after the first fixer was judged no-proof: the retry
+    // path must not re-launch from the saved sections (2026-09-13, #2295).
+    const draftUnit = { ...one.units[0], pr: { ...one.units[0].pr, draft: true } };
+    const drafted = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [draftUnit], qaTickets: [] })]]);
+    assert.deepEqual(
+      planFixes({ cards, sprints: drafted, ledger: launched, fleet: FLEET, at: '2026-08-29T12:01:00.000Z' }),
+      [],
+      'no no-proof retry of a fix against a draft PR',
+    );
+  }
   const heldRetry = recordDispatch(launched, retry, { result: 'held', error: 'launcher busy' }, '2026-08-29T12:01:00.000Z');
   const [heldAgain] = planFixes({
     cards, sprints: source, ledger: heldRetry, fleet: FLEET, at: '2026-08-29T12:01:30.000Z',
