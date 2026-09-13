@@ -166,6 +166,19 @@ test('closed units are not served for review, fix, or a develop retry', () => {
     [1843],
     'an otherwise identical open unit still receives a fix',
   );
+  assert.deepEqual(
+    planFixes({
+      cards,
+      sprints: new Map([['cs', sprint({
+        units: [{ ...fixUnit, open: true, pr: { ...fixUnit.pr, draft: true, ci: { color: 'red', headSha: head } } }],
+        qaTickets: [], free: ['mac/lane-6'],
+      })]]),
+      fleet: FLEET,
+      at,
+    }),
+    [],
+    'a draft PR is the lane\'s own work in progress — no fixer for its red checks or verdicts (2026-09-13, #2295)',
+  );
 
   const developUnit = { ...closed, state: 'on lane', pr: null, merged: null };
   const developSource = new Map([['cs', sprint({
