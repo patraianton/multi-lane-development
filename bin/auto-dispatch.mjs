@@ -612,6 +612,12 @@ function redOnHead(pr, head) {
 
 function fixNeed(unit, fixEntries) {
   const pr = unit?.pr;
+  // A draft PR is the lane's own work in progress: its red scoped run and its
+  // conflicts are not a fixer's business, and no reader judges a draft head
+  // (planHeadReads skips drafts already). On 2026-09-13 the session parked an
+  // interrupted run as draft #2295 and the board sent a fixer against it while
+  // the continuation lane was still writing the same branch.
+  if (pr?.draft) return null;
   const head = String(pr?.headSha ?? '');
   // The spec-check's NO-GO on this head is the first thing a fixer answers:
   // no reviewer read that head yet and no full run was spent on it.
