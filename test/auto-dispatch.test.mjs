@@ -265,6 +265,28 @@ test('a live develop launch holds the unit until lane facts catch up', () => {
   ]);
 });
 
+test('a fix pair carries the unit dependency tickets from its deps objects (sprint-facts deletes depTickets)', () => {
+  const head = 'abc12345def0000000000000000000000000000000';
+  const one = sprint({
+    free: ['lanes-01/lane-1', 'mac/lane-6'],
+    units: [{
+      unit: 'U2', ticket: 2002, title: 'FIN-U2', branch: 'feat/fin-u2', state: 'pr no-go',
+      deps: [
+        { ticket: 1990, unit: 'U1', state: 'merged', met: true },
+        { ticket: 1995, unit: '', state: 'outside the sprint', met: null },
+      ],
+      pr: {
+        number: 2102, headSha: head, ci: { color: 'green' }, mergeable: 'MERGEABLE', verdictRounds: 1,
+        verdictOnHead: { round: 1, go: false, head, body: `R1 — NO-GO
+head ${head}` },
+      },
+    }],
+    qaTickets: [],
+  });
+  const [pair] = planFixes({ cards, sprints: new Map([['cs', one]]), ledger: { dispatched: {} }, fleet: FLEET, at: '2026-08-29T12:00:00.000Z' });
+  assert.deepEqual(pair.unit.depTickets, [1990, 1995], 'the launch-time re-read compares against every dependency the sweep already knew');
+});
+
 test('a NO-GO fix carries the verdict verbatim and prefers another host', () => {
   const head = 'abc12345def0000000000000000000000000000000';
   const body = `R1 — NO-GO\nhead ${head}\n\nKeep this paragraph exactly.\n`;

@@ -68,6 +68,15 @@ function roundOf(pair) {
   return Number.isInteger(n) && n > 0 ? n : 1;
 }
 
+// The ticket numbers a unit's body says it depends on. sprint-facts turns the
+// parsed list into `deps` objects and deletes `depTickets`, so a pair carries
+// them from `deps`; a bare `depTickets` (older shape, tests) still counts.
+function depTicketsOf(unit) {
+  const fromDeps = (unit?.deps ?? []).map(d => Number(d?.ticket)).filter(Number.isFinite);
+  const bare = (unit?.depTickets ?? []).map(Number).filter(Number.isFinite);
+  return [...new Set([...fromDeps, ...bare])].sort((a, b) => a - b);
+}
+
 function labelsOf(unit) {
   return Array.isArray(unit?.labels) ? unit.labels.map(x => String(x).toLowerCase()) : [];
 }
@@ -800,7 +809,7 @@ export function planFixes({
         umbrella: sprint.umbrella ?? null,
         unit: {
           unit: unit.unit || '', ticket: unit.ticket, title: unit.title || '', url: unit.url || '', branch: branchOf(unit),
-          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: [...(unit.depTickets ?? [])],
+          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: depTicketsOf(unit),
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: baseFor(unit, sprint), kind: 'fix', round: retry?.round ?? need.round, head,
@@ -976,7 +985,7 @@ export function planDispatchFull(cards, sprints, { ledger = null, at = null, fle
         umbrella: s.umbrella ?? null,
         unit: {
           unit: u.unit || '', ticket: u.ticket, title: u.title || '', url: u.url || '', branch: branchOf(u),
-          qa: Boolean(u.qa), qaRun, labels: labelsOf(u), depTickets: [...(u.depTickets ?? [])],
+          qa: Boolean(u.qa), qaRun, labels: labelsOf(u), depTickets: depTicketsOf(u),
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base, kind: 'develop', round: retry?.round ?? 1, head: null, role: qaRun ? 'qa' : 'lane',
@@ -1206,7 +1215,7 @@ function planHeadReads(kind, {
         umbrella: sprint.umbrella ?? null,
         unit: {
           unit: unit.unit || '', ticket: unit.ticket, title: unit.title || '', url: unit.url || '', branch: branchOf(unit),
-          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: [...(unit.depTickets ?? [])],
+          qa: Boolean(unit.qa), qaRun: isQaRun(unit), labels: labelsOf(unit), depTickets: depTicketsOf(unit),
         },
         lane: lane.name, host: lane.host, laneName: lane.lane, n: lane.n,
         base: base.error ? { ref: 'main', sha: null, pr: null, ticket: null, unit: null } : base,
