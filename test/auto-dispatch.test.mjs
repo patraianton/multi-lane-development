@@ -1682,3 +1682,28 @@ test('the round ceiling holds the fix after a NO-GO in the ceiling round and pla
   const [fix] = planFixes({ cards, sprints: belowSource, fleet: FLEET, at });
   assert.equal(fix?.unit?.ticket, 2009);
 });
+
+test('a no-proof retry of a CI-red fixer is dropped once the head is no longer red (2026-09-14, #2301 R7–R10)', () => {
+  const at = '2026-09-14T19:19:00.000Z';
+  const head = 'd8487fbaac36085baef82844ca934032b6a079b5';
+  const unitRed = {
+    unit: 'QA', ticket: 2301, title: 'QA #2301', branch: 'feat/2301', state: 'pr open', deps: [],
+    pr: { number: 2302, headSha: head, ci: { color: 'red', failedNames: ['pr-ci'], headSha: head }, mergeable: 'MERGEABLE' },
+  };
+  const red = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unitRed], qaTickets: [] })]]);
+  const [initial] = planFixes({ cards, sprints: red, fleet: FLEET, at });
+  assert.match(initial.sections[0].title, /^CI — red checks/);
+  const launched = recordDispatch({ dispatched: {} }, initial, { result: 'launched' }, at);
+  launched.dispatched[dispatchKey(initial)] = { ...launched.dispatched[dispatchKey(initial)], judged: 'no-proof' };
+
+  // The session re-ran the flaky job: the check is queued, the head is not red.
+  const unitQueued = { ...unitRed, pr: { ...unitRed.pr, ci: { color: 'run', failedNames: [], headSha: head } } };
+  const queued = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unitQueued], qaTickets: [] })]]);
+  const again = planFixes({ cards, sprints: queued, ledger: launched, fleet: FLEET, at: '2026-09-14T19:42:00.000Z' });
+  assert.equal(again.length, 0, 'no fixer is owed for a red that is gone');
+
+  // Red again on the same head → the retry is owed as before.
+  const backRed = planFixes({ cards, sprints: red, ledger: launched, fleet: FLEET, at: '2026-09-14T19:50:00.000Z' });
+  assert.equal(backRed.length, 1);
+  assert.equal(backRed[0].retryOf, dispatchKey(initial));
+});
