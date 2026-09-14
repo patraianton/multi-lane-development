@@ -729,6 +729,13 @@ export function planFixes({
       // …unless a NO-GO newer than that launch names this head: then the
       // fixer answers the newest list, and the saved one is history.
       const staleSections = retryEntry && newerNoGo(retryEntry) && currentNeed;
+      // …and a fixer summoned only by red checks is owed only while the head is
+      // still red: a browser-smoke network flake re-run by the session leaves the
+      // check queued, and the "owed" retry would send a lane to repair nothing
+      // (2026-09-14 19:19–19:42: fix R7–R10 of #2301 on a green-then-queued head).
+      const ciOnlyRetry = savedSections.length > 0 && savedSections.every(section => /^CI — red checks/.test(section.title));
+      const ciRedNow = String(pr?.ci?.color ?? pr?.ciColor ?? '').toLowerCase() === 'red';
+      if (retry && retry.type !== 'new-no-go' && ciOnlyRetry && !ciRedNow && !currentNeed) continue;
       let need = retry && retry.type !== 'new-no-go' && savedSections.length && !staleSections
         ? { round: retry.round, sections: savedSections }
         : currentNeed;
