@@ -1707,3 +1707,30 @@ test('a no-proof retry of a CI-red fixer is dropped once the head is no longer r
   assert.equal(backRed.length, 1);
   assert.equal(backRed[0].retryOf, dispatchKey(initial));
 });
+
+test('a no-proof retry of a review-NO-GO fixer is dropped once a newer GO stands on the same head (2026-09-15, #2340 R3–R4)', () => {
+  const at = '2026-09-15T21:20:00.000Z';
+  const head = '72c900a82e46c2ccc302a08e90a3d7dafe05eea3';
+  const noGo = { go: false, round: 2, head, at: '2026-09-15T21:19:00.000Z', body: 'CLAUDE.md:31 — PR body silent on LT/EE' };
+  const unitNoGo = {
+    unit: 'QA', ticket: 2340, title: 'QA #2340', branch: 'feat/2340', state: 'pr no-go', deps: [],
+    pr: { number: 2343, headSha: head, verdictOnHead: noGo, ci: { color: 'run', failedNames: [], headSha: head }, mergeable: 'MERGEABLE' },
+  };
+  const red = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unitNoGo], qaTickets: [] })]]);
+  const [initial] = planFixes({ cards, sprints: red, fleet: FLEET, at });
+  assert.match(initial.sections[0].title, /^VERDICT R2 — verbatim/);
+  const launched = recordDispatch({ dispatched: {} }, initial, { result: 'launched' }, at);
+  launched.dispatched[dispatchKey(initial)] = { ...launched.dispatched[dispatchKey(initial)], judged: 'no-proof' };
+
+  // The session answered R2 by hand (PR body) and posted R3 — GO on the same head.
+  const go = { go: true, round: 3, head, at: '2026-09-15T21:24:00.000Z', body: 'R3 — GO' };
+  const unitGo = { ...unitNoGo, state: 'pr go', pr: { ...unitNoGo.pr, verdictOnHead: go } };
+  const green = new Map([['cs', sprint({ free: ['lanes-01/lane-1', 'mac/lane-6'], units: [unitGo], qaTickets: [] })]]);
+  const again = planFixes({ cards, sprints: green, ledger: launched, fleet: FLEET, at: '2026-09-15T21:27:00.000Z' });
+  assert.equal(again.length, 0, 'no fixer is owed for a NO-GO that a newer GO superseded');
+
+  // NO-GO still the latest verdict on the head → the retry is owed as before.
+  const backNoGo = planFixes({ cards, sprints: red, ledger: launched, fleet: FLEET, at: '2026-09-15T21:27:00.000Z' });
+  assert.equal(backNoGo.length, 1);
+  assert.equal(backNoGo[0].retryOf, dispatchKey(initial));
+});

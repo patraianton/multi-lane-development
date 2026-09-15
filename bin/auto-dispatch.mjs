@@ -736,6 +736,17 @@ export function planFixes({
       const ciOnlyRetry = savedSections.length > 0 && savedSections.every(section => /^CI — red checks/.test(section.title));
       const ciRedNow = String(pr?.ci?.color ?? pr?.ciColor ?? '').toLowerCase() === 'red';
       if (retry && retry.type !== 'new-no-go' && ciOnlyRetry && !ciRedNow && !currentNeed) continue;
+      // …and a fixer summoned by a NO-GO verdict is owed only while that head has
+      // no newer GO of the same family: on 2026-09-15 21:20–21:35 review R2 named
+      // only the PR body (LT/EE line), the session fixed the body by hand, posted
+      // R3 — GO on the same head, and the retry path still sent fix R3 and R4 to
+      // two lanes for a head that already read "GO, checks not green" (#95).
+      const verdictOnlyRetry = savedSections.length > 0 && savedSections.every(section => /^VERDICT R\d+ — verbatim/.test(section.title));
+      const specOnlyRetry = savedSections.length > 0 && savedSections.every(section => /^SPEC-CHECK S\d+ — verbatim/.test(section.title));
+      const reviewGoNow = pr?.verdictOnHead?.go === true && sameHead(pr.verdictOnHead.head, head);
+      const specGoNow = pr?.specVerdictOnHead?.go === true && sameHead(pr.specVerdictOnHead.head, head);
+      if (retry && retry.type !== 'new-no-go' && !currentNeed
+          && ((verdictOnlyRetry && reviewGoNow) || (specOnlyRetry && specGoNow))) continue;
       let need = retry && retry.type !== 'new-no-go' && savedSections.length && !staleSections
         ? { round: retry.round, sections: savedSections }
         : currentNeed;
