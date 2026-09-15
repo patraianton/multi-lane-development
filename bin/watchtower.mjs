@@ -928,6 +928,16 @@ async function rerunPreemptedStaging(prs, unitBranches = new Set()) {
     const head = pr?.headSha ?? '';
     if (!receipt?.preempted || !head || !head.startsWith(String(receipt.head ?? '').slice(0, 7))) continue;
     if (stagingRerequested.has(head)) continue;
+    // One deploy at a time: a dispatch while another Staging run is queued or in
+    // progress preempts it, and with two board PRs waiting the two heads cancel each
+    // other in turn (2026-09-15 05:53–05:58: #2295 → #2323 → #2295, no head ever
+    // served). While the slot is busy this head keeps waiting; the next sweep asks.
+    const busy = await runText(GH, ['run', 'list', '--repo', config.repo, '--workflow', 'Staging', '--limit', '10',
+      '--json', 'status', '--jq', '[.[]|select(.status=="in_progress" or .status=="queued" or .status=="waiting")]|length'], 30000);
+    if (busy === null || Number(String(busy).trim()) > 0) {
+      console.log(`staging: head ${head.slice(0, 9)} of PR #${pr.number} was preempted — the slot is busy (${busy === null ? 'gh did not answer' : `${String(busy).trim()} run(s)`}), re-request deferred to a later sweep`);
+      continue;
+    }
     stagingRerequested.add(head);
     const out = await runText(GH, ['workflow', 'run', 'Staging', '--repo', config.repo, '-f', `sha=${head}`], 30000);
     console.log(`staging: head ${head.slice(0, 9)} of PR #${pr.number} was preempted by another run — re-requested the deploy${out === null ? ' (gh did not answer; the planner keeps waiting)' : ''}`);
