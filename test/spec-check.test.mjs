@@ -249,3 +249,17 @@ test('a PREEMPTED receipt is neither ready nor failed: the spec-check waits agai
   assert.equal(codeOnly.length, 1);
   assert.equal(codeOnly[0].staging?.state, 'missing', 'after waitMinutes from the preempted receipt the round goes code-only, never "failed"');
 });
+
+// 2026-09-15 05:54: the staging bot edits ONE comment in place and gh reports only
+// createdAt, so a PREEMPTED receipt born the day before read as "the wait is over"
+// a minute after a fresh push — two spec-checks went code-only to no-browser lanes.
+test('a PREEMPTED receipt older than the PR\'s last push waits from the push, not from the receipt', () => {
+  const stale = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(600), url: 'http://89.167.116.229:18090' };
+  const holds = [];
+  const waiting = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(1), stagingOnHead: stale })), fleet: FLEET, at: AT, holds, staging: STAGING });
+  assert.equal(waiting.length, 0, 'a push one minute ago restarts the wait even when the receipt comment is a day old');
+  assert.match(holds.map(h => h.reason).join('\n'), /was preempted by another branch's run — re-requested/);
+  const expired = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(50), stagingOnHead: stale })), fleet: FLEET, at: AT, staging: STAGING });
+  assert.equal(expired.length, 1, 'after waitMinutes from the push the round goes code-only');
+  assert.equal(expired[0].staging?.state, 'missing');
+});
