@@ -1142,7 +1142,16 @@ function planHeadReads(kind, {
             ? { state: 'failed', head: receipt.head, step: receipt.step ?? null, url: receipt.url ?? staging.url ?? null }
             : { state: 'ready', head: receipt.head, url: receipt.url ?? staging.url ?? null, data: receipt.data ?? null };
         } else {
-          const since = Date.parse((preempted ? receipt.at : null) ?? pr.updatedAt ?? '') || now;
+          // The staging bot edits ONE comment in place, and `gh pr view --json comments`
+          // reports only createdAt — so a PREEMPTED receipt's `at` is the day the comment
+          // was born, not the moment it was preempted. On 2026-09-15 05:54–05:55 that read
+          // as "45 min already passed" and two spec-checks went code-only to no-browser
+          // lanes a minute after the push (#2323 S5 at the ceiling, #2295 S4). The wait
+          // clock starts at the later of the receipt and the PR's last change.
+          const since = Math.max(
+            preempted ? (Date.parse(receipt.at ?? '') || 0) : 0,
+            Date.parse(pr.updatedAt ?? '') || 0,
+          ) || now;
           const waitMinutes = Math.max(1, Number(staging.waitMinutes) || 25);
           if (now - since < waitMinutes * 60000) {
             holds?.push({
