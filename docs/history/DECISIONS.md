@@ -6,8 +6,8 @@ the record of when and why.
 
 ## 2026-08-30 (morning) — QA runs twice: the fixes get their own final walk
 
-21. **A second, final QA round after the fix round (owner, 2026-08-30 ~09:55: "after the
-    first QA, after the fixes are done, we run a second, final QA").** Round 1 walks
+21. **A second, final QA round after the fix round (owner, 2026-08-30).**
+    Round 1 walks
     production after the last unit lands and files its findings; the fixes are merged;
     then a fresh agent walks production again over every surface a fix touched, every
     surface round 1 did not reach, and the open `(unsure)` findings. The sprint is handed
@@ -22,10 +22,7 @@ the record of when and why.
 ## 2026-08-29 (evening) — review is not a column: it runs alongside CI, and the board shows it running
 
 20. **The Review column (decision 17) is folded back into CI/PR; the reviewer reads the
-    pushed head while CI runs; a live badge says a reader is on it (owner, 2026-08-29
-    ~18:15–18:30: "the review section is not needed — when it comes to CI/PR we do CI/PR
-    and the review together"; "I need an active review-running badge, read from the
-    orchestrator's session").** Both stream windows had been calling the reviewer only
+    pushed head while CI runs; a live badge says a reader is on it (owner, 2026-08-29).** Both stream windows had been calling the reviewer only
     after green CI, so every PR paid the CI time twice: once for the run, once waiting for
     a reader who could have read the same head from the first minute. The column measured
     that wait instead of removing it. Now a card is in `ci_pr` (titled "CI/PR + review")
@@ -41,9 +38,7 @@ the record of when and why.
 
 ## 2026-08-29 (evening) — no QA column, no Spec column
 
-19. **QA is not a stage of the road; the page starts at Grill (owner, 2026-08-29 ~18:35:
-    "remove QA altogether — it is one process at the end, run once when the sprint is handed
-    over; not a part of the pipeline"; "remove the Spec column too").** The road is
+19. **QA is not a stage of the road; the page starts at Grill (owner, 2026-08-29).** The road is
     `spec → grilled → ticketed → development → local_check → ci_pr → review → merged → done`.
     A merged unit waits in `merged` for the rest of the sprint, the sprint's one QA run
     (runbook §7) and its own acceptance, and is done when a person closes its ticket after
@@ -59,7 +54,7 @@ the record of when and why.
 ## 2026-08-29 (evening) — merged is a column; QA holds only what QA is doing
 
 18. **Merged is a column between Review and QA; the QA column holds only QA work (owner,
-    2026-08-29 ~17:55: "sort out QA — why are they all sitting there? no QA is running").**
+    2026-08-29).**
     Eight cards sat in QA with nothing being checked: five merged units of a sprint whose
     last unit was still in review (the rule of decision 13 put them there, the word "QA"
     said something else), and three findings whose fix was already on a lane and then on a
@@ -78,8 +73,7 @@ the record of when and why.
 ## 2026-08-29 (evening) — the board dispatches by itself
 
 16. **A free lane and a ready ticket meet on the board, not in a rulebook (owner,
-    2026-08-29 ~16:30: "there is a lane, there is development — this must not be a
-    regulation").** After every idle-lanes check the board plans the dispatch itself:
+    2026-08-29).** After every idle-lanes check the board plans the dispatch itself:
     for each active sprint, the startable units (decision 15's `startable`) against the
     sprint's free fleet lanes that have a launcher in `state/fleet-launch.json` — not busy,
     not bound, not reserved, and a light lane (lane-3, no builds) only for a unit that
@@ -102,8 +96,7 @@ the record of when and why.
 
 ## 2026-08-29 (evening) — review is a stage on the board
 
-17. **Review is a column between CI/PR and QA, entered by fact (owner, 2026-08-29 ~16:20:
-    "make it a stage on the board after CI/PR — I must see how long it lies there").**
+17. **Review is a column between CI/PR and QA, entered by fact (owner, 2026-08-29).**
     A unit card is in `review` when its PR is open and its CI is green: the code waits for a
     reader, then for its merge, and the clock shows how long. The verdict is read from the
     PR itself — the first line of a comment, `R<n> — GO` / `R<n> — NO-GO`. NO-GO = a review
@@ -145,7 +138,7 @@ the record of when and why.
 
 ## 2026-08-29 (midday) — the page is the pipeline; QA before done; merged is not done
 
-13. **Merged is delivered, not accepted (owner, 2026-08-29 ~12:40: "да, окей" to option 1).**
+13. **Merged is delivered, not accepted (owner, 2026-08-29, option 1).**
     A merged unit goes to `qa`, not `done`; it is done once its ticket is closed later than
     two minutes after the merge (a person, after the acceptance run — for a rollout unit the
     production probe) or closed with no merge at all. The PR's own `Closes #N` closes the
@@ -161,8 +154,7 @@ the record of when and why.
 
 12. **The windows view is cut; the pipeline is the page (owner, 2026-08-29 ~12:00).**
     The live-windows board (herdr windows in columns, the lane strip, hand-typed cards,
-    hidden cards) is gone from the page — "it is simply not needed; the pipeline is the
-    default story". The server keeps reading windows: they still feed the pipeline
+    hidden cards) is gone from the page. The server keeps reading windows: they still feed the pipeline
     (window names on cards, the shadow verdict of ADR-0006, `/api/board` for agents).
     The gear keeps only the project choice, which is what those facts are filtered by.
     In the same round: lane names come from the fleet registry (FLEET.md → `lanes` in the
@@ -193,7 +185,7 @@ the record of when and why.
     `accept` action is gone (`ci_pr → done` is a plain move). Stored cards in
     `acceptance` / `accepted` load as `done`. Where decision 9 and ADR-0006 say
     "acceptance" / "accepted", read "done".
-    **Local check by fact (owner: "why did nothing land in Local check?").** The column
+    **Local check by fact (owner).** The column
     stayed empty because the unit mover knew three facts only — busy lane, PR open, PR
     merged — and walked a card from `development` straight to `ci_pr`. The lane probes
     now also report the project's local check running on a lane (`scripts/ci-local.mjs`,

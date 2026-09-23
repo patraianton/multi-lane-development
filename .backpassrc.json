@@ -9,7 +9,7 @@
   "discovery": {
     "harnesses": ["claude", "codex"],
     "since": "30d",
-    "cloneRoots": ["C:/Users/panto/projects/_conveyor/MLD"],
+    "cloneRoots": ["../_conveyor/MLD"],
     "minUserTurns": 2
   },
   "jobs": 3,
