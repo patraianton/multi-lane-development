@@ -126,7 +126,7 @@ test('with specCheck on, neither the merge nor the full-ci label happens before 
 // ---- the staging walk (owner, 2026-09-10): a PR head is deployed to one
 // staging before any check; the spec-check waits for the deploy receipt and
 // walks it on a browser lane. Pure fixtures; no ssh, no gh.
-const STAGING = { enabled: true, url: 'http://89.167.116.229:18090', user: 'staging', password: 'pw-1', waitMinutes: 25 };
+const STAGING = { enabled: true, url: 'http://203.0.113.20:18090', user: 'staging', password: 'pw-1', waitMinutes: 25 };
 const FLEET_BROWSER = {
   ...FLEET,
   hosts: { ...FLEET.hosts, mac: { kitchen: '~/kitchens/autopase.lv', launch: 'maclane {n} "{prompt}"', browser: true } },
@@ -142,17 +142,17 @@ const minutesBefore = (n) => new Date(Date.parse(AT) - n * 60000).toISOString();
 
 test('prVerdictFacts reads the staging receipt: head, address, data line, and a FAILED step', () => {
   const ok = prVerdictFacts([
-    { body: 'STAGING head aefd5925\nhttp://89.167.116.229:18090\ndata: copy of production from 2026-09-10 03:40 UTC\nserved aefd5925 at 2026-09-10T15:00:00Z', createdAt: AT },
+    { body: 'STAGING head aefd5925\nhttp://203.0.113.20:18090\ndata: copy of production from 2026-09-10 03:40 UTC\nserved aefd5925 at 2026-09-10T15:00:00Z', createdAt: AT },
   ], HEAD);
   assert.equal(ok.stagingOnHead?.head, 'aefd5925');
-  assert.equal(ok.stagingOnHead?.url, 'http://89.167.116.229:18090');
+  assert.equal(ok.stagingOnHead?.url, 'http://203.0.113.20:18090');
   assert.equal(ok.stagingOnHead?.data, 'copy of production from 2026-09-10 03:40 UTC');
   assert.equal(ok.stagingOnHead?.failed, false);
   assert.equal(ok.specVerdicts.length, 0, 'a receipt is not a verdict');
-  const failed = prVerdictFacts([{ body: 'STAGING head bbbb1111 FAILED — migrate\nhttp://89.167.116.229:18090', createdAt: AT }], NEXT);
+  const failed = prVerdictFacts([{ body: 'STAGING head bbbb1111 FAILED — migrate\nhttp://203.0.113.20:18090', createdAt: AT }], NEXT);
   assert.equal(failed.stagingOnHead?.failed, true);
   assert.equal(failed.stagingOnHead?.step, 'migrate');
-  const other = prVerdictFacts([{ body: 'STAGING head bbbb1111\nhttp://89.167.116.229:18090', createdAt: AT }], HEAD);
+  const other = prVerdictFacts([{ body: 'STAGING head bbbb1111\nhttp://203.0.113.20:18090', createdAt: AT }], HEAD);
   assert.equal(other.stagingOnHead, null, 'a receipt for another head is not this head\'s');
   assert.equal(other.staging?.head, 'bbbb1111');
 });
@@ -170,7 +170,7 @@ test('with the staging enabled the spec-check waits for the receipt, up to waitM
 });
 
 test('a ready receipt sends the spec-check to a browser lane and the task carries the address and the password', () => {
-  const receipt = { head: 'aefd5925', failed: false, url: 'http://89.167.116.229:18090', data: 'copy of production from 2026-09-10 03:40 UTC' };
+  const receipt = { head: 'aefd5925', failed: false, url: 'http://203.0.113.20:18090', data: 'copy of production from 2026-09-10 03:40 UTC' };
   const holds = [];
   const noBrowser = planSpecChecks({
     cards, sprints: sprintsWith(pr({ stagingOnHead: receipt }), ['lanes-01/lane-1', 'lanes-01/lane-2']),
@@ -186,11 +186,11 @@ test('a ready receipt sends the spec-check to a browser lane and the task carrie
   assert.equal(pairs[0].lane, 'mac/lane-6');
   assert.equal(pairs[0].staging?.state, 'ready');
   const text = taskText({ pair: pairs[0], ticket: { number: 2093, title: 't', body: 'b' }, rules: RULES_MIN, staging: STAGING });
-  assert.match(text, /^Staging: http:\/\/89\.167\.116\.229:18090 — HTTP basic auth user `staging`, password `pw-1`; it serves head aefd5925; data: copy of production from 2026-09-10 03:40 UTC\./m);
+  assert.match(text, /^Staging: http:\/\/203\.0\.113\.20:18090 — HTTP basic auth user `staging`, password `pw-1`; it serves head aefd5925; data: copy of production from 2026-09-10 03:40 UTC\./m);
 });
 
 test('a FAILED receipt is read at once on any lane: the head does not deploy', () => {
-  const receipt = { head: 'aefd5925', failed: true, step: 'migrate', url: 'http://89.167.116.229:18090' };
+  const receipt = { head: 'aefd5925', failed: true, step: 'migrate', url: 'http://203.0.113.20:18090' };
   const pairs = planSpecChecks({ cards, sprints: sprints(pr({ stagingOnHead: receipt })), fleet: FLEET, at: AT, staging: STAGING });
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0].lane, 'lanes-01/lane-1');
@@ -236,10 +236,10 @@ test('a no-proof fix retry carries a spec NO-GO posted after the launch, not the
 // the receipt. On 2026-09-12 the same receipt spelled FAILED cost PR #2272 a
 // spec-check round.
 test('a PREEMPTED receipt is neither ready nor failed: the spec-check waits again from the receipt, then goes code-only', () => {
-  const parsed = prVerdictFacts([{ body: 'STAGING head aefd5925 PREEMPTED — a newer staging run took the slot; not a failure. Re-run Staging with sha=aefd5925\nhttp://89.167.116.229:18090', createdAt: AT }], HEAD);
+  const parsed = prVerdictFacts([{ body: 'STAGING head aefd5925 PREEMPTED — a newer staging run took the slot; not a failure. Re-run Staging with sha=aefd5925\nhttp://203.0.113.20:18090', createdAt: AT }], HEAD);
   assert.equal(parsed.stagingOnHead?.preempted, true);
   assert.equal(parsed.stagingOnHead?.failed, false);
-  const receipt = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(5), url: 'http://89.167.116.229:18090' };
+  const receipt = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(5), url: 'http://203.0.113.20:18090' };
   const holds = [];
   const waiting = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(40), stagingOnHead: receipt })), fleet: FLEET, at: AT, holds, staging: STAGING });
   assert.equal(waiting.length, 0, 'a preempted receipt five minutes old is a wait, not a walk and not a failure');
@@ -254,7 +254,7 @@ test('a PREEMPTED receipt is neither ready nor failed: the spec-check waits agai
 // createdAt, so a PREEMPTED receipt born the day before read as "the wait is over"
 // a minute after a fresh push — two spec-checks went code-only to no-browser lanes.
 test('a PREEMPTED receipt older than the PR\'s last push waits from the push, not from the receipt', () => {
-  const stale = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(600), url: 'http://89.167.116.229:18090' };
+  const stale = { head: 'aefd5925', preempted: true, failed: false, at: minutesBefore(600), url: 'http://203.0.113.20:18090' };
   const holds = [];
   const waiting = planSpecChecks({ cards, sprints: sprints(pr({ updatedAt: minutesBefore(1), stagingOnHead: stale })), fleet: FLEET, at: AT, holds, staging: STAGING });
   assert.equal(waiting.length, 0, 'a push one minute ago restarts the wait even when the receipt comment is a day old');

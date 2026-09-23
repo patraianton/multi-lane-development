@@ -84,7 +84,7 @@ Print the same last line to stdout when finished.
 
 ## After the run (the session)
 
-- `scp` the report into `C:\Users\panto\projects\_conveyor\MLD\reports\`; move the task file and the lane
+- `scp` the report into `%USERPROFILE%\projects\_conveyor\MLD\reports\`; move the task file and the lane
   log into the kitchen's `reports/` (cleanup is part of the round).
 - HIGH + MEDIUM → one fix ticket (RULES `cutter` 4). LOW → a count in the owner's one line.
 - Owner's line: `<spec> — checked against the spec by an independent auditor: <n> requirements, <k> deviations (<h> serious), verdict <…>`.
