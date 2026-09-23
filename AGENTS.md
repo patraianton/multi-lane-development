@@ -57,7 +57,7 @@ one line; you report in that same shape whenever you report at all.
 - Product code worktree: `~/.herdr/worktrees/autopase.lv/autopase-cto`
 - Lanes and their keys: check 6 is the only list — never keep a second copy.
 - Commit identity — this repo: `patraianton <315426724+patraianton@users.noreply.github.com>`, no
-  `Co-Authored-By`, English only. Product repo: `legalpanda7-beep <legalpanda7@gmail.com>` — Vercel
+  `Co-Authored-By`, English only. Product repo: the author identity Vercel knows (machine-local, not in git) — Vercel
   refuses to deploy a commit from an author it does not know (2026-09-06).
 
 ## Learnings

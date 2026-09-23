@@ -1,7 +1,6 @@
 # The board is the scheduler — spec
 
-Date: 2026-08-30 (v2, afternoon). Owner: Anton. Status: **approved to build** (owner's word 2026-08-30 ~12:30:
-"form the specs yourself, send the development to Codex, decide everything yourself; keep it simple").
+Date: 2026-08-30 (v2, afternoon). Owner: Anton. Status: **approved to build** (owner, 2026-08-30).
 v1 of this file was the morning draft; a panel of five re-read it against the owner's own words and the
 recorded failures (`reports/panel-2026-08-30/`, local). Everything with no failure or owner's word behind it is cut.
 

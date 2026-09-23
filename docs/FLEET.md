@@ -17,7 +17,7 @@ lanes retired the same day, every row below checked live.
 
 | Server | Cores | Single-core speed | Role |
 |---|---|---|---|
-| Hostinger / srv1487642 | 8 | 1 796 (fastest) | production services + 2 development lanes |
+| Hostinger / production server | 8 | 1 796 (fastest) | production services + 2 development lanes |
 | Hetzner / codex-dev | 4 | 1 771 | development — 3 lanes |
 | ~~Hetzner / ci-runners-01~~ | 8 | 1 657 | **deleted 2026-09-01** (owner; Hetzner price rise, #1862) — hzci-1…3 are gone |
 | Hetzner / autopase-ci | 16 | 212 — 8× slower per core | CI slots — 4 (hzci-4, hzci-5, hzci-7, hzci-8); no lanes since 2026-08-29 |
@@ -40,8 +40,8 @@ on Linux, `~/kitchens/autopase.lv` on the Mac). Names match this table since
 | lane-1 | Hetzner / codex-dev | `hzlane 1` | 6 GB memory, no core cap |
 | lane-2 | Hetzner / codex-dev | `hzlane 2` | 6 GB memory, no core cap |
 | lane-3 | Hetzner / codex-dev | `hzlane 3` | **light lane: 2.5 GB, no builds** (`pnpm build` dies) — tests and small edits only |
-| lane-4 | Hostinger / srv1487642 | `hzlane 4` | 3 cores / 6 GB, nice 5 — production shares the box |
-| lane-5 | Hostinger / srv1487642 | `hzlane 5` | 3 cores / 6 GB, nice 5 — production shares the box |
+| lane-4 | Hostinger / production server | `hzlane 4` | 3 cores / 6 GB, nice 5 — production shares the box |
+| lane-5 | Hostinger / production server | `hzlane 5` | 3 cores / 6 GB, nice 5 — production shares the box |
 | lane-6 | Mac mini | `maclane 6` | 16 GB shared, max 3 running |
 | lane-7 | Mac mini | `maclane 7` | 16 GB shared, max 3 running |
 | lane-8 | Mac mini | `maclane 8` | 16 GB shared, max 3 running |
