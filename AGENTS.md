@@ -32,7 +32,7 @@ tool (Git Bash). The one exception is the Mac `ssh` in check 6, which only works
 3. **GitHub token.** The `GITHUB_TOKEN` in `.env.local` is usually dead — take the live one from the credential store: `export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | grep -m1 '^password=' | cut -d= -f2-)`; `gh api user --jq .login` must answer.
 4. **Product repo clean.** `gh pr list -R Baltic-OrangesLV/vincheck-latvia --state open` (no board PRs left), `gh run list -R … --branch main --limit 3` (main green), `gh issue list -R … --state open --limit 40` (read what is queued, incl. `qa` leftovers).
 5. **CI capacity.** `gh api repos/Baltic-OrangesLV/vincheck-latvia/actions/runners --jq '.runners[]|"\(.name)\t\(.status)\t\(.busy)"'` — all online, none busy; `gh run list … --workflow pr-ci --limit 5` with durations. Judge the queue by the FULL rounds only — far past 50 min means the queue is the bottleneck; scoped rounds are too short to tell.
-6. **Lanes free.** lanes-01: `ssh -i ~/.ssh/id_ed25519 root@2.29.10.164 'hzlane status'` (lane-1..3); hostinger: `ssh -i ~/.ssh/autopase_hostinger_codex_ed25519 root@187.77.109.226 'hzlane status'` (lane-4..5); Mac only from PowerShell: `ssh mac 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane status'` (lane-6..8; zsh has no `timeout`). Reserved lanes: `reservedReason` in `state/fleet-launch.json`.
+6. **Lanes free.** lanes-01: `ssh -i ~/.ssh/id_ed25519 root@<lanes-01> 'hzlane status'` (lane-1..3); hostinger: `ssh -i ~/.ssh/autopase_hostinger_codex_ed25519 root@<hostinger> 'hzlane status'` (lane-4..5); Mac only from PowerShell: `ssh mac 'export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; maclane status'` (lane-6..8; zsh has no `timeout`). Reserved lanes: `reservedReason` in `state/fleet-launch.json`. Host addresses: `hosts` in `state/autopase-board.json`.
 7. **Codex answers.** Live probe per host with the model the launcher uses (`grep "codex exec -m" /usr/local/bin/hzlane`; gpt-5.6-sol at `model_reasoning_effort=xhigh` — the owner reverted gpt-6-astra on 2026-09-07 for cost: one sprint's review rounds burned the day's quota), never a log line: lanes-01 `CODEX_HOME=/root/.codex-homes/hz3 codex exec -m gpt-5.6-sol --skip-git-repo-check "Reply with the single word OK"` (hostinger: `hz4`; Mac: `CODEX_HOME=$HOME/.codex-homes/cx1`, PATH prefix as above, and from PowerShell use `ssh -n … 'codex exec … </dev/null'` — with ssh's stdin left open `codex exec` waits for EOF forever, 2026-09-10). A quota error = that host is out for the sprint; "requires a newer version of Codex" = upgrade the CLI there (`npm i -g @openai/codex@latest`; on codex-dev add `--prefix /usr`).
 
 ## Intake (8–9)
@@ -52,8 +52,8 @@ one line; you report in that same shape whenever you report at all.
 
 ## Machine-local corner — this PC only, none of it in the repo
 
-- Specs in: `C:\Users\panto\projects\_conveyor\autopase.lv\specs\<SPRINT>\`
-- Reports out: `C:\Users\panto\projects\_conveyor\MLD\reports\`
+- Specs in: `%USERPROFILE%\projects\_conveyor\autopase.lv\specs\<SPRINT>\`
+- Reports out: `%USERPROFILE%\projects\_conveyor\MLD\reports\`
 - Product code worktree: `~/.herdr/worktrees/autopase.lv/autopase-cto`
 - Lanes and their keys: check 6 is the only list — never keep a second copy.
 - Commit identity — this repo: `patraianton <315426724+patraianton@users.noreply.github.com>`, no

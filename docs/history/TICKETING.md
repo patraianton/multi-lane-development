@@ -287,7 +287,7 @@ stand in the amber **Off the board** zone above the columns and in `/api/pipelin
 regulation did not cover. An edge case is closed by folding its rule into this file, not
 by fixing the one ticket.
 
-Evidence: 29.08 — Zhenya's two acceptance fixes (#1572, #1573) were written without an
+Evidence: 29.08 — the partner's two acceptance fixes (#1572, #1573) were written without an
 umbrella ("#1515 is closed") and their umbrella line went into a comment; the board did not
 see them until the line was in the body and the `qa` label on. The orchestrator worked
 them while the board showed nothing.

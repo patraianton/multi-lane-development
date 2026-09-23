@@ -102,7 +102,7 @@ say so if it is missing.
 ## Deploying
 
 Prerequisites: Node 22+, the lavish-axi fork checkout with its node_modules
-(default path `C:/Users/panto/projects/_conveyor/lavish-axi/work`, override
+(default path `~/projects/_conveyor/lavish-axi/work`, override
 with `--fork` or `LAVISH_AXI_SRC`), and the config above.
 
 ```

@@ -139,7 +139,7 @@ the record of when and why.
     sprint sweep: open PRs no card carries, tickets in work naming no umbrella, busy lanes on
     unknown branches — flagged above the columns and in `/api/pipeline`, and every new case
     written into `state/edge-cases.md` as an edge case the regulation must absorb.
-    Why: Zhenya's acceptance fixes #1572/#1573 were opened without an umbrella and worked by
+    Why: the partner's acceptance fixes #1572/#1573 were opened without an umbrella and worked by
     the orchestrator while the board showed nothing; the umbrella line, added on request,
     went into a comment the board did not read.
 

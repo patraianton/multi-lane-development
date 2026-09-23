@@ -21,7 +21,7 @@ A card sits in one stage at a time and the road is one-way:
 ## 1. The spec arrives, and is grilled
 
 The partner sends the spec to the owner over Telegram. The session copies it to
-`C:\Users\panto\projects\_conveyor\autopase.lv\specs\<SPRINT>\SPEC.md` with a `MANIFEST.sha256` beside it, then creates
+`<specsDir>\<SPRINT>\SPEC.md` with a `MANIFEST.sha256` beside it, then creates
 the card and moves it to `grilled`:
 
 ```
@@ -62,7 +62,7 @@ question is a native form built after `lavish-axi playbook input` — `<form dat
 owner-zone question has nothing pre-checked), an optional text field for an address or a date, one «Записать
 ответ» submit that calls `window.lavish.queuePrompt(...)` exactly once with `queueKey`, and one sticky «Отправить
 все ответы» button at the foot calling `window.lavish.sendQueuedPrompts()`. Never an `alert()`. The builder that
-produced the first such page is `_conveyor\MLD\reports\build-grill-page-cpi.mjs` — copy it, do not start from prose.
+produced the first such page is kept in the owner's `reports/` folder (not in git) — copy it, do not start from prose.
 
 Publish with the local editor (the Cloudflare-worker path `bin/lavish-publish.mjs` needs a `lavish` block in
 `state/autopase-board.json` that has never been filled — do not reach for it):
@@ -73,10 +73,10 @@ curl -sI <public_url>                                                  # must an
 POST /pipeline/card/update   {"id":"<card id>","links":{"artifact":"<public_url>"}}
 ```
 
-`public_url` is `https://lavish.kidneypass.com/session/<16-hex-key>` (named Cloudflare tunnel, open without a login
+`public_url` is `https://<your-lavish-host>/session/<16-hex-key>` (named Cloudflare tunnel, open without a login
 since 2026-09-11; `~/.lavish-axi/config.json` holds the `publicUrl`; a `*.trycloudflare.com` link is a dead quick
 tunnel). On a card in `grilled` whose artifact link was empty, that first set is what tags both founders in the
-Telegram group (the partner is **Женя**, `@JevLob`); the card stamps `notified.artifact` and never repeats it — a
+Telegram group (the partner's Telegram account); the card stamps `notified.artifact` and never repeats it — a
 second ring is `notifyArtifactReady(card)` from `bin/telegram-bot.mjs` after `configureTelegram(<telegram block>)`.
 Edits to the HTML reach the founders on their next reload of the same link; `curl` cannot fetch the artifact body
 (per-load token, 409), so verify the file on disk. Answers come back through `lavish-axi poll <file>` (run it under
@@ -263,7 +263,7 @@ fleet; `check` is the local check written into task files; `telegram: { botToken
 founders' group and the owner's private chat; `github: { account, tokenFile }` pins the identity every `gh` call
 runs as. That one **fails closed**: a missing or empty token file, or `gh api user` answering with another login,
 holds every GitHub sweep — sources, merges, dispatch — and alarms the owner; nothing ever falls back to whatever
-account the keyring holds (on 31.08 the keyring's active account turned out to be a banned one and every sweep
+account the keyring holds (on 31.08 the keyring's active account turned out to be the wrong one and every sweep
 died silently for hours). To rotate the token write the new one into the same file
 (`gh auth token -u <account> > state/github-token.txt`, `state/` is not in git); the board picks it up within 30 s,
 no restart. `state/fleet-launch.json` says which lane lives on which host and how it is launched.

@@ -4,7 +4,7 @@
 //   node deploy/lavish-worker/build-assets.mjs [--fork <path>] [--stub]
 //
 // --fork   path to the lavish-axi checkout (default: the LAVISH_AXI_SRC env
-//          var, then C:/Users/panto/projects/_conveyor/lavish-axi/work)
+//          var, then ~/projects/_conveyor/lavish-axi/work)
 // --stub   write assets.gen.mjs from the committed stubs instead (lets
 //          wrangler dev run on a machine without the fork; the review chrome
 //          will be non-functional placeholder markup)
@@ -19,12 +19,13 @@
 // build loudly instead of shipping a broken chrome.
 
 import { readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, 'assets.gen.mjs');
-const DEFAULT_FORK = 'C:/Users/panto/projects/_conveyor/lavish-axi/work';
+const DEFAULT_FORK = path.join(os.homedir(), 'projects', '_conveyor', 'lavish-axi', 'work');
 
 const args = process.argv.slice(2);
 const forkIdx = args.indexOf('--fork');
