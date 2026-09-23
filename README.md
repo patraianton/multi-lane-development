@@ -1,22 +1,138 @@
-# MLD — the board that runs product sprints
+# Multi-Lane Development (MLD)
 
-MLD is one Node process (`bin/watchtower.mjs`, no dependencies, Node ≥ 22) on the owner's Windows PC at
-`http://127.0.0.1:4878`, scheduling a fleet of Codex lanes that build the product repo
-`Baltic-OrangesLV/vincheck-latvia` (autopase.lv). It reads facts — busy lanes, open pull requests, GitHub tickets —
-moves cards by them, puts work on free lanes, starts reviews, merges, counts failures and rings the owner. Nobody
-else starts a lane, a review or a merge. This page is the whole process; a sprint runs it top to bottom, once.
+MLD is a way of running software sprints with a fleet of coding agents, together with the board program built for
+it. It ran the sprints of autopase.lv, a car-listings site for Latvia, Lithuania and Estonia. The site has two
+founders: the partner writes the spec for each sprint, and the owner answers a few questions per sprint. A
+Claude Code session (the session) checked each written spec against the current product code in five parallel
+passes (the grill), put the founders' questions on one page and wrote the GitHub tickets. From there the board took
+over: one Node program, `bin/watchtower.mjs` (Watchtower in the code). It handed the tickets to eight Codex lanes on
+three machines, ran spec-check and review rounds, merged each change once the automatic tests (CI) passed, and ran a
+QA pass on the live site.
+
+A lane is a working copy of the product repository on a server, where one OpenAI Codex agent runs one task at a
+time. A pull request (PR) is one proposed change to the code. In a spec-check, an agent that did not write the code
+compares the PR with the spec, clause by clause. The board started every lane run and every review for a sprint's
+tickets itself. Only risky PRs were merged by hand, by the session: changes to the database structure, logins,
+deployment and its settings, payments or the scraper (the program that collects the listings).
+
+The board's checks were added because a lane would write "done" while requirements were missed. Each check was a
+fresh agent with no memory, so every round found new remarks on old code. A round is one verdict, GO or NO-GO, and
+the fix after it. On the board's last sprints one PR took up to 13 Codex runs, each with five helper agents, and
+18–24 hours from ticket to merge; a large PR took 12–26 rounds.
+
+The board has been paused since 15 September 2026. Sprints now run on a shorter process (`docs/PILOT.md`, in
+Russian): the lane that writes the code proves every requirement itself, one reviewer that keeps its memory from one
+PR to the next checks the result, and a person looks at the screenshots. On the seven sprints since, each PR took
+1–3 verdict rounds, and on six of those sprints at most 3 Codex runs. This repository keeps the board's code, its
+264 tests and the measurements.
+
+## What it does
+
+- Keeps one card per sprint. The session moves it through `spec → grilled → ticketed` by hand; from `ticketed` on
+  the board moves it by facts it reads from GitHub and the lanes:
+  `development → local_check → ci_pr → merged → done`. `stuck` means a human has to look.
+- Writes `TASK-<ticket>.md` for every lane run from the committed `docs/RULES.md` (the role's section at a named
+  git sha) plus the ticket verbatim, copies it to the lane over `scp` and starts the run with `hzlane N` or
+  `maclane N`, the one-line lane launchers of `docs/FLEET.md` (`hzlane` on the Linux servers, `maclane` on the Mac;
+  neither launcher is in this repository).
+- Merges with `gh pr merge --squash` only when the checks `pr-ci` and `pr-ci-full` are green on the PR's latest
+  commit (its head), a `GO` comment names that same head, GitHub says mergeable and the ticket carries no
+  `hold-merge` label. That label goes on a ticket touching migrations, schema, auth, deploy and env, payments or the
+  scraper; the session merges such a PR by hand on green + GO.
+- Counts failures per card. Three `NO-GO` verdicts or red checks in a row, or a ticket comment starting with
+  `QUESTION`, park the card in `stuck` and send the owner one Telegram line.
+- Tags both founders in the Telegram group once the session attaches the questions page to the card. The page is
+  made with Lavish, a tool that publishes a local HTML page at a public link and sends the readers' answers back.
+  The owner is asked once per sprint, on that page, and never mid-sprint. The board only sends Telegram messages
+  and never reads them.
+
+## How it works
+
+| Piece | What it does |
+|---|---|
+| `bin/watchtower.mjs` | the HTTP server on `127.0.0.1:4878`; a sweep every 30 s, inside which the lanes are re-read over `ssh` every 45 s, the open PRs every minute and the tickets every 3 minutes through `gh`; `bin/watchtower.html` polls it every 3 s |
+| `bin/pipeline.mjs`, `bin/sprint-facts.mjs` | `bin/pipeline.mjs` keeps the cards, their stage, a clock per stage and the failure counters; `bin/sprint-facts.mjs` ties each sprint card to its work tickets, the lanes building them, their PRs and CI jobs, from the facts `bin/watchtower.mjs` reads from GitHub and the lanes; the sprint close itself is `closeSprintSweep` in `bin/watchtower.mjs` |
+| `bin/auto-dispatch.mjs` | matches a startable task with a free lane in the order spec-check, review, fix, develop; writes the task file, launches it, retries a failed launch on another host |
+| `bin/rules.mjs` | cuts `docs/RULES.md` at a committed sha into `common` plus the role's section: `lane`, `spec-check`, `reviewer`, `fixer`, `qa` or `cutter` |
+| `bin/merge.mjs` | the merge gate: which check runs count on a head, which labels hold a merge, when the board adds `full-ci` |
+| `bin/lane-judge.mjs`, `bin/idle-lanes.mjs`, `bin/off-board.mjs` | a freed lane is judged by the proof it left; a free lane while work waits, or work running outside the board, is reported on the page |
+| `bin/telegram-bot.mjs` | send-only Telegram: alarms to the owner's private chat, one-line notices to the founders' group |
+| `bin/lavish-publish.mjs`, `deploy/lavish-worker/` | a self-hosted Lavish on a Cloudflare Worker (`docs/ARTIFACT.md`) that can serve the founders' questions page; not in use — the session publishes that page with the local `lavish-axi` editor (§2) |
+| `docs/FLEET.md`, `docs/fleet-launch.example.json` (copied to `state/fleet-launch.json`, not in git) | the fleet: 3 lanes on a Hetzner server, 2 on a Hostinger server, 3 on a Mac mini; 4 CI runners on a separate Hetzner server |
+| CI in the product repository | the scoped `pr-ci` on every push (the affected tests, 7–10 minutes); the full pipeline `pr-ci-full` (build, every test, browser smoke: 30–37 minutes plus 0–40 minutes of runner queue) only on the `full-ci` label, which the board adds itself |
+
+Another product needs its own settings (the repository, hosts and lanes, Telegram chats and GitHub identity in
+`state/autopase-board.json` and `state/fleet-launch.json`) and its own `docs/RULES.md`. Its CI must report checks
+named `pr-ci` and `pr-ci-full` (and run a workflow named `Staging` if the staging walk is on), and each Linux lane
+host needs the `hzlane` launcher, which is not in this repository.
 
 | Who | Does |
 |---|---|
-| the partner (Lena) | writes the spec, answers the questions page |
-| the MLD session | spec intake — grill, questions page, tickets — plus `hold-merge` merges and the watch |
-| the board | everything from `ticketed` on: dispatch, review, fix, merge, QA, sprint close |
-| 8 Codex lanes | one task per run: write the ticket, review a PR head, fix one round, walk QA on production |
-| the owner | answers owner questions, unsticks cards, gets one line when the sprint closes |
+| the partner | writes the spec, answers the questions page |
+| the session (a Claude Code session) | spec intake: the grill, the questions page, the tickets; merges `hold-merge` PRs by hand; watches the board while the sprint runs and unsticks stuck cards (`AGENTS.md`) |
+| the board | everything from `ticketed` on: dispatch, spec-check, review, fix, merge, QA, sprint close |
+| 8 Codex lanes | one task per run: build the ticket's code on a branch and open the PR, check a PR head against the spec, review it, fix one round, walk QA on production |
+| the owner | answers owner-zone questions (money, strategy, production, anything outgoing); gets a Telegram line when a card is stuck and one when the sprint closes |
 
-A card sits in one stage at a time and the road is one-way:
-`spec → grilled → ticketed → development → local_check → ci_pr → merged → done`.
-`stuck` is not a stage of the road — it means a human has to look.
+## What was measured, and what replaced the board
+
+The board's process was measured on its last sprints, 10–15 September (`docs/PILOT.md` §1 and §7): on one PR up to
+13 Codex runs at the `ultra` reasoning-effort setting, each with five helper agents, so up to 65 helper agents;
+12–26 verdict rounds on a large PR; 18–24 hours from ticket to merge; about 2 `pr-ci-full` runs per PR; and CI on
+the critical path only 5 % of the time, so 95 % of those hours went to agent rounds and the waits between them.
+
+On the shorter process one ticket carries the spec's requirements as a table with an empty "proved by" column. One
+lane run writes the code, puts a screenshot of every surface next to its mock-up in the
+`Baltic-OrangesLV/autopase-evidence` repository and posts `DONE #<ticket> <sha>` with the table filled in. A GitHub
+Actions workflow in the product repository wakes one Amp thread (Amp is a third-party coding agent; the same thread
+is reused for every PR, so this reviewer keeps the memory the board's fresh agents lacked), which posts one `GO` or
+`NO-GO` within 30 minutes; there is at most one fix round. The PR merges on a green scoped `pr-ci`; the full
+pipeline runs on `main` after the merge and every night, and only a PR touching migrations, auth, deploy or the
+scraper waits for `full-ci` and an independent acceptance. The partner accepts the finished sprint on a Lavish page
+with "accepted" or "return" per item.
+
+## Seven sprints on the shorter process
+
+| Sprint (requirements; design mock-ups) | Codex runs on the PR | Reviewer verdicts | Time to merge |
+|---|---|---|---|
+| #2334, listing card v12 (36) | 3 | 2, both NO-GO; 28/36 proved, the last 8 moved to #2344 | 6 h 38 min |
+| #2344, follow-up of the card (8) | 2 | NO-GO 6/8 → GO 8/8; the partner returned 0 items | 4 h 47 min |
+| #2376, a mobile-only row that showed on desktop (3) | 2 | NO-GO → GO 3/3 | 2 h 09 min |
+| #2425, General Fix, four PRs (42) | 0; four Claude Opus agents wrote the code | 7 on four PRs, rounds 2, 2, 2, 1 | 10 h 43 min to the last merge |
+| #2454, Contacts R1 (33) | 3 fix runs; three Claude Opus agents wrote the code | NO-GO 30/33 → GO 33/33 | 27 h 25 min, 17.5 h of it idle |
+| #2461, Garage v1.0 (58; 13 mock-ups) | 14, eleven of them layout rounds | 46/58 → 53/58 → GO 58/58 | 30 h 40 min to production, 10.5 h of it idle |
+| #2522, site chat, three PRs (27; 12 mock-ups) | 1, 1 and 2 | GO 7/7; GO 13/13 on the first pass; 6/6 plus an independent acceptance | 1 h 30 min; 2 h 20 min; 6 h 50 min |
+
+In the "Reviewer verdicts" column, x/y is the number of the spec's requirements the reviewer found proved, out of
+the total; an arrow leads to the next verdict on the fixed code.
+
+Against the board's numbers (`docs/PILOT.md` §7): Codex runs per PR went from up to 13, each with five helpers, to
+at most 3 on six of the seven sprints, and 14 on the sprint whose lane could not open the page it was building
+(target 2); verdict rounds from 12–26 to 1–3 (target 3 or fewer); ticket to merge from 18–24 hours to between
+1 h 30 min and 6 h 50 min on the six PRs that hit neither an idle night nor the four-PR staging queue (target 8
+hours or fewer).
+
+The idle hours on #2454 and #2461 were a closed session with no background watcher on the running lane. The eleven
+layout rounds on #2461 were a lane writing CSS without seeing its own page; since then the Hetzner lane server
+(lanes 1–3 in `docs/FLEET.md`) runs a live-reload copy of the site, `tools/look/look.mjs` in the product repository
+screenshots the lane's page in about 7 seconds, and the task file carries the sizes, gaps and colours from the
+mock-up. The chat window in #2522 was built that way: 0 layout rounds and a GO on the first pass.
+
+Several rules of the shorter process came from 77 recorded agent sessions of the Garage sprint (`docs/PILOT.md`
+§7): 11 runs polled CI every 30 seconds, 9 sessions wrote CSS without ever opening the built page, 3 fell at the
+first `gh` call for want of a default repository, 2 ran the test suite against the shared database and got 29 false
+failures, 2 re-cloned 3.1 GB of mock-ups, one of them filling `/tmp`. Each became a rule in the product
+repository's `AGENTS.md` or a line of the task template.
+
+## Run it
+
+```
+npm test                    # 264 tests in 32 files (9.8k lines of tests, 9.9k of code), node --test, no dependencies
+node bin/watchtower.mjs     # the board on http://127.0.0.1:4878, Node 22 or newer; settings in state/autopase-board.json
+node bin/wt.mjs pipeline    # the pipeline as short text, read from the running server
+```
+
+The rest of this page is the board's process as it ran before the pause, section by section.
 
 ## 1. The spec arrives, and is grilled
 
